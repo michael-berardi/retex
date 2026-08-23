@@ -47,7 +47,7 @@ public struct UpdateChecker {
             guard let name = asset["name"] as? String,
                   let url = (asset["browser_download_url"] as? String).flatMap(URL.init(string:))
             else { continue }
-            if name == "retex-universal.tar.gz" { assetURL = url }
+            if name == "retex-universal.zip" { assetURL = url }
             if name == "SHA256SUMS" { checksumsURL = url }
         }
         guard let finalAsset = assetURL, let finalChecksums = checksumsURL else {
@@ -108,7 +108,7 @@ extension UpdateChecker {
             switch self {
             case .lookupFailed: "GitHub releases lookup failed — check network connectivity"
             case .malformedResponse: "GitHub releases response was malformed"
-            case .missingAssets(let tag): "Release \(tag) is missing retex-universal.tar.gz or SHA256SUMS"
+            case .missingAssets(let tag): "Release \(tag) is missing retex-universal.zip or SHA256SUMS"
             case .downloadFailed(let name): "Download failed: \(name)"
             }
         }

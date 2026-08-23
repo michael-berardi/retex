@@ -80,11 +80,11 @@ final class UpdateCheckerTests: XCTestCase {
 
     func testChecksumExtraction() {
         let sums = """
-        abcdef0123456789  retex-universal.tar.gz
+        abcdef0123456789  retex-universal.zip
         1111222233334444  other-file.zip
         """
         XCTAssertEqual(
-            UpdateChecker.expectedChecksum(in: sums, assetName: "retex-universal.tar.gz"),
+            UpdateChecker.expectedChecksum(in: sums, assetName: "retex-universal.zip"),
             "abcdef0123456789"
         )
         XCTAssertNil(UpdateChecker.expectedChecksum(in: sums, assetName: "missing.tar.gz"))

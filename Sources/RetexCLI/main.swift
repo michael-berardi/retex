@@ -276,8 +276,8 @@ enum RetexCLI {
 
         let tarball = try checker.download(release.assetURL)
         let sumsBody = String(decoding: try checker.download(release.checksumsURL), as: UTF8.self)
-        guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: "retex-universal.tar.gz") else {
-            throw UsageError("Release checksums do not list retex-universal.tar.gz")
+        guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: "retex-universal.zip") else {
+            throw UsageError("Release checksums do not list retex-universal.zip")
         }
         let actual = UpdateChecker.sha256(of: tarball)
         guard actual == expected.lowercased() else {
@@ -292,11 +292,11 @@ enum RetexCLI {
         try fm.copyItem(at: executable, to: previous)
         let workDir = fm.temporaryDirectory.appendingPathComponent("retex-update-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
-        let tarPath = workDir.appendingPathComponent("retex-universal.tar.gz")
-        try tarball.write(to: tarPath, options: .atomic)
+        let zipPath = workDir.appendingPathComponent("retex-universal.zip")
+        try tarball.write(to: zipPath, options: .atomic)
         let extract = Process()
-        extract.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        extract.arguments = ["-xzf", tarPath.path, "-C", workDir.path]
+        extract.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        extract.arguments = ["-x", "-k", zipPath.path, workDir.path]
         try extract.run()
         extract.waitUntilExit()
         guard extract.terminationStatus == 0,
