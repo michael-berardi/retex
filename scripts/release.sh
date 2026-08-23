@@ -14,6 +14,8 @@ set -euo pipefail
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (e.g. 0.2.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:--}"
 OUT="${RETEX_OUT:-release}"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$ROOT"
@@ -28,8 +30,8 @@ swift test >/dev/null
 
 echo "==> Universal build (arm64 + x86_64)"
 BUILD="$ROOT/.release-build"
-rm -rf "$BUILD" "$OUT"
-mkdir -p "$BUILD/arm64" "$BUILD/x86_64" "$OUT"
+rm -rf "$BUILD"
+mkdir -p "$BUILD/arm64" "$BUILD/x86_64"
 swift build -c release --arch arm64 --product retex --scratch-path "$BUILD/arm64-scratch" >/dev/null
 swift build -c release --arch x86_64 --product retex --scratch-path "$BUILD/x86_64-scratch" >/dev/null
 
