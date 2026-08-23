@@ -381,6 +381,21 @@ enum RetexCLI {
         }
 
 
+        // Surface unreadable Markdown entries (dangling symlinks, permission
+        // issues) that scan skips — diagnostics, not fatal.
+        if let enumerator = FileManager.default.enumerator(
+            at: vault.url,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) {
+            for case let url as URL in enumerator
+            where url.pathExtension.lowercased() == "md" {
+                if (try? String(contentsOf: url, encoding: .utf8)) == nil {
+                    issues.append("Unreadable note: \(url.path)")
+                }
+            }
+        }
+
         return DoctorOutput(
             vault: vault.url.path,
             notes: notes.count,
