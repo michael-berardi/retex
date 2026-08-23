@@ -172,6 +172,25 @@ previous binary at `<path>/retex.previous` for manual rollback. A failed
 download, checksum mismatch, or bad archive leaves your current binary
 untouched.
 
+## Vault format
+
+A Retex vault is just a folder of Markdown files — no app, account, or
+credential is ever required to read or write one:
+
+```
+MyVault/
+├── Deals/acme-redesign.md     # plain Markdown + YAML front matter
+├── Contacts/jamie-doe.md
+└── .retex/                    # optional internal state
+    ├── config.json            # custom columns / saved views
+    └── history.jsonl          # undo journal
+```
+
+Every file outside `.retex/` is ordinary Markdown readable in any editor.
+Everything inside `.retex/` is derived state: delete the folder and Retex
+rebuilds it on demand. The full contract is documented above and versioned
+through `retex schema`.
+
 ## Data API (Markdown contract)
 
 Retex reads ordinary Markdown files. YAML front matter describes each record
