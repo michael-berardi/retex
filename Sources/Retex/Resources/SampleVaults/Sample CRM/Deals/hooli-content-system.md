@@ -4,7 +4,7 @@ type: deal
 status: Inbox
 rank: 1
 company: Hooli
-owner: Liberty Design Studio
+owner: Retex Team
 value: $3900
 next_action: Review intake note
 archived: false

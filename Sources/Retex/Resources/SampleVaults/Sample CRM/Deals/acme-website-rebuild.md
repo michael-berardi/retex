@@ -4,7 +4,7 @@ type: deal
 status: Proposal
 rank: 1
 company: Acme Co
-owner: Liberty Design Studio
+owner: Retex Team
 value: $11500
 due: 2026-08-06
 next_action: Send revised scope

@@ -2,7 +2,7 @@
 title: Retex product thesis
 type: note
 status: Active
-owner: Liberty Design Studio
+owner: Retex Team
 tags: [product, strategy]
 ---
 

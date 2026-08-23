@@ -207,7 +207,7 @@ final class WorkspaceModel: ObservableObject {
             vaults = Array(Set(storedVaults + [sample])).sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-            selectedVault = vaults.first { $0.name == "Liberty CRM" } ?? vaults.first
+            selectedVault = vaults.first { $0.name == "Sample CRM" } ?? vaults.first
             reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -223,11 +223,11 @@ final class WorkspaceModel: ObservableObject {
             create: true
         )
         let vaultsDirectory = applicationSupport.appendingPathComponent("Retex/Vaults", isDirectory: true)
-        let destination = vaultsDirectory.appendingPathComponent("Liberty CRM", isDirectory: true)
+        let destination = vaultsDirectory.appendingPathComponent("Sample CRM", isDirectory: true)
 
         if !fileManager.fileExists(atPath: destination.path) {
             guard let source = Bundle.module.url(
-                forResource: "Liberty CRM",
+                forResource: "Sample CRM",
                 withExtension: nil,
                 subdirectory: "SampleVaults"
             ) else {

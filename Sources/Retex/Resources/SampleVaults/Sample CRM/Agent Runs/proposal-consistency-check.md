@@ -3,7 +3,7 @@ title: Proposal consistency check
 type: agent-run
 status: Complete
 owner: Review agent
-model: cloud-model
+model: example-model
 duration: 48s
 tags: [agent, review]
 ---

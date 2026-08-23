@@ -79,7 +79,7 @@ struct ArchitectureView: View {
                 ---
                 type: deal
                 status: Proposal
-                owner: Liberty Design Studio
+                owner: Retex Team
                 value: $11,500
                 next_action: Send revised scope
                 tags: [crm, priority]

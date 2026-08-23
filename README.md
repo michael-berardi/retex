@@ -1,35 +1,69 @@
 # Retex
 
-Retex is a native, local workspace for Markdown CRMs and agent knowledge bases. The prototype combines a document workspace, a first-class Kanban, agent run records, multi-vault navigation, and a command-line interface.
+<p align="center">
+  <strong>A local-first Markdown workspace and machine-readable CLI for people and agents.</strong><br />
+  <a href="#install-and-run">Run the app</a> ·
+  <a href="#cli">CLI</a> ·
+  <a href="#data-api-markdown-contract">Markdown contract</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
 
-The app is written in Swift 6 and SwiftUI. It has no third-party runtime dependencies, account system, analytics, remote database, or background upload.
+Retex is a local-first Markdown workspace for CRM records, notes, Kanban
+boards, and agent runs. Your vault stays an ordinary folder of Markdown files,
+so it remains readable, editable, and portable outside the app.
 
-## Run the prototype
+Retex is an early macOS prototype with a command-line interface. It has no
+account system, analytics, remote database, background upload, or third-party
+runtime dependency.
 
-Requirements: macOS 14 or later and Xcode 16 or later.
+## Features
+
+- Navigate multiple Markdown vaults from one workspace.
+- Search titles, bodies, properties, and labels.
+- Edit notes with atomic writes while preserving unknown YAML properties.
+- Create, filter, rank, move, and archive Kanban cards without deleting files.
+- Inspect agent-run records and their output.
+- Use the same core operations from the human-readable or JSON CLI.
+
+## Requirements
+
+- macOS 14 or later for the SwiftUI app and CLI.
+- A Swift 6.0 toolchain. Xcode 16 or later includes a compatible toolchain.
+
+The package declares iOS 17 for shared SwiftUI and model code, but the current
+release does not ship an iOS application target.
+
+## Install and run
+
+Clone the repository, then run the macOS app with Swift Package Manager:
 
 ```bash
+git clone https://github.com/michael-berardi/retex.git
+cd retex
 swift run RetexApp
 ```
 
-Retex installs a writable Liberty CRM sample at:
+On first launch, Retex copies its bundled fixture to:
 
 ```text
-~/Library/Application Support/Retex/Vaults/Liberty CRM
+~/Library/Application Support/Retex/Vaults/Sample CRM
 ```
 
-Use the vault switcher to open any existing Markdown folder.
+Use the vault switcher to open any existing Markdown folder. The fixture is
+sample data; it is safe to edit or remove.
 
-## Use the CLI
+## CLI
+
+The `retex` executable reads and writes a vault without opening the app:
 
 ```bash
 swift run retex --help
-swift run retex board --vault "~/Library/Application Support/Retex/Vaults/Liberty CRM" --json
+swift run retex board --vault "$HOME/Library/Application Support/Retex/Vaults/Sample CRM" --json
 swift run retex list --vault ./CRM --type deal --json
 swift run retex search "website rebuild" --vault ./CRM --json
 ```
 
-Create and update a card:
+Create and update a record:
 
 ```bash
 swift run retex create \
@@ -42,10 +76,16 @@ swift run retex create \
   --json
 
 swift run retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
-swift run retex set ./CRM/Deals/acme-redesign.md due=2026-08-01 next_action="Send scope" --json
+swift run retex set ./CRM/Deals/acme-redesign.md due=2026-08-01 'next_action=Send scope' --json
 ```
 
-Every successful JSON response uses this envelope:
+Available commands are `list`, `search`, `show`, `create`, `set`, `move`,
+`archive`, `board`, and `schema`. Run `swift run retex schema` for the record
+types, core properties, and board statuses understood by the current build.
+
+### JSON output
+
+Successful JSON responses use this envelope:
 
 ```json
 {
@@ -54,9 +94,8 @@ Every successful JSON response uses this envelope:
 }
 ```
 
-Invalid arguments exit with code 64. File and storage failures exit with code 74.
-
-With `--json`, failures use the same machine-readable contract:
+With `--json`, invalid arguments exit with code 64 and file or storage
+failures exit with code 74. Failures use the same machine-readable contract:
 
 ```json
 {
@@ -68,9 +107,12 @@ With `--json`, failures use the same machine-readable contract:
 }
 ```
 
-## Markdown contract
+## Data API (Markdown contract)
 
-Retex reads ordinary Markdown files. YAML properties turn a note into a card, contact, task, or agent run.
+Retex reads ordinary Markdown files. YAML front matter describes each record
+as a note, contact, deal, task, or agent-run. The parser supports flat
+properties and inline lists; note bodies remain intact, including wiki links
+and Markdown checklists.
 
 ```markdown
 ---
@@ -78,7 +120,7 @@ title: Acme website rebuild
 type: deal
 status: Proposal
 rank: 1
-owner: Liberty Design Studio
+owner: Retex Team
 value: $11500
 due: 2026-08-06
 next_action: Send revised scope
@@ -94,41 +136,46 @@ Linked contact: [[Jamie Doe]]
 - [ ] Send revised scope
 ```
 
-Retex preserves the note body and unknown YAML properties. Board moves update `status` and `rank`. Archiving writes `archived: true`; it does not delete the file.
+Retex preserves the note body and unknown YAML properties. Board moves update
+`status` and `rank`. Archiving writes `archived: true`; it does not delete the
+file.
 
 ## Architecture
 
-- SwiftUI provides the macOS shell and a shared UI model for a future iOS target.
-- `RetexCore` owns the file parser and mutations used by both the app and CLI.
-- Markdown remains authoritative. A future search index must be disposable.
-- The CLI is the first agent integration surface. MCP can wrap the same core operations later.
-- The current parser supports the flat YAML properties Obsidian exposes in its property editor, inline lists, wiki links, and Markdown checklists.
+- SwiftUI provides the macOS shell and shared UI/model code.
+- `RetexCore` owns parsing and mutations used by both the app and CLI.
+- Markdown remains authoritative; any future search index must be disposable.
+- The CLI is the first integration surface for scripts and agents.
 
-## Prototype status
+## Project status
 
-Implemented:
+Implemented today:
 
 - Multi-vault workspace navigation
 - Search across titles, bodies, properties, and labels
-- Markdown editor with atomic writes
-- Kanban card creation, editing, filtering, labels, owners, values, due dates, checklists, drag-and-drop movement, ordering, and non-destructive archiving
-- Agent run records with status changes and output inspection
+- Markdown editing with atomic writes
+- Kanban card creation, editing, filtering, labels, owners, values, due dates,
+  checklists, drag-and-drop movement, ordering, and non-destructive archiving
+- Agent-run records with status changes and output inspection
 - Human-readable and JSON CLI output
-- Obsidian comparison and architecture views
+- Comparison and architecture views
 
-Still production work:
+Not yet shipped:
 
-- iOS app target and device QA
-- Security-scoped bookmark persistence for sandboxed App Store builds
-- File watching and a disposable SQLite FTS index for large vaults
+- A distributable signed release or auto-update channel
+- An iOS application target
+- File watching or a disposable full-text index for large vaults
 - Undo history for property mutations
 - Custom board schemas and saved views
-- Signed releases, auto-update, optional encrypted sync, and MCP packaging
+- Optional encrypted sync or MCP packaging
 
-## Naming note
+## Contributing
 
-Retex is the requested working name. `retex.com` is already registered, and Retex is used by existing software businesses and apps. Domain acquisition and trademark clearance remain unresolved.
+Bug reports and focused pull requests are welcome on
+[GitHub](https://github.com/michael-berardi/retex). Keep Markdown as the source
+of truth, avoid committing private vault data or credentials, and include
+documentation updates when a user-facing command or record property changes.
 
 ## License
 
-MIT. See `LICENSE`.
+Retex is released under the [MIT License](LICENSE).

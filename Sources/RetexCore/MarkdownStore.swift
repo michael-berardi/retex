@@ -201,7 +201,7 @@ public enum StoreError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unreadableVault(let url): "Retex could not read \(url.path)."
-        case .missingSampleVault: "The bundled Liberty CRM sample is missing."
+        case .missingSampleVault: "The bundled Sample CRM fixture is missing."
         case .invalidTitle: "A note title cannot be empty."
         }
     }
