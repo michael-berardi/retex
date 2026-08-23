@@ -2,6 +2,7 @@ import Foundation
 
 public struct MarkdownStore {
     private let fileManager = FileManager.default
+    let history = UndoHistory()
 
     public init() {}
 
@@ -75,10 +76,16 @@ public struct MarkdownStore {
         try source.write(to: url, atomically: true, encoding: .utf8)
         return try load(url)
     }
-
     public func saveBody(_ body: String, for note: Note) throws {
+        // Journal first (WAL style); if the file write fails, roll the entry back.
+        try history.record(.init(path: note.url.path, previousSource: note.source))
         let source = replacingBody(in: note.source, with: body)
-        try source.write(to: note.url, atomically: true, encoding: .utf8)
+        do {
+            try source.write(to: note.url, atomically: true, encoding: .utf8)
+        } catch {
+            _ = try? history.pop(path: note.url.path)
+            throw error
+        }
     }
 
     public func updateMetadata(_ key: String, value: String, for note: Note) throws {
@@ -86,14 +93,15 @@ public struct MarkdownStore {
     }
 
     public func updateMetadata(_ updates: [String: String], for note: Note) throws {
+        // Journal first (WAL style); if the file write fails, roll the entry back.
+        try history.record(.init(path: note.url.path, previousSource: note.source))
         var lines = normalizedLines(note.source)
-
         guard lines.first == "---", let closingIndex = lines.dropFirst().firstIndex(of: "---") else {
             let properties = updates.keys.sorted().map {
                 "\($0): \(serializedScalar(updates[$0, default: ""]))"
             }
             lines.insert(contentsOf: ["---"] + properties + ["---", ""], at: 0)
-            try lines.joined(separator: "\n").write(to: note.url, atomically: true, encoding: .utf8)
+            try writeWithRollback(lines.joined(separator: "\n"), note: note)
             return
         }
 
@@ -117,7 +125,16 @@ public struct MarkdownStore {
             }
         }
 
-        try lines.joined(separator: "\n").write(to: note.url, atomically: true, encoding: .utf8)
+        try writeWithRollback(lines.joined(separator: "\n"), note: note)
+    }
+
+    private func writeWithRollback(_ source: String, note: Note) throws {
+        do {
+            try source.write(to: note.url, atomically: true, encoding: .utf8)
+        } catch {
+            _ = try? history.pop(path: note.url.path)
+            throw error
+        }
     }
 
     private func parseFrontmatter(
@@ -197,12 +214,16 @@ public enum StoreError: LocalizedError {
     case unreadableVault(URL)
     case missingSampleVault
     case invalidTitle
+    case corruptHistory(URL)
+    case historyUnwritable(URL)
 
     public var errorDescription: String? {
         switch self {
         case .unreadableVault(let url): "Retex could not read \(url.path)."
         case .missingSampleVault: "The bundled Sample CRM fixture is missing."
         case .invalidTitle: "A note title cannot be empty."
+        case .corruptHistory(let url): "Retex found a corrupt undo journal entry at \(url.path)."
+        case .historyUnwritable(let url): "Retex could not write the undo journal at \(url.path)."
         }
     }
 }

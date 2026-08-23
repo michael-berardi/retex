@@ -34,13 +34,15 @@ public struct Note: Identifiable, Hashable, Sendable, Codable {
     public var displayPath: String { url.deletingPathExtension().lastPathComponent }
 
     public var checklistProgress: (completed: Int, total: Int) {
-        let tasks = body.components(separatedBy: .newlines).filter {
-            $0.trimmingCharacters(in: .whitespaces).hasPrefix("- [")
+        let tasks = body.components(separatedBy: .newlines).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter { line in
+            line.hasPrefix("- [ ]")
+                || line.lowercased().hasPrefix("- [x]")
         }
-        let completed = tasks.count {
-            let line = $0.lowercased()
-            return line.contains("- [x]")
-        }
+        let completed = tasks.filter {
+            $0.lowercased().hasPrefix("- [x]")
+        }.count
         return (completed, tasks.count)
     }
 

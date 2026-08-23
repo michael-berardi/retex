@@ -24,5 +24,13 @@ let package = Package(
             name: "RetexCLI",
             dependencies: ["RetexCore"]
         ),
+        .testTarget(
+            name: "RetexCoreTests",
+            dependencies: ["RetexCore"]
+        ),
+        .testTarget(
+            name: "RetexCLITests",
+            dependencies: ["RetexCLI"]
+        ),
     ]
 )

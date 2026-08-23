@@ -102,12 +102,23 @@ enum RetexCLI {
 
         case "board":
             let vault = try invocation.vault()
-            let deals = try store.scan(vault).filter { $0.type == .deal && !$0.isArchived }
+            let config = VaultConfig.load(for: vault)
+            var records = try store.scan(vault).filter { !$0.isArchived }
+            if let viewName = invocation.option("view") {
+                guard let view = config.view(named: viewName) else {
+                    throw UsageError("Unknown view: \(viewName)")
+                }
+                if let type = view.type { records = records.filter { $0.type.rawValue.caseInsensitiveCompare(type) == .orderedSame } }
+                if let status = view.status { records = records.filter { $0.status.caseInsensitiveCompare(status) == .orderedSame } }
+                if let tag = view.tag { records = records.filter { $0.tags.contains(tag) } }
+            } else {
+                records = records.filter { $0.type == .deal }
+            }
             let board = BoardOutput(
-                columns: BoardColumn.defaultColumns.map { column in
+                columns: config.columns.map { column in
                     BoardList(
                         name: column.title,
-                        cards: deals.filter { column.statuses.contains($0.status) }
+                        cards: records.filter { column.statuses.contains($0.status) }
                             .sorted { $0.rank < $1.rank }
                             .map(NoteSummary.init)
                     )
@@ -120,11 +131,77 @@ enum RetexCLI {
                 }.joined(separator: "\n\n")
             }
 
+        case "views":
+            let vault = try invocation.vault()
+            let config = VaultConfig.load(for: vault)
+            let listing = ViewsOutput(views: config.views.map { view in
+                ViewSummary(name: view.name, type: view.type, status: view.status, tag: view.tag)
+            })
+            try output(listing, json: invocation.isJSON) { listing in
+                listing.views.isEmpty ? "No saved views." : listing.views.map { view in
+                    var parts = [view.name]
+                    if let type = view.type { parts.append("type=\(type)") }
+                    if let status = view.status { parts.append("status=\(status)") }
+                    if let tag = view.tag { parts.append("tag=\(tag)") }
+                    return parts.joined(separator: " ")
+                }.joined(separator: "\n")
+            }
+
+        case "undo":
+            let url = try invocation.noteURL()
+            guard let previous = try UndoHistory().pop(path: url.standardizedFileURL.path) else {
+                throw UsageError("No undo history for \(url.path)")
+            }
+            try previous.write(to: url, atomically: true, encoding: .utf8)
+            let restored = try store.load(url)
+            try output(NoteDetail(restored), json: invocation.isJSON) { "Restored \($0.path)" }
+
+        case "log":
+            let url = try invocation.noteURL()
+            let path = url.standardizedFileURL.path
+            let entries = try UndoHistory().entries(for: path)
+            let listing = HistoryOutput(entries: entries.map { entry in
+                HistorySummary(path: entry.path, timestamp: entry.timestamp, bytes: entry.previousSource.utf8.count)
+            })
+            try output(listing, json: invocation.isJSON) { listing in
+                listing.entries.isEmpty ? "No history for \(path)." : listing.entries.map { entry in
+                    "\(entry.timestamp) \(entry.bytes) bytes"
+                }.joined(separator: "\n")
+            }
+
+        case "doctor":
+            let vault = try invocation.vault()
+            try output(runDoctor(vault), json: invocation.isJSON) { report in
+                var lines = [
+                    "Vault: \(report.vault)",
+                    "Notes: \(report.notes) (\(report.archived) archived)",
+                    "Config: \(report.configOk ? "ok" : "invalid")",
+                    "Columns: \(report.columns.joined(separator: ", "))",
+                    "Views: \(report.views)",
+                    "Journal: \(report.journalOk ? "ok" : "unreadable")",
+                ]
+                if !report.issues.isEmpty {
+                    lines.append("Issues:")
+                    lines.append(contentsOf: report.issues.map { "  - \($0)" })
+                }
+                return lines.joined(separator: "\n")
+            }
+
+        case "mcp":
+            let vault = try invocation.vault()
+            try MCPServer(vault: vault).run()
+
+        case "watch":
+            let vault = try invocation.vault()
+            try runWatch(vault, json: invocation.isJSON)
+
         case "schema":
+            let config = invocation.hasVault ? VaultConfig.load(for: try invocation.vault()) : nil
             let schema = SchemaOutput(
                 recordTypes: NoteType.allCases.map(\.rawValue),
                 coreProperties: ["title", "type", "status", "rank", "owner", "company", "value", "due", "next_action", "tags", "archived"],
-                statuses: BoardColumn.defaultColumns.map(\.title)
+                statuses: (config?.columns ?? BoardColumn.defaultColumns).map(\.title),
+                views: config?.views.map(\.name) ?? []
             )
             try output(schema, json: invocation.isJSON) { schema in
                 "Record types: \(schema.recordTypes.joined(separator: ", "))\nProperties: \(schema.coreProperties.joined(separator: ", "))\nBoard lists: \(schema.statuses.joined(separator: ", "))"
@@ -133,6 +210,81 @@ enum RetexCLI {
         default:
             throw UsageError("Unknown command: \(invocation.command ?? "")")
         }
+    }
+
+    private static func runWatch(_ vault: Vault, json: Bool) throws {
+        let printQueue = DispatchQueue(label: "retex.watch.output")
+        let watcher = VaultWatcher(vault: vault, queue: printQueue) { paths in
+            let markdown = paths.filter { $0.lowercased().hasSuffix(".md") }
+            guard !markdown.isEmpty else { return }
+            if json,
+               let data = try? JSONSerialization.data(
+                   withJSONObject: ["changed": markdown],
+                   options: [.sortedKeys, .withoutEscapingSlashes]
+               ) {
+                print(String(decoding: data, as: UTF8.self))
+            } else {
+                for path in markdown { print("changed \(path)") }
+            }
+        }
+        try watcher.start()
+
+        signal(SIGINT, SIG_IGN)
+        let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        signalSource.setEventHandler { exit(0) }
+        signalSource.resume()
+
+        dispatchMain()
+    }
+
+    private static func runDoctor(_ vault: Vault) -> DoctorOutput {
+        var issues: [String] = []
+        let store = MarkdownStore()
+        var notes: [Note] = []
+        do {
+            notes = try store.scan(vault)
+        } catch {
+            issues.append("Scan failed: \(error.localizedDescription)")
+        }
+
+        let configURL = VaultConfig.url(for: vault)
+        var configOk = true
+        if FileManager.default.fileExists(atPath: configURL.path) {
+            if let data = try? Data(contentsOf: configURL),
+               (try? JSONDecoder().decode(VaultConfig.self, from: data)) != nil {
+            } else {
+                configOk = false
+                issues.append("Unreadable .retex/config.json")
+            }
+        }
+        let config = configOk ? VaultConfig.load(for: vault) : .default
+
+        let journalURL = UndoHistory.journalURL(for: vault)
+        var journalOk = true
+        if FileManager.default.fileExists(atPath: journalURL.path),
+           let raw = try? String(contentsOf: journalURL, encoding: .utf8) {
+            for line in raw.split(separator: "\n", omittingEmptySubsequences: false) where !line.isEmpty {
+                guard let data = String(line).data(using: .utf8),
+                      (try? JSONDecoder().decode(UndoHistory.Entry.self, from: data)) != nil
+                else {
+                    journalOk = false
+                    issues.append("Corrupt history entry at \(journalURL.path)")
+                    break
+                }
+            }
+        }
+
+
+        return DoctorOutput(
+            vault: vault.url.path,
+            notes: notes.count,
+            archived: notes.filter(\.isArchived).count,
+            configOk: configOk,
+            columns: config.columns.map(\.title),
+            views: config.views.count,
+            journalOk: journalOk,
+            issues: issues
+        )
     }
 
     private static func output<T: Encodable>(
@@ -171,6 +323,8 @@ enum RetexCLI {
         FileHandle.standardError.write(Data(payload.utf8))
     }
 
+    static let schemaVersion = 1
+
     private static let help = """
     Retex CLI. Read and write a Markdown workspace without opening the app.
 
@@ -185,8 +339,14 @@ enum RetexCLI {
       set       Set one or more YAML properties
       move      Move a card to a board list
       archive   Archive a card without deleting its file
-      board     Print the Kanban board
+      board     Print the Kanban board (--view <name> for a saved view)
+      views     List saved views defined in .retex/config.json
       schema    Print the stable Retex record contract
+      undo      Restore a record to its state before the last mutation
+      log       List undo history entries for a record
+      doctor    Validate vault structure, config, and history journal
+      watch     Stream file-change events for a vault (Ctrl-C to stop)
+      mcp       Run the MCP server on stdio (JSON-RPC 2.0)
 
     EXAMPLES
       retex list --vault ~/Documents/CRM --type deal --json
@@ -194,10 +354,15 @@ enum RetexCLI {
       retex create --vault ./CRM --type deal --title "Acme redesign" --status Inbox --set owner=Sam --set tags="[crm, priority]" --json
       retex set ./CRM/Deals/acme-redesign.md status=Qualified due=2026-08-01 --json
       retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
-      retex board --vault ./CRM --json
+      retex board --vault ./CRM --view pipeline --json
+      retex undo ./CRM/Deals/acme-redesign.md --json
+      retex doctor --vault ./CRM --json
+      retex watch --vault ./CRM --json
+      retex mcp --vault ./CRM
 
     OPTIONS
-      --vault <path>    Vault directory
+      --vault <path>    Vault directory (required by most commands)
+      --view <name>     Saved view name for board
       --json            Stable machine-readable output
       --all             Include archived records
       --help            Show this help
@@ -247,6 +412,7 @@ private struct Invocation {
     }
 
     var isJSON: Bool { flag("json") }
+    var hasVault: Bool { option("vault") != nil }
 
     func flag(_ name: String) -> Bool { flags.contains(name) }
     func option(_ name: String) -> String? { options[name]?.last }
@@ -305,10 +471,23 @@ private struct Invocation {
             .standardizedFileURL
     }
 }
-
 private struct SuccessResponse<T: Encodable>: Encodable {
+
     let ok = true
     let data: T
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case schemaVersion = "schema_version"
+        case data
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(true, forKey: .ok)
+        try container.encode(RetexCLI.schemaVersion, forKey: .schemaVersion)
+        try container.encode(data, forKey: .data)
+    }
 }
 
 private struct NoteSummary: Encodable {
@@ -344,7 +523,14 @@ private struct FailureResponse: Encodable {
     }
 
     let ok = false
+    let schemaVersion = RetexCLI.schemaVersion
     let error: Detail
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case schemaVersion = "schema_version"
+        case error
+    }
 }
 
 private struct NoteDetail: Encodable {
@@ -384,6 +570,39 @@ private struct SchemaOutput: Encodable {
     let recordTypes: [String]
     let coreProperties: [String]
     let statuses: [String]
+    let views: [String]?
+}
+
+private struct ViewsOutput: Encodable {
+    let views: [ViewSummary]
+}
+
+private struct ViewSummary: Encodable {
+    let name: String
+    let type: String?
+    let status: String?
+    let tag: String?
+}
+
+private struct HistoryOutput: Encodable {
+    let entries: [HistorySummary]
+}
+
+private struct HistorySummary: Encodable {
+    let path: String
+    let timestamp: Date
+    let bytes: Int
+}
+
+private struct DoctorOutput: Encodable {
+    let vault: String
+    let notes: Int
+    let archived: Int
+    let configOk: Bool
+    let columns: [String]
+    let views: Int
+    let journalOk: Bool
+    let issues: [String]
 }
 
 private struct UsageError: LocalizedError {

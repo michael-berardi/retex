@@ -22,8 +22,10 @@ runtime dependency.
 - Search titles, bodies, properties, and labels.
 - Edit notes with atomic writes while preserving unknown YAML properties.
 - Create, filter, rank, move, and archive Kanban cards without deleting files.
-- Inspect agent-run records and their output.
 - Use the same core operations from the human-readable or JSON CLI.
+- Undo mutations, watch vaults for changes, and define custom board columns
+  and saved views.
+- Drive a vault directly from any MCP host with the built-in MCP server.
 
 ## Requirements
 
@@ -80,16 +82,57 @@ swift run retex set ./CRM/Deals/acme-redesign.md due=2026-08-01 'next_action=Sen
 ```
 
 Available commands are `list`, `search`, `show`, `create`, `set`, `move`,
-`archive`, `board`, and `schema`. Run `swift run retex schema` for the record
-types, core properties, and board statuses understood by the current build.
+`archive`, `board`, `views`, `schema`, `undo`, `log`, `doctor`, `watch`, and
+`mcp`. Run `swift run retex schema` for the record types, core properties, and
+board statuses understood by the current build.
+
+- **Undo** — every mutation records the file's previous content in
+  `<vault>/.retex/history.jsonl` (capped at 50 entries per file, so total
+  journal size scales with how many distinct files a vault touches). Cross-
+  process safe: an MCP server and CLI runs against one vault serialize their
+  journal writes through an advisory lock. `retex undo <file>` restores it;
+  `retex log <file>` lists the journal.
+- **Saved views** — `<vault>/.retex/config.json` can define custom board
+  columns and named views:
+
+```json
+{
+  "columns": [{ "title": "Backlog", "statuses": ["Inbox", "New"] }],
+  "views": [{ "name": "pipeline", "type": "deal", "status": "Proposal" }]
+}
+```
+
+Use them with `retex board --view pipeline`, list with `retex views`, and
+validate a vault's structure, config, and journal with `retex doctor`.
+
+### Watching
+
+`retex watch --vault ./CRM` streams change batches until Ctrl-C. With
+`--json`, each batch is one line: `{"changed":["Notes/foo.md", ...]}`.
+Internal `.retex/` state never appears in the stream.
+
+### MCP server
+
+Retex ships a zero-dependency MCP (Model Context Protocol) server so any MCP
+host can drive a vault directly over stdio:
+
+```bash
+swift run retex mcp --vault ./CRM
+```
+
+Tools: `list_notes`, `search_notes`, `read_note`, `create_note`,
+`set_property`, `move_card`, `archive_note`, and `get_board`. Responses use
+newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
 
 ### JSON output
 
-Successful JSON responses use this envelope:
+Successful JSON responses use this envelope (`schema_version` is bumped when
+the contract changes):
 
 ```json
 {
   "ok": true,
+  "schema_version": 1,
   "data": {}
 }
 ```
@@ -100,12 +143,41 @@ failures exit with code 74. Failures use the same machine-readable contract:
 ```json
 {
   "ok": false,
+  "schema_version": 1,
   "error": {
     "code": 64,
     "message": "list requires --vault <folder>"
   }
 }
 ```
+
+Exit codes: `0` success, `64` invalid usage, `74` file or storage failure.
+
+## Project status
+
+Implemented today:
+
+- Multi-vault workspace navigation
+- Search across titles, bodies, properties, and labels
+- Markdown editing with atomic writes
+- Kanban card creation, editing, filtering, labels, owners, values, due dates,
+  checklists, drag-and-drop movement, ordering, and non-destructive archiving
+- Agent-run records with status changes and output inspection
+- Human-readable and JSON CLI output with a versioned machine-readable envelope
+- Undo history (`retex undo`, `retex log`) backed by a per-vault journal
+- Custom board columns and saved views via `.retex/config.json`
+- Vault health checks (`retex doctor`)
+- FSEvents-based file watching (`retex watch`) that ignores internal state
+- An MCP server (`retex mcp`) exposing the vault to any MCP host
+- A 38-test XCTest suite covering parsing, mutations, the CLI contract,
+  undo, config, watching, and the MCP server
+
+Not yet shipped:
+
+- A distributable signed release or auto-update channel
+- An iOS application target
+- A disposable full-text index for very large vaults (plain scans stay fast)
+- Optional encrypted sync
 
 ## Data API (Markdown contract)
 

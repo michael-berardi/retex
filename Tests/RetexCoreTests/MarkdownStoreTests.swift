@@ -1,0 +1,194 @@
+import XCTest
+@testable import RetexCore
+
+final class MarkdownStoreTests: XCTestCase {
+    private var vaultDir: URL!
+
+    override func setUpWithError() throws {
+        vaultDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: vaultDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: vaultDir)
+    }
+
+    private func writeNote(_ name: String, _ source: String) throws -> URL {
+        let url = vaultDir.appendingPathComponent(name)
+        try source.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    // MARK: - Parsing
+
+    func testParsesFlatFrontmatterAndInlineTags() throws {
+        let url = try writeNote("deal.md", """
+        ---
+        title: Acme website rebuild
+        type: deal
+        status: Proposal
+        rank: 3
+        value: $11500
+        tags: [website, priority]
+        archived: false
+        ---
+
+        # Acme website rebuild
+
+        Body text.
+        """)
+
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.title, "Acme website rebuild")
+        XCTAssertEqual(note.type, .deal)
+        XCTAssertEqual(note.status, "Proposal")
+        XCTAssertEqual(note.rank, 3)
+        XCTAssertEqual(note.value, "$11500")
+        XCTAssertEqual(note.tags, ["website", "priority"])
+        XCTAssertFalse(note.isArchived)
+        XCTAssertTrue(note.body.hasPrefix("# Acme website rebuild"))
+    }
+
+    func testParsesDashListTagsAndQuotedValues() throws {
+        let url = try writeNote("note.md", """
+        ---
+        title: Quoted
+        status: "Won"
+        tags:
+          - alpha
+          - beta
+        ---
+
+        Body.
+        """)
+
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.status, "Won")
+        XCTAssertEqual(note.tags, ["alpha", "beta"])
+    }
+
+    func testPreservesUnknownProperties() throws {
+        let url = try writeNote("note.md", """
+        ---
+        title: Unknowns
+        type: note
+        custom_field: keep me
+        another: 42
+        ---
+
+        Body.
+        """)
+
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.metadata["custom_field"], "keep me")
+        XCTAssertEqual(note.metadata["another"], "42")
+    }
+
+    func testNoteWithoutFrontmatterFallsBackToHeadingTitle() throws {
+        let url = try writeNote("plain.md", "# My Heading\n\nBody only.")
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.title, "My Heading")
+        XCTAssertEqual(note.type, .note)
+        XCTAssertEqual(note.status, "Unsorted")
+    }
+
+    func testNormalizesCRLFLineEndings() throws {
+        let url = try writeNote("crlf.md", "---\r\ntitle: CRLF\r\ntype: task\r\n---\r\n\r\nBody.\r\n")
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.title, "CRLF")
+        XCTAssertEqual(note.body, "Body.")
+    }
+
+    // MARK: - Roundtrip mutations
+
+    func testUpdateMetadataPreservesUnknownKeysAndBody() throws {
+        let store = MarkdownStore()
+        var note = try store.createNote(
+            in: Vault(url: vaultDir),
+            folder: "Notes",
+            title: "Roundtrip",
+            metadata: ["type": "task", "custom": "preserve"],
+            body: "# Roundtrip\n\n- [x] done\n- [ ] pending"
+        )
+
+        note = try store.load(note.url)
+        try store.updateMetadata(["status": "Qualified"], for: note)
+
+        let reloaded = try store.load(note.url)
+        XCTAssertEqual(reloaded.status, "Qualified")
+        XCTAssertEqual(reloaded.metadata["custom"], "preserve")
+        XCTAssertTrue(reloaded.body.contains("- [x] done"))
+        XCTAssertFalse(reloaded.body.contains("---"))
+    }
+
+    func testSetPropertyReplacesExistingValue() throws {
+        let store = MarkdownStore()
+        let note = try store.createNote(
+            in: Vault(url: vaultDir), folder: "Deals",
+            title: "Replace", metadata: ["type": "deal", "status": "Inbox"], body: "b"
+        )
+        let loaded = try store.load(note.url)
+        try store.updateMetadata(["status": "Won", "rank": "7"], for: loaded)
+
+        let updated = try store.load(note.url)
+        XCTAssertEqual(updated.status, "Won")
+        XCTAssertEqual(updated.rank, 7)
+    }
+
+    func testCreateSlugifiesAndDeduplicatesFileNames() throws {
+        let store = MarkdownStore()
+        let vault = Vault(url: vaultDir)
+        let first = try store.createNote(in: vault, folder: "Notes", title: "Élan Café!", metadata: [:], body: "")
+        let second = try store.createNote(in: vault, folder: "Notes", title: "Elan Cafe?", metadata: [:], body: "")
+
+        XCTAssertEqual(first.url.deletingPathExtension().lastPathComponent, "elan-cafe")
+        XCTAssertEqual(second.url.deletingPathExtension().lastPathComponent, "elan-cafe-2")
+    }
+
+    func testScanSkipsNonMarkdownAndSortsDeterministically() throws {
+        try writeNote("a-note.md", "---\ntitle: A\n---\nbody")
+        try writeNote("ignored.txt", "not markdown")
+        try FileManager.default.createDirectory(
+            at: vaultDir.appendingPathComponent("Sub"),
+            withIntermediateDirectories: true
+        )
+        try "—\ntitle: B\n—\n".data(using: .utf8)!.write(to: vaultDir.appendingPathComponent("Sub/b.md"))
+
+        let notes = try MarkdownStore().scan(Vault(url: vaultDir))
+        XCTAssertEqual(notes.count, 2)
+        XCTAssertEqual(notes.map(\.title).sorted(), ["A", "b"])
+        // b.md has an em-dash frontmatter (invalid) so it parses as plain note titled "b".
+        XCTAssertEqual(notes.map { $0.url.lastPathComponent }.sorted(), ["a-note.md", "b.md"])
+    }
+
+    func testSaveBodyKeepsFrontmatterIntact() throws {
+        let store = MarkdownStore()
+        let note = try store.createNote(
+            in: Vault(url: vaultDir), folder: "Notes",
+            title: "Body Swap", metadata: ["type": "note", "keep": "yes"], body: "old"
+        )
+        let loaded = try store.load(note.url)
+        try store.saveBody("brand new body", for: loaded)
+
+        let updated = try store.load(note.url)
+        XCTAssertEqual(updated.body, "brand new body")
+        XCTAssertEqual(updated.metadata["keep"], "yes")
+    }
+}
+
+final class ChecklistProgressTests: XCTestCase {
+    func testCountsCompletedChecklistItems() {
+        let note = Note(
+            url: URL(fileURLWithPath: "/tmp/x.md"),
+            source: "---\ntitle: t\n---\nbody",
+            title: "t",
+            body: "- [x] one\n- [ ] two\n  - [X] nested\nnot a task\n- [three]",
+            metadata: [:],
+            tags: [],
+            modifiedAt: Date()
+        )
+        XCTAssertEqual(note.checklistProgress.completed, 2)
+        XCTAssertEqual(note.checklistProgress.total, 3)
+    }
+}
