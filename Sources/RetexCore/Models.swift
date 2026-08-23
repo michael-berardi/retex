@@ -83,39 +83,6 @@ public enum NoteType: String, CaseIterable, Sendable, Codable {
     }
 }
 
-public enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
-    case overview
-    case board
-    case notes
-    case agents
-    case compare
-    case architecture
-
-    public var id: Self { self }
-
-    public var label: String {
-        switch self {
-        case .overview: "Overview"
-        case .board: "Pipeline"
-        case .notes: "Notes"
-        case .agents: "Agent activity"
-        case .compare: "Retex vs. Obsidian"
-        case .architecture: "Architecture"
-        }
-    }
-
-    public var symbol: String {
-        switch self {
-        case .overview: "rectangle.3.group"
-        case .board: "rectangle.split.3x1"
-        case .notes: "doc.text"
-        case .agents: "waveform.path.ecg"
-        case .compare: "arrow.left.arrow.right"
-        case .architecture: "cpu"
-        }
-    }
-}
-
 public struct BoardColumn: Identifiable, Hashable, Sendable {
     public let title: String
     public let statuses: Set<String>
@@ -134,17 +101,3 @@ public struct BoardColumn: Identifiable, Hashable, Sendable {
     ]
 }
 
-public struct ComparisonRow: Identifiable, Sendable {
-    public let capability: String
-    public let retex: String
-    public let obsidian: String
-    public let advantage: String
-    public var id: String { capability }
-
-    public init(capability: String, retex: String, obsidian: String, advantage: String) {
-        self.capability = capability
-        self.retex = retex
-        self.obsidian = obsidian
-        self.advantage = advantage
-    }
-}

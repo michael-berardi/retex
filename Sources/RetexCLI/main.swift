@@ -191,6 +191,37 @@ enum RetexCLI {
             let vault = try invocation.vault()
             try MCPServer(vault: vault).run()
 
+        case "export":
+            let vault = try invocation.vault()
+            let destination = try invocation.requiredOption("out")
+            let passphrase = try Self.passphrase(invocation)
+            let archive = try VaultCrypto.makeArchive(vaultURL: vault.url)
+            let blob = try VaultCrypto().encrypt(archive, passphrase: passphrase)
+            try blob.write(
+                to: URL(fileURLWithPath: NSString(string: destination).expandingTildeInPath),
+                options: .atomic
+            )
+            try output(ExportOutput(destination: destination, bytes: blob.count), json: invocation.isJSON) { _ in
+                "Encrypted vault written to \(destination) (\(blob.count) bytes)"
+            }
+
+        case "import":
+            let source = try invocation.requiredOption("from")
+            let into = try invocation.requiredOption("into")
+            let passphrase = try Self.passphrase(invocation)
+            let blob = try Data(contentsOf: URL(fileURLWithPath: NSString(string: source).expandingTildeInPath))
+            let archive = try VaultCrypto().decrypt(blob, passphrase: passphrase)
+            let count = try VaultCrypto.restoreArchive(archive, into: URL(fileURLWithPath: NSString(string: into).expandingTildeInPath, isDirectory: true))
+            try output(ImportOutput(into: into, notes: count), json: invocation.isJSON) { _ in
+                "Restored \(count) notes into \(into)"
+            }
+
+        case "update":
+            try runUpdate(invocation)
+
+        case "version":
+            print(RetexCLI.version)
+
         case "watch":
             let vault = try invocation.vault()
             try runWatch(vault, json: invocation.isJSON)
@@ -209,6 +240,81 @@ enum RetexCLI {
 
         default:
             throw UsageError("Unknown command: \(invocation.command ?? "")")
+        }
+    }
+
+    private static func promptPassphrase() throws -> String {
+        FileHandle.standardError.write(Data("Passphrase: ".utf8))
+        guard let line = String(data: FileHandle.standardInput.availableData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
+            throw UsageError("A non-empty passphrase is required")
+        }
+        return line
+    }
+
+    private static func passphrase(_ invocation: Invocation) throws -> String {
+        // Passphrase comes from --passphrase-env or an interactive prompt;
+        // command-line values would leak through process listings.
+        if let envVar = invocation.option("passphrase-env"),
+           let value = ProcessInfo.processInfo.environment[envVar], !value.isEmpty {
+            return value
+        }
+        return try promptPassphrase()
+    }
+
+    private static func runUpdate(_ invocation: Invocation) throws {
+        let checker = UpdateChecker()
+        let current = RetexCLI.version
+        let release = try checker.latestRelease()
+        guard UpdateChecker.isNewer(releaseTag: release.tag, current: current) else {
+            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil),
+                       json: invocation.isJSON) { _ in
+                "Already on the latest version (\(current))"
+            }
+            return
+        }
+
+        let tarball = try checker.download(release.assetURL)
+        let sumsBody = String(decoding: try checker.download(release.checksumsURL), as: UTF8.self)
+        guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: "retex-universal.tar.gz") else {
+            throw UsageError("Release checksums do not list retex-universal.tar.gz")
+        }
+        let actual = UpdateChecker.sha256(of: tarball)
+        guard actual == expected.lowercased() else {
+            throw UsageError("Checksum mismatch: expected \(expected), got \(actual)")
+        }
+
+        // Swap the running binary atomically; keep the old one for rollback.
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        let previous = URL(fileURLWithPath: executable.path + ".previous")
+        let fm = FileManager.default
+        if fm.fileExists(atPath: previous.path) { try fm.removeItem(at: previous) }
+        try fm.copyItem(at: executable, to: previous)
+        let workDir = fm.temporaryDirectory.appendingPathComponent("retex-update-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+        let tarPath = workDir.appendingPathComponent("retex-universal.tar.gz")
+        try tarball.write(to: tarPath, options: .atomic)
+        let extract = Process()
+        extract.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        extract.arguments = ["-xzf", tarPath.path, "-C", workDir.path]
+        try extract.run()
+        extract.waitUntilExit()
+        guard extract.terminationStatus == 0,
+              let newBinary = (try? fm.contentsOfDirectory(atPath: workDir.path))?
+                  .first(where: { $0 == "retex" })
+                  .map({ workDir.appendingPathComponent($0) }),
+              fm.fileExists(atPath: newBinary.path)
+        else {
+            throw UsageError("Release archive did not contain a retex binary")
+        }
+        try fm.removeItem(at: executable)
+        try fm.copyItem(at: newBinary, to: executable)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        try? fm.removeItem(at: workDir)
+
+        try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: true, path: executable.path),
+                   json: invocation.isJSON) { _ in
+            "Updated \(executable.path): \(current) -> \(release.tag). Rollback available at \(previous.path)"
         }
     }
 
@@ -324,6 +430,7 @@ enum RetexCLI {
     }
 
     static let schemaVersion = 1
+    static let version = "0.2.0"
 
     private static let help = """
     Retex CLI. Read and write a Markdown workspace without opening the app.
@@ -347,6 +454,10 @@ enum RetexCLI {
       doctor    Validate vault structure, config, and history journal
       watch     Stream file-change events for a vault (Ctrl-C to stop)
       mcp       Run the MCP server on stdio (JSON-RPC 2.0)
+      export    Encrypt the vault into a portable file (sync by any channel)
+      import    Decrypt and restore an encrypted vault export
+      update    Check GitHub releases and upgrade this binary (verified)
+      version   Print the CLI version
 
     EXAMPLES
       retex list --vault ~/Documents/CRM --type deal --json
@@ -359,10 +470,19 @@ enum RetexCLI {
       retex doctor --vault ./CRM --json
       retex watch --vault ./CRM --json
       retex mcp --vault ./CRM
+      retex export --vault ./CRM --out backup.retex --passphrase-env VAULT_PASS
+      retex import --from backup.retex --into ~/Vaults/restored --passphrase-env VAULT_PASS
+      retex update
 
     OPTIONS
       --vault <path>    Vault directory (required by most commands)
       --view <name>     Saved view name for board
+      --out <file>      Destination for export
+      --from <file>     Source encrypted file for import
+      --into <dir>      Restore target directory for import
+      --passphrase-env <VAR>
+                        Environment variable holding the passphrase (never a
+                        command-line value; prompts if omitted)
       --json            Stable machine-readable output
       --all             Include archived records
       --help            Show this help
@@ -603,6 +723,23 @@ private struct DoctorOutput: Encodable {
     let views: Int
     let journalOk: Bool
     let issues: [String]
+}
+
+private struct ExportOutput: Encodable {
+    let destination: String
+    let bytes: Int
+}
+
+private struct ImportOutput: Encodable {
+    let into: String
+    let notes: Int
+}
+
+private struct UpdateOutput: Encodable {
+    let currentVersion: String
+    let latestVersion: String
+    let updated: Bool
+    let path: String?
 }
 
 private struct UsageError: LocalizedError {

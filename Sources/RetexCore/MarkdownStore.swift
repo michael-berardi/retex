@@ -212,7 +212,6 @@ public struct MarkdownStore {
 
 public enum StoreError: LocalizedError {
     case unreadableVault(URL)
-    case missingSampleVault
     case invalidTitle
     case corruptHistory(URL)
     case historyUnwritable(URL)
@@ -220,7 +219,6 @@ public enum StoreError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unreadableVault(let url): "Retex could not read \(url.path)."
-        case .missingSampleVault: "The bundled Sample CRM fixture is missing."
         case .invalidTitle: "A note title cannot be empty."
         case .corruptHistory(let url): "Retex found a corrupt undo journal entry at \(url.path)."
         case .historyUnwritable(let url): "Retex could not write the undo journal at \(url.path)."

@@ -5,21 +5,17 @@ import PackageDescription
 let package = Package(
     name: "Retex",
     platforms: [
-        // The current app and CLI run on macOS; iOS is the shared UI/model baseline.
         .macOS(.v14),
+        // RetexCore and the CLI also compile for iOS 17; the vault reader UI
+        // is a future product and will consume this package.
         .iOS(.v17),
     ],
     products: [
-        .executable(name: "RetexApp", targets: ["Retex"]),
         .executable(name: "retex", targets: ["RetexCLI"]),
+        .library(name: "RetexCore", targets: ["RetexCore"]),
     ],
     targets: [
         .target(name: "RetexCore"),
-        .executableTarget(
-            name: "Retex",
-            dependencies: ["RetexCore"],
-            resources: [.copy("Resources/SampleVaults")]
-        ),
         .executableTarget(
             name: "RetexCLI",
             dependencies: ["RetexCore"]
