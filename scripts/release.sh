@@ -57,12 +57,14 @@ TARBALL="$OUT/retex-universal.zip"
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   echo "==> Notarize"
   xcrun notarytool submit "$TARBALL" --keychain-profile "$NOTARY_PROFILE" --wait
-  echo "==> Staple the binary (stapler works on Mach-O, not zips)"
+  # Best-effort: stapler cannot staple flat executables reliably; the zip is
+  # already Apple-accepted and Gatekeeper verifies tickets online for CLI
+  # tools distributed this way.
   STAGE="$BUILD/stage"
   mkdir -p "$STAGE"
   ditto -x -k "$TARBALL" "$STAGE"
-  xcrun stapler staple "$STAGE/retex"
-  xcrun stapler validate "$STAGE/retex"
+  xcrun stapler staple "$STAGE/retex" \
+    || echo "WARN: staple unavailable for flat binary; notarization ticket verifies online"
   rm -f "$TARBALL"
   (cd "$STAGE" && zip -qry "$TARBALL" retex README.md LICENSE)
 else
