@@ -17,7 +17,14 @@ public struct MarkdownStore {
 
         var notes: [Note] = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            notes.append(try load(url))
+            // Skip symlinks and anything unreadable: one dangling agent
+            // symlink must not zero out an entire vault view.
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true
+            else { continue }
+            if let note = try? load(url) {
+                notes.append(note)
+            }
         }
 
         return notes.sorted {

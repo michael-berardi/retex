@@ -192,3 +192,23 @@ final class ChecklistProgressTests: XCTestCase {
         XCTAssertEqual(note.checklistProgress.total, 3)
     }
 }
+
+final class ScanResilienceTests: XCTestCase {
+    func testScanSkipsDanglingSymlinksInsteadOfFailing() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-scan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try "---\ntitle: Real\n---\nbody".write(to: dir.appendingPathComponent("real.md"),
+                                                  atomically: true, encoding: .utf8)
+        // Dangling symlink, the exact shape of broken agent-memory links.
+        try FileManager.default.createSymbolicLink(
+            atPath: dir.appendingPathComponent("ghost.md").path,
+            withDestinationPath: "/nonexistent/target-xyz.md"
+        )
+
+        let notes = try MarkdownStore().scan(Vault(url: dir))
+        XCTAssertEqual(notes.map(\.title), ["Real"], "One dangling symlink must not zero out the scan")
+    }
+}
