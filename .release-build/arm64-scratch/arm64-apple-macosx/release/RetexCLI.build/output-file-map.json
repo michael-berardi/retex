@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/RetexCLI.d",
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/RetexCLI.o",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/primary.swiftdeps"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCLI/main.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.dia"
+  }
+}

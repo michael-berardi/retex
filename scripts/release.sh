@@ -49,12 +49,8 @@ codesign --verify --strict --verbose=1 "$BIN_DIR/retex"
 
 echo "==> Package"
 cp README.md LICENSE "$BIN_DIR/"
-TARBALL="$OUT/retex-universal.tar.gz"
-tar -czf "$TARBALL" -C "$BIN_DIR" retex README.md LICENSE
-
-cat > "$OUT/SHA256SUMS" <<EOF
-$(shasum -a 256 "$TARBALL" | awk '{print $1"  retex-universal.tar.gz"}')
-EOF
+TARBALL="$OUT/retex-universal.zip"
+(cd "$BIN_DIR" && zip -qry "$TARBALL" retex README.md LICENSE)
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   echo "==> Notarize + staple"
@@ -64,6 +60,12 @@ else
   echo "==> Skipping notarization (set NOTARY_PROFILE to enable)"
 fi
 
+# Checksums cover the final artifact (post-staple).
+cat > "$OUT/SHA256SUMS" <<EOF
+$(shasum -a 256 "$TARBALL" | awk '{print $1"  retex-universal.zip"}')
+EOF
+
 echo "==> Verify checksums"
 (cd "$OUT" && shasum -a 256 -c SHA256SUMS)
+if [[ -n "${NOTARY_PROFILE:-}" ]]; then xcrun stapler validate "$TARBALL"; fi
 echo "==> Done: $OUT"

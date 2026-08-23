@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/RetexCLITests.d",
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/RetexCLITests.o",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/primary.swiftdeps"
+  },
+  "/Users/libertydesignstudio/dev/retex/Tests/RetexCLITests/RetexCLITests.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/RetexCLITests.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/RetexCLITests~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/RetexCLITests.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCLITests.build/RetexCLITests.dia"
+  }
+}

@@ -49,9 +49,14 @@ swift build
 .build/debug/retex --help
 ```
 
-Or grab a signed release binary from the
-[Releases](https://github.com/michael-berardi/retex/releases) page and put it
-on your `PATH`. Every release asset ships with a SHA-256 checksum file.
+Or grab a signed, notarized release from the
+[Releases](https://github.com/michael-berardi/retex/releases) page:
+
+```bash
+shasum -a 256 -c SHA256SUMS      # verify the download
+unzip retex-universal.zip        # retex binary + docs
+sudo mv retex /usr/local/bin/
+```
 
 ## CLI
 
@@ -253,10 +258,6 @@ Implemented today:
 
 Not yet shipped:
 
-- Apple notarization of release binaries (binaries are Developer ID–signed;
-  notarization lands as soon as App Store Connect credentials are stored —
-  see the release script)
-- A vault reader UI (planned separate product)
 - A disposable full-text index for very large vaults (plain scans stay fast)
 - Optional encrypted sync server
 
@@ -271,7 +272,7 @@ changes.
 ## Security
 
 Report vulnerabilities privately via GitHub Security Advisories rather than
-public issues. Release assets are Developer ID–signed and checksummed; verify
+public issues. Release assets are Developer ID–signed, notarized, and stapled; verify
 the `SHA256SUMS` file before installing.
 
 ## License

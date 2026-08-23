@@ -1,0 +1,1219 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.xctest/Contents/MacOS/RetexPackageTests",
+      "packagePath" : "/Users/libertydesignstudio/dev/retex",
+      "productName" : "RetexPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.RetexCLI-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/sources",
+      "importPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCLI/main.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "RetexCLI",
+      "moduleOutputPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCLI.swiftmodule",
+      "objects" : [
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "10",
+        "-serialize-diagnostics",
+        "-O",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "RetexCLI_main",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "retex"
+      ],
+      "outputFileMapPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCLI.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCLI/main.swift"
+      ],
+      "tempsPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.RetexCLITests-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/sources",
+      "importPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCLITests/RetexCLITests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/retex"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RetexCLITests",
+      "moduleOutputPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCLITests.swiftmodule",
+      "objects" : [
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/RetexCLITests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "10",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/index/store",
+        "-O",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "retex"
+      ],
+      "outputFileMapPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/RetexCLITests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCLITests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCLITests/RetexCLITests.swift"
+      ],
+      "tempsPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.RetexCore-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/sources",
+      "importPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MCPServer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MarkdownStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/Models.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UndoHistory.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UpdateChecker.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultConfig.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultCrypto.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultWatcher.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RetexCore",
+      "moduleOutputPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCore.swiftmodule",
+      "objects" : [
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MCPServer.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MarkdownStore.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/Models.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UndoHistory.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UpdateChecker.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultConfig.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultCrypto.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultWatcher.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "10",
+        "-serialize-diagnostics",
+        "-O",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/include/RetexCore-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "retex"
+      ],
+      "outputFileMapPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MCPServer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MarkdownStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/Models.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UndoHistory.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UpdateChecker.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultConfig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultCrypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultWatcher.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCore.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MCPServer.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MarkdownStore.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/Models.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UndoHistory.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UpdateChecker.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultConfig.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultCrypto.swift",
+        "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultWatcher.swift"
+      ],
+      "tempsPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.RetexCoreTests-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/sources",
+      "importPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/LockedBox.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPServerTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPTestHarness.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MarkdownStoreTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultCryptoTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultFeatureTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RetexCoreTests",
+      "moduleOutputPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCoreTests.swiftmodule",
+      "objects" : [
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/LockedBox.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MCPServerTests.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MCPTestHarness.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MarkdownStoreTests.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/VaultCryptoTests.swift.o",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/VaultFeatureTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "10",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/index/store",
+        "-O",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "retex"
+      ],
+      "outputFileMapPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/LockedBox.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MCPServerTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MCPTestHarness.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MarkdownStoreTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/VaultCryptoTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/VaultFeatureTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCoreTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/LockedBox.swift",
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPServerTests.swift",
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPTestHarness.swift",
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MarkdownStoreTests.swift",
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultCryptoTests.swift",
+        "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultFeatureTests.swift"
+      ],
+      "tempsPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.RetexPackageTests-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/sources",
+      "importPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCoreTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexCLITests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "RetexPackageTests",
+      "moduleOutputPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "10",
+        "-serialize-diagnostics",
+        "-O",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/include/RetexPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "retex"
+      ],
+      "outputFileMapPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules/RetexPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build",
+      "wholeModuleOptimization" : true
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "RetexCLI" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RetexCLI",
+      "-package-name",
+      "retex",
+      "-c",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCLI/main.swift",
+      "-I",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "10",
+      "-serialize-diagnostics",
+      "-O",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "RetexCLI_main",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "retex",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RetexCLITests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RetexCLITests",
+      "-package-name",
+      "retex",
+      "-c",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCLITests/RetexCLITests.swift",
+      "-I",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "10",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/index/store",
+      "-O",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "retex",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RetexCore" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RetexCore",
+      "-package-name",
+      "retex",
+      "-c",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MCPServer.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MarkdownStore.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/Models.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UndoHistory.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UpdateChecker.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultConfig.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultCrypto.swift",
+      "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultWatcher.swift",
+      "-I",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "10",
+      "-serialize-diagnostics",
+      "-O",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/include/RetexCore-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "retex",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RetexCoreTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RetexCoreTests",
+      "-package-name",
+      "retex",
+      "-c",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/LockedBox.swift",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPServerTests.swift",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPTestHarness.swift",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MarkdownStoreTests.swift",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultCryptoTests.swift",
+      "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultFeatureTests.swift",
+      "-I",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "10",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/index/store",
+      "-O",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "retex",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "RetexPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "RetexPackageTests",
+      "-package-name",
+      "retex",
+      "-c",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "10",
+      "-serialize-diagnostics",
+      "-O",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/include/RetexPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "retex",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "RetexCLI" : [
+      "RetexCore"
+    ],
+    "RetexCLITests" : [
+      "RetexCLI",
+      "RetexCore"
+    ],
+    "RetexCore" : [
+
+    ],
+    "RetexCoreTests" : [
+      "RetexCore"
+    ],
+    "RetexPackageTests" : [
+      "RetexCLITests",
+      "RetexCLI",
+      "RetexCoreTests",
+      "RetexCore"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCLI/main.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/sources"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCLITests/RetexCLITests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/sources"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MCPServer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MarkdownStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/Models.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UndoHistory.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UpdateChecker.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultConfig.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultCrypto.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultWatcher.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/sources"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/LockedBox.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPServerTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MCPTestHarness.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/MarkdownStoreTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultCryptoTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/Tests/RetexCoreTests/VaultFeatureTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/sources"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/sources"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLITests.build/RetexCLITests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MCPServer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MarkdownStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/Models.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UndoHistory.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UpdateChecker.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultConfig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultCrypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultWatcher.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/LockedBox.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MCPServerTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MCPTestHarness.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/MarkdownStoreTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/VaultCryptoTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCoreTests.build/VaultFeatureTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.build/runner.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/retex.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCLI.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MCPServer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/MarkdownStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/Models.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UndoHistory.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/UpdateChecker.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultConfig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultCrypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/RetexCore.build/VaultWatcher.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/retex.product/Objects.LinkFileList"
+    },
+    "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/libertydesignstudio/dev/retex/.release-build/arm64-scratch/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

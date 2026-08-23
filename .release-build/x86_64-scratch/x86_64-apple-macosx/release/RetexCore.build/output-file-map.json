@@ -1,0 +1,55 @@
+{
+  "": {
+    "dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/RetexCore.d",
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/RetexCore.o",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/primary.swiftdeps"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MCPServer.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MCPServer.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MCPServer~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MCPServer.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MCPServer.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/MarkdownStore.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MarkdownStore.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MarkdownStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MarkdownStore.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/MarkdownStore.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/Models.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/Models.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/Models~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/Models.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/Models.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UndoHistory.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UndoHistory.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UndoHistory~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UndoHistory.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UndoHistory.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/UpdateChecker.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UpdateChecker.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UpdateChecker~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UpdateChecker.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/UpdateChecker.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultConfig.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultConfig.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultConfig~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultConfig.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultConfig.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultCrypto.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultCrypto.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultCrypto~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultCrypto.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultCrypto.dia"
+  },
+  "/Users/libertydesignstudio/dev/retex/Sources/RetexCore/VaultWatcher.swift": {
+    "object": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultWatcher.swift.o",
+    "swiftmodule": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultWatcher~partial.swiftmodule",
+    "swift-dependencies": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultWatcher.swiftdeps",
+    "diagnostics": "/Users/libertydesignstudio/dev/retex/.release-build/x86_64-scratch/x86_64-apple-macosx/release/RetexCore.build/VaultWatcher.dia"
+  }
+}
