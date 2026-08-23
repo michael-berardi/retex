@@ -55,9 +55,16 @@ TARBALL="$OUT/retex-universal.zip"
 (cd "$BIN_DIR" && zip -qry "$TARBALL" retex README.md LICENSE)
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-  echo "==> Notarize + staple"
+  echo "==> Notarize"
   xcrun notarytool submit "$TARBALL" --keychain-profile "$NOTARY_PROFILE" --wait
-  xcrun stapler staple "$TARBALL"
+  echo "==> Staple the binary (stapler works on Mach-O, not zips)"
+  STAGE="$BUILD/stage"
+  mkdir -p "$STAGE"
+  ditto -x -k "$TARBALL" "$STAGE"
+  xcrun stapler staple "$STAGE/retex"
+  xcrun stapler validate "$STAGE/retex"
+  rm -f "$TARBALL"
+  (cd "$STAGE" && zip -qry "$TARBALL" retex README.md LICENSE)
 else
   echo "==> Skipping notarization (set NOTARY_PROFILE to enable)"
 fi
@@ -69,5 +76,4 @@ EOF
 
 echo "==> Verify checksums"
 (cd "$OUT" && shasum -a 256 -c SHA256SUMS)
-if [[ -n "${NOTARY_PROFILE:-}" ]]; then xcrun stapler validate "$TARBALL"; fi
 echo "==> Done: $OUT"
