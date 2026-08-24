@@ -500,7 +500,7 @@ public struct MCPServer {
             ),
             ToolDefinition(
                 name: "get_stats",
-                description: "Vault statistics: total notes, archived count, per-type histogram.",
+                description: "Vault statistics: total notes (archived included), separate archived count, per-type histogram (includes archived).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([:]),

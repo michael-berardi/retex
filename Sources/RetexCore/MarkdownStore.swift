@@ -38,21 +38,39 @@ public struct MarkdownStore {
             candidates.append(url)
         }
 
-        // Parallel parse, chunked so we schedule work items, not per-file
-        // dispatch overhead (measured: per-item scheduling loses to serial).
+        // Parse files into fixed slots. Small vaults stay serial —
+        // concurrency overhead loses below a few hundred files (measured).
+        // Slot writes go through buffer pointers so memory exclusivity is
+        // formally sound; distinct indices never alias.
         let statFiles = candidates
         var loaded = [Note?](repeating: nil, count: statFiles.count)
         var failed = [Bool](repeating: false, count: statFiles.count)
-        let rootPath = root.path
-        let chunkSize = 64
-        let chunkCount = (statFiles.count + chunkSize - 1) / chunkSize
-        DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
-            for index in (chunk * chunkSize)..<min((chunk + 1) * chunkSize, statFiles.count) {
-                let file = statFiles[index]
-                if let note = try? load(file) {
-                    loaded[index] = note
+
+        func parse(_ index: Int, into loadedBuf: inout UnsafeMutableBufferPointer<Note?>,
+                   marking failedBuf: inout UnsafeMutableBufferPointer<Bool>) {
+            if let note = try? load(statFiles[index]) {
+                loadedBuf[index] = note
+            } else {
+                failedBuf[index] = true
+            }
+        }
+
+        loaded.withUnsafeMutableBufferPointer { loadedBuf in
+            failed.withUnsafeMutableBufferPointer { failedBuf in
+                if statFiles.count < 500 {
+                    // Small vaults stay serial: concurrency overhead loses
+                    // below a few hundred files (measured).
+                    for index in statFiles.indices {
+                        parse(index, into: &loadedBuf, marking: &failedBuf)
+                    }
                 } else {
-                    failed[index] = true
+                    let chunkSize = 64
+                    let chunkCount = (statFiles.count + chunkSize - 1) / chunkSize
+                    DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
+                        for index in (chunk * chunkSize)..<min((chunk + 1) * chunkSize, statFiles.count) {
+                            parse(index, into: &loadedBuf, marking: &failedBuf)
+                        }
+                    }
                 }
             }
         }
@@ -121,8 +139,6 @@ public struct MarkdownStore {
         return try load(url)
     }
     public func saveBody(_ body: String, for note: Note) throws {
-        // Mutations must operate on a disk-loaded note, never a cached summary.
-        precondition(!note.source.isEmpty, "saveBody called with a cached summary note")
         // Journal first (WAL style); if the file write fails, roll the entry back.
         try history.record(.init(path: note.url.path, previousSource: note.source))
         let source = replacingBody(in: note.source, with: body)

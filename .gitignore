@@ -5,3 +5,4 @@ release/
 .release-build/
 .swiftpm/
 *.xcuserstate
+.bench-*/
