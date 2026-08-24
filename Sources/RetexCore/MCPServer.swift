@@ -101,13 +101,15 @@ public struct MCPServer {
     }
 
     private struct Params: Decodable {
-        private enum CodingKeys: String, CodingKey { case name, arguments }
+        let protocolVersion: String?
+        private enum CodingKeys: String, CodingKey { case name, arguments, protocolVersion }
 
         let name: String?
         let arguments: [String: FlexibleValue]?
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            protocolVersion = try container.decodeIfPresent(String.self, forKey: .protocolVersion)
             name = try container.decodeIfPresent(String.self, forKey: .name)
             if let raw = try? container.decodeIfPresent([String: FlexibleValue].self, forKey: .arguments) {
                 arguments = raw
@@ -166,8 +168,14 @@ public struct MCPServer {
 
         switch request.method {
         case "initialize":
+            // Negotiate: echo the client's requested revision when retex's
+            // tool surface supports it; newer SDKs otherwise drop the
+            // response and hang on version mismatch.
+            let requested = request.params?.protocolVersion ?? ""
+            let supported = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+            let negotiated = supported.contains(requested) ? requested : "2024-11-05"
             writeResponse(id: id, result: .object([
-                "protocolVersion": .string("2024-11-05"),
+                "protocolVersion": .string(negotiated),
                 "capabilities": .object([
                     "tools": .object([:])
                 ]),
