@@ -17,10 +17,20 @@ public struct MarkdownStore {
         try scanWithDiagnostics(vault).notes
     }
 
-    /// Search raw Markdown first, then parse only matching notes. This avoids
-    /// frontmatter parsing, metadata allocation, file stats, and sorting work
-    /// for the overwhelming majority of non-matching files.
-    public func search(_ vault: Vault, query: String) throws -> [Note] {
+    /// Search raw Markdown first, then parse only matching notes. Exact mode
+    /// preserves the stable phrase-search contract. Ranked mode matches every
+    /// whitespace-delimited term and sorts title/path/property hits before body
+    /// hits for bounded agent retrieval.
+    public func search(
+        _ vault: Vault,
+        query: String,
+        ranked: Bool = false,
+        limit: Int? = nil
+    ) throws -> [Note] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
+        if let limit, limit <= 0 { throw StoreError.invalidLimit }
+
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -35,9 +45,12 @@ public struct MarkdownStore {
             candidates.append(url)
         }
         let files = candidates
-        let asciiNeedle = query.utf8.allSatisfy { $0 < 0x80 }
-            ? query.utf8.map(Self.foldASCII)
-            : nil
+        let terms = ranked
+            ? normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
+            : [normalizedQuery]
+        let asciiNeedles: [[UInt8]?] = terms.map { term in
+            term.utf8.allSatisfy { $0 < 0x80 } ? term.utf8.map(Self.foldASCII) : nil
+        }
 
         var matches = [Note?](repeating: nil, count: files.count)
         matches.withUnsafeMutableBufferPointer { matchesBuffer in
@@ -47,21 +60,28 @@ public struct MarkdownStore {
                 let url = files[index]
                 guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
                 let filename = url.deletingPathExtension().lastPathComponent
-                let decoded = asciiNeedle == nil ? String(data: data, encoding: .utf8) : nil
-                let isMatch: Bool
-                if let asciiNeedle {
-                    isMatch = Self.containsASCIIInsensitive(Data(filename.utf8), needle: asciiNeedle)
-                        || Self.containsASCIIInsensitive(data, needle: asciiNeedle)
-                } else {
-                    isMatch = filename.range(
-                        of: query,
-                        options: [.caseInsensitive, .diacriticInsensitive]
-                    ) != nil || decoded?.range(
-                        of: query,
-                        options: [.caseInsensitive, .diacriticInsensitive]
-                    ) != nil
+                let filenameData = Data(filename.utf8)
+                var decoded: String?
+
+                for (termIndex, term) in terms.enumerated() {
+                    let isMatch: Bool
+                    if let needle = asciiNeedles[termIndex] {
+                        isMatch = Self.containsASCIIInsensitive(filenameData, needle: needle)
+                            || Self.containsASCIIInsensitive(data, needle: needle)
+                    } else {
+                        if decoded == nil { decoded = String(data: data, encoding: .utf8) }
+                        isMatch = filename.range(
+                            of: term,
+                            options: [.caseInsensitive, .diacriticInsensitive]
+                        ) != nil || decoded?.range(
+                            of: term,
+                            options: [.caseInsensitive, .diacriticInsensitive]
+                        ) != nil
+                    }
+                    if !isMatch { return }
                 }
-                guard isMatch, let source = decoded ?? String(data: data, encoding: .utf8) else { return }
+
+                guard let source = decoded ?? String(data: data, encoding: .utf8) else { return }
                 matchesBox.value[index] = try? selfBox.value.note(from: source, at: url)
             }
 
@@ -78,11 +98,21 @@ public struct MarkdownStore {
             }
         }
 
-        return matches.compacted().sorted { a, b in
-            if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
-            if a.title != b.title { return a.title < b.title }
-            return a.url.path < b.url.path
+        let found = matches.compacted()
+        let sorted: [Note]
+        if ranked {
+            let phrase = Self.foldedForRanking(normalizedQuery)
+            let foldedTerms = terms.map(Self.foldedForRanking)
+            sorted = found.map { note in
+                (note, Self.relevanceScore(note, phrase: phrase, terms: foldedTerms))
+            }.sorted { left, right in
+                if left.1 != right.1 { return left.1 > right.1 }
+                return Self.precedes(left.0, right.0)
+            }.map(\.0)
+        } else {
+            sorted = found.sorted(by: Self.precedes)
         }
+        return limit.map { Array(sorted.prefix($0)) } ?? sorted
     }
 
     private static func foldASCII(_ byte: UInt8) -> UInt8 {
@@ -105,6 +135,46 @@ public struct MarkdownStore {
             }
             return false
         }
+    }
+
+    private static func foldedForRanking(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+    }
+
+    private static func relevanceScore(_ note: Note, phrase: String, terms: [String]) -> Int {
+        let title = foldedForRanking(note.title)
+        let filename = foldedForRanking(note.url.deletingPathExtension().lastPathComponent)
+        let path = foldedForRanking(note.url.path)
+        let tags = note.tags.map(foldedForRanking)
+        let metadata = note.metadata.map { (foldedForRanking($0.key), foldedForRanking($0.value)) }
+        let body = foldedForRanking(note.body)
+        var score = 0
+
+        if title == phrase { score += 10_000 }
+        else if title.contains(phrase) { score += 4_000 }
+        if filename == phrase { score += 3_000 }
+        else if filename.contains(phrase) { score += 1_500 }
+        if tags.contains(phrase) { score += 1_000 }
+        if metadata.contains(where: { $0.0 == phrase || $0.1 == phrase }) { score += 800 }
+
+        for term in terms {
+            if title.contains(term) { score += 300 }
+            if filename.contains(term) { score += 200 }
+            if tags.contains(where: { $0.contains(term) }) { score += 120 }
+            if metadata.contains(where: { $0.0.contains(term) || $0.1.contains(term) }) { score += 80 }
+            if path.contains(term) { score += 40 }
+            if body.contains(term) { score += 10 }
+        }
+        return score
+    }
+
+    private static func precedes(_ a: Note, _ b: Note) -> Bool {
+        if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
+        if a.title != b.title { return a.title < b.title }
+        return a.url.path < b.url.path
     }
 
     /// Full scan with per-file diagnostics. Files are loaded in parallel;
@@ -226,10 +296,12 @@ public struct MarkdownStore {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { throw StoreError.invalidTitle }
 
-        let directory = vault.url.appendingPathComponent(folder, isDirectory: true)
+        let directory = try confinedDirectory(in: vault, folder: folder)
+        let orderedMetadata = metadata.merging(["title": cleanTitle]) { current, _ in current }
+        try validateMetadata(orderedMetadata)
+        _ = try UndoHistory.prepare(for: vault)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = uniqueURL(in: directory, title: cleanTitle)
-        let orderedMetadata = metadata.merging(["title": cleanTitle]) { current, _ in current }
         let frontmatter = orderedMetadata.keys.sorted().map {
             "\($0): \(serializedScalar(orderedMetadata[$0, default: ""]))"
         }
@@ -255,6 +327,7 @@ public struct MarkdownStore {
     }
 
     public func updateMetadata(_ updates: [String: String], for note: Note) throws {
+        try validateMetadata(updates)
         // Journal first (WAL style); if the file write fails, roll the entry back.
         try history.record(.init(path: note.url.path, previousSource: note.source))
         var lines = normalizedLines(note.source)
@@ -352,6 +425,42 @@ public struct MarkdownStore {
         return "\"\(value.replacingOccurrences(of: "\"", with: "\\\""))\""
     }
 
+    private func confinedDirectory(in vault: Vault, folder: String) throws -> URL {
+        let expanded = NSString(string: folder).expandingTildeInPath
+        guard !expanded.hasPrefix("/") else { throw StoreError.folderOutsideVault }
+        let root = vault.url.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = root.appendingPathComponent(expanded, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path == root.path || candidate.path.hasPrefix(rootPrefix) else {
+            throw StoreError.folderOutsideVault
+        }
+        return candidate
+    }
+
+    private func validateMetadata(_ metadata: [String: String]) throws {
+        let letters = CharacterSet.letters
+        let allowed = letters.union(.decimalDigits).union(CharacterSet(charactersIn: "_-"))
+        for (key, value) in metadata {
+            let scalars = key.unicodeScalars
+            guard !scalars.isEmpty,
+                  key.utf8.count <= 128,
+                  scalars.first.map({ letters.contains($0) || $0 == "_" }) == true,
+                  scalars.allSatisfy(allowed.contains)
+            else {
+                throw StoreError.invalidMetadataKey(key)
+            }
+            guard value.utf8.count <= 65_536,
+                  !value.contains("\n"),
+                  !value.contains("\r"),
+                  !value.contains("\0")
+            else {
+                throw StoreError.invalidMetadataValue(key)
+            }
+        }
+    }
+
     private func uniqueURL(in directory: URL, title: String) -> URL {
         let stem = slug(title)
         var candidate = directory.appendingPathComponent(stem).appendingPathExtension("md")
@@ -375,6 +484,12 @@ public struct MarkdownStore {
 public enum StoreError: LocalizedError {
     case unreadableVault(URL)
     case invalidTitle
+    case invalidQuery
+    case invalidLimit
+    case invalidMetadataKey(String)
+    case invalidMetadataValue(String)
+    case folderOutsideVault
+    case pathOutsideVault(URL)
     case corruptHistory(URL)
     case historyUnwritable(URL)
 
@@ -382,6 +497,12 @@ public enum StoreError: LocalizedError {
         switch self {
         case .unreadableVault(let url): "Retex could not read \(url.path)."
         case .invalidTitle: "A note title cannot be empty."
+        case .invalidQuery: "A search query cannot be empty."
+        case .invalidLimit: "A result limit must be greater than zero."
+        case .invalidMetadataKey(let key): "Unsupported front-matter property name: \(key)."
+        case .invalidMetadataValue(let key): "Front-matter property \(key) contains an unsupported value."
+        case .folderOutsideVault: "A note folder must stay within the vault."
+        case .pathOutsideVault(let url): "A Markdown path escapes the vault: \(url.path)."
         case .corruptHistory(let url): "Retex found a corrupt undo journal entry at \(url.path)."
         case .historyUnwritable(let url): "Retex could not write the undo journal at \(url.path)."
         }

@@ -42,6 +42,88 @@ class TokenTests(unittest.TestCase):
             gateway.TOKENS = original
 
 
+class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
+    async def invoke(self, body: bytes, declared_length: int) -> tuple[int, bool, list[tuple[bytes, bytes]]]:
+        called = False
+
+        async def app(_scope, receive, send):
+            nonlocal called
+            called = True
+            await receive()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/plain")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        messages = iter(
+            [
+                {"type": "http.request", "body": body, "more_body": False},
+            ]
+        )
+
+        async def receive():
+            return next(messages, {"type": "http.disconnect"})
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        original = gateway.TOKENS
+        gateway.TOKENS = ("a" * 32,)
+        try:
+            await gateway.security_middleware(app)(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "scheme": "https",
+                    "headers": [
+                        (b"authorization", b"Bearer " + b"a" * 32),
+                        (b"content-length", str(declared_length).encode()),
+                    ],
+                },
+                receive,
+                send,
+            )
+        finally:
+            gateway.TOKENS = original
+
+        start = next(message for message in sent if message["type"] == "http.response.start")
+        return start["status"], called, start["headers"]
+
+    async def test_rejects_actual_body_larger_than_declared(self) -> None:
+        status, called, _headers = await self.invoke(b"unexpected", declared_length=1)
+        self.assertEqual(status, 400)
+        self.assertFalse(called)
+
+    async def test_rejects_actual_body_over_limit(self) -> None:
+        body = b"x" * (gateway.MAX_REQUEST_BYTES + 1)
+        status, called, _headers = await self.invoke(
+            body,
+            declared_length=gateway.MAX_REQUEST_BYTES,
+        )
+        self.assertEqual(status, 413)
+        self.assertFalse(called)
+
+    async def test_adds_api_security_headers(self) -> None:
+        status, called, headers = await self.invoke(b"{}", declared_length=2)
+        self.assertEqual(status, 200)
+        self.assertTrue(called)
+        names = {name.lower() for name, _value in headers}
+        self.assertTrue(
+            {
+                b"cache-control",
+                b"x-content-type-options",
+                b"strict-transport-security",
+                b"content-security-policy",
+                b"referrer-policy",
+            }.issubset(names)
+        )
+
 class VaultValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -67,6 +149,15 @@ class VaultValidationTests(unittest.TestCase):
     def test_rejects_known_secret_patterns(self) -> None:
         self.write_note("token: " + "s" * 32)
         with self.assertRaisesRegex(ValueError, "secret assignment"):
+            validate_vault.validate(self.root)
+
+    def test_rejects_telegram_tokens_and_credentialed_urls(self) -> None:
+        self.write_note("bot " + "1234567890:" + "A" * 35)
+        with self.assertRaisesRegex(ValueError, "Telegram"):
+            validate_vault.validate(self.root)
+
+        self.write_note("endpoint https://user:long-password-value@example.com/api")
+        with self.assertRaisesRegex(ValueError, "credentialed URL"):
             validate_vault.validate(self.root)
 
     def test_rejects_non_markdown_files(self) -> None:

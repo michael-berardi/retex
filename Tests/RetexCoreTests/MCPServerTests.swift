@@ -192,6 +192,39 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(search["count"] as? String, "1")
     }
 
+    func testSearchSupportsRankedAllTermQueriesAndLimits() throws {
+        _ = try store.createNote(
+            in: Vault(url: vaultDir),
+            folder: "Notes",
+            title: "Retex release process",
+            metadata: [:],
+            body: "Safe upgrade instructions."
+        )
+        _ = try store.createNote(
+            in: Vault(url: vaultDir),
+            folder: "Notes",
+            title: "General operations",
+            metadata: [:],
+            body: "The release process for Retex is documented here."
+        )
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"search_notes","arguments":{"query":"Retex release","ranked":true,"limit":1}}}"#,
+        ], readOnly: true)
+        let search = try toolPayload(try resultText(responses[0]))
+        XCTAssertEqual(search["count"] as? String, "1")
+        XCTAssertTrue((search["notes"] as? String)?.contains("Retex release process") ?? false)
+        XCTAssertFalse((search["notes"] as? String)?.contains("General operations") ?? true)
+    }
+
+    func testSearchRejectsInvalidLimits() throws {
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":37,"method":"tools/call","params":{"name":"search_notes","arguments":{"query":"rebuild","limit":0}}}"#,
+        ], readOnly: true)
+        let result = try XCTUnwrap(responses[0]["result"] as? [String: Any])
+        XCTAssertEqual(result["isError"] as? Bool, true)
+    }
+
     func testReadNoteTool() throws {
         let path = vaultDir.appendingPathComponent("Deals/acme-redesign.md").path
         let responses = try call([
@@ -249,6 +282,13 @@ final class MCPServerTests: XCTestCase {
         let error = try XCTUnwrap(responses[0]["error"] as? [String: Any])
         XCTAssertEqual(error["code"] as? Int, -32700)
         XCTAssertTrue(responses[0]["id"] is NSNull, "Parse errors carry a null id")
+    }
+
+    func testOversizedRequestIsRejectedBeforeDecoding() throws {
+        let responses = try call([String(repeating: "x", count: 1_048_577)])
+        let error = try XCTUnwrap(responses[0]["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? Int, -32700)
+        XCTAssertTrue((error["message"] as? String)?.contains("1048576") ?? false)
     }
 
     func testUnknownMethodReturnsMethodNotFound() throws {

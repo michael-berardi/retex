@@ -145,6 +145,28 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(results.first?["title"] as? String, "Needle Note")
     }
 
+    func testRankedSearchMatchesAllTermsAndHonorsLimit() throws {
+        try run([
+            "create"] + vaultArg + [
+                "--title", "Retex release process",
+                "--body", "Safe upgrade instructions",
+            ])
+        try run([
+            "create"] + vaultArg + [
+                "--title", "General operations",
+                "--body", "The release process for Retex is documented here",
+            ])
+
+        let (status, out, _) = try run([
+            "search", "Retex release"] + vaultArg + [
+                "--ranked", "--limit", "1", "--json",
+            ])
+        XCTAssertEqual(status, 0)
+        let results = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [[String: Any]])
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?["title"] as? String, "Retex release process")
+    }
+
     func testBoardGroupsDealsByColumn() throws {
         try run(["create"] + vaultArg + ["--type", "deal", "--title", "Board Card", "--status", "Qualified"])
         let (_, out, _) = try run(["board"] + vaultArg + ["--json"])
@@ -212,6 +234,17 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(unknown.status, 64)
     }
 
+    func testInitCreatesPrivateVaultStateIdempotently() throws {
+        for _ in 0..<2 {
+            let (status, out, _) = try run(["init"] + vaultArg + ["--json"])
+            XCTAssertEqual(status, 0)
+            XCTAssertEqual(try jsonEnvelope(out)["ok"] as? Bool, true)
+        }
+        let state = vaultDir.appendingPathComponent(".retex", isDirectory: true)
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
+
     func testDoctorReportsHealthyVault() throws {
         try run(["create"] + vaultArg + ["--title", "Doctor Note"])
         let (_, out, _) = try run(["doctor"] + vaultArg + ["--json"])
@@ -220,6 +253,22 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(report["configOk"] as? Bool, true)
         XCTAssertEqual(report["journalOk"] as? Bool, true)
         XCTAssertEqual((report["issues"] as? [String])?.count ?? -1, 0)
+    }
+
+    func testStrictDoctorFailsWhenJournalIsCorrupt() throws {
+        let state = vaultDir.appendingPathComponent(".retex", isDirectory: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        try "{not-json}\n".write(
+            to: state.appendingPathComponent("history.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let (status, out, _) = try run(["doctor"] + vaultArg + ["--strict", "--json"])
+        XCTAssertNotEqual(status, 0)
+        let report = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
+        XCTAssertEqual(report["journalOk"] as? Bool, false)
+        XCTAssertFalse((report["issues"] as? [String] ?? []).isEmpty)
     }
 
     func testSchemaReflectsCustomStatusesWhenVaultGiven() throws {

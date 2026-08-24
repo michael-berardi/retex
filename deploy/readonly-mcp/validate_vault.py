@@ -14,6 +14,8 @@ SECRET_PATTERNS = {
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     "Google API key": re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b"),
     "Slack token": re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
+    "Telegram bot token": re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b"),
+    "credentialed URL": re.compile(r"https?://[^/\s:@]+:[^/\s@]{8,}@[A-Za-z0-9.-]+"),
     "secret assignment": re.compile(
         r"(?im)^\s*(?:api[_-]?key|client[_-]?secret|password|private[_-]?key|secret|token)"
         r"\s*[:=]\s*[\"']?(?!<|\$\{|example\b|replace\b|your[_-])[^\s\"']{16,}"

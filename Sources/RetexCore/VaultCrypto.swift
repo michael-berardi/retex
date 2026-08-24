@@ -39,10 +39,12 @@ public struct VaultCrypto {
 
     /// Collects every `.md` file under `vaultURL` into a portable archive blob.
     public static func makeArchive(vaultURL: URL) throws -> Data {
-        let root = vaultURL.standardizedFileURL
+        let lexicalRoot = vaultURL.standardizedFileURL
+        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
+        let rootPrefix = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
         guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: nil,
+            at: lexicalRoot,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             throw StoreError.unreadableVault(vaultURL)
@@ -50,8 +52,12 @@ public struct VaultCrypto {
 
         var files: [ArchivedFile] = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            let content = try String(contentsOf: url, encoding: .utf8)
-            let relative = String(url.standardizedFileURL.path.dropFirst(root.path.count + 1))
+            let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
+            guard resolved.path == resolvedRoot.path || resolved.path.hasPrefix(rootPrefix) else {
+                throw StoreError.pathOutsideVault(url)
+            }
+            let content = try String(contentsOf: resolved, encoding: .utf8)
+            let relative = String(url.standardizedFileURL.path.dropFirst(lexicalRoot.path.count + 1))
             files.append(ArchivedFile(path: relative, content: content))
         }
         files.sort { $0.path < $1.path }
@@ -65,17 +71,35 @@ public struct VaultCrypto {
         let files = try JSONDecoder().decode([ArchivedFile].self, from: data)
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let root = dir.standardizedFileURL.path
+        let lexicalRoot = dir.standardizedFileURL
+        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
+        let rootPrefix = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
+        var seen: Set<String> = []
 
         for file in files {
-            let target = dir.appendingPathComponent(file.path).standardizedFileURL
-            guard target.path.hasPrefix(root + "/") else {
-                throw StoreError.invalidTitle // path traversal attempt
+            let relative = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !relative.isEmpty,
+                  !relative.hasPrefix("/"),
+                  URL(fileURLWithPath: relative).pathExtension.lowercased() == "md",
+                  seen.insert(relative).inserted
+            else {
+                throw StoreError.pathOutsideVault(URL(fileURLWithPath: file.path))
             }
-            try fm.createDirectory(
-                at: target.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+
+            let target = lexicalRoot.appendingPathComponent(relative).standardizedFileURL
+            let lexicalPrefix = lexicalRoot.path.hasSuffix("/") ? lexicalRoot.path : lexicalRoot.path + "/"
+            guard target.path.hasPrefix(lexicalPrefix) else {
+                throw StoreError.pathOutsideVault(target)
+            }
+            let parent = target.deletingLastPathComponent()
+            try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            let resolvedParent = parent.resolvingSymlinksInPath()
+            guard resolvedParent.path == resolvedRoot.path || resolvedParent.path.hasPrefix(rootPrefix) else {
+                throw StoreError.pathOutsideVault(target)
+            }
+            if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                throw StoreError.pathOutsideVault(target)
+            }
             try file.content.write(to: target, atomically: true, encoding: .utf8)
         }
         return files.count

@@ -79,6 +79,14 @@ public struct MCPServer {
             while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
                 let lineData = buffer[buffer.startIndex..<newline]
                 buffer.removeSubrange(buffer.startIndex...newline)
+                guard lineData.count <= 1_048_576 else {
+                    writeLine([
+                        "jsonrpc": "2.0",
+                        "id": NSNull(),
+                        "error": ["code": -32700, "message": "Request exceeds 1048576 bytes"],
+                    ])
+                    continue
+                }
                 let raw = String(data: Data(lineData), encoding: .utf8)?
                     .trimmingCharacters(in: .whitespaces) ?? ""
                 guard !raw.isEmpty else { continue }
@@ -93,6 +101,14 @@ public struct MCPServer {
                     continue
                 }
                 handle(request)
+            }
+            if buffer.count > 1_048_576 {
+                writeLine([
+                    "jsonrpc": "2.0",
+                    "id": NSNull(),
+                    "error": ["code": -32700, "message": "Request exceeds 1048576 bytes"],
+                ])
+                buffer.removeAll(keepingCapacity: false)
             }
         }
     }
@@ -133,6 +149,17 @@ public struct MCPServer {
         case string(String)
         case number(Double)
         case bool(Bool)
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let value = try? container.decode(String.self) {
+                self = .string(value)
+            } else if let value = try? container.decode(Bool.self) {
+                self = .bool(value)
+            } else {
+                self = .number(try container.decode(Double.self))
+            }
+        }
 
         var stringValue: String {
             switch self {
@@ -284,6 +311,9 @@ public struct MCPServer {
             var notes = try notesInVault()
             if let type = arg("type") { notes = notes.filter { $0.type.rawValue == type } }
             if !((arg("archived") ?? "false").lowercased() == "true") { notes = notes.filter { !$0.isArchived } }
+            if let limit = try positiveLimit(arg("limit")) {
+                notes = Array(notes.prefix(limit))
+            }
             return .stringDict([
                 "count": String(notes.count),
                 "notes": notes.map { "\($0.title)\t\($0.url.path)" }.joined(separator: "\n"),
@@ -291,8 +321,16 @@ public struct MCPServer {
 
         case "search_notes":
             guard let query = arg("query") else { throw ToolError(message: "search_notes requires query") }
-            let notes = try store.search(vault, query: query).filter { note in
+            let requestedLimit = try positiveLimit(arg("limit"))
+            var notes = try store.search(
+                vault,
+                query: query,
+                ranked: (arg("ranked") ?? "false").lowercased() == "true"
+            ).filter { note in
                 (try? confinedURL(note.url.path)) != nil
+            }
+            if let requestedLimit {
+                notes = Array(notes.prefix(requestedLimit))
             }
             return .stringDict([
                 "count": String(notes.count),
@@ -390,6 +428,14 @@ public struct MCPServer {
         }
     }
 
+    private func positiveLimit(_ raw: String?) throws -> Int? {
+        guard let raw else { return nil }
+        guard let limit = Int(raw), (1...1_000).contains(limit) else {
+            throw ToolError(message: "limit must be an integer from 1 through 1000")
+        }
+        return limit
+    }
+
     // MARK: - Output
 
     private func writeResponse(id: Id, result: JSONValue) {
@@ -465,21 +511,26 @@ public struct MCPServer {
         let definitions = [
             ToolDefinition(
                 name: "list_notes",
-                description: "List records in the vault. Optional: type (note|contact|deal|task|agent-run), archived (true|false).",
+                description: "List records in the vault. Optional: type, archived, and limit (1-1000).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "type": .object(["type": .string("string")]),
                         "archived": .object(["type": .string("boolean")]),
+                        "limit": .object(["type": .string("integer")]),
                     ]),
                 ])
             ),
             ToolDefinition(
                 name: "search_notes",
-                description: "Full-text search across titles, bodies, properties, and tags.",
+                description: "Search titles, bodies, properties, and tags. Set ranked=true for all-term relevance ordering; use limit to bound agent context.",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["query": .object(["type": .string("string")])]),
+                    "properties": .object([
+                        "query": .object(["type": .string("string")]),
+                        "ranked": .object(["type": .string("boolean")]),
+                        "limit": .object(["type": .string("integer")]),
+                    ]),
                     "required": .array([.string("query")]),
                 ])
             ),
