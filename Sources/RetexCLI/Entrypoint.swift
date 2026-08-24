@@ -64,12 +64,7 @@ enum RetexCLI {
         case "search":
             let query = try invocation.positional(0, named: "query")
             let vault = try invocation.vault()
-            let notes = try store.scan(vault).filter { note in
-                note.title.localizedCaseInsensitiveContains(query)
-                    || note.body.localizedCaseInsensitiveContains(query)
-                    || note.metadata.values.contains { $0.localizedCaseInsensitiveContains(query) }
-                    || note.tags.contains { $0.localizedCaseInsensitiveContains(query) }
-            }
+            let notes = try store.search(vault, query: query)
             try output(notes.map(NoteSummary.init), json: invocation.isJSON) {
                 $0.map { "\($0.title)\n  \($0.path)" }.joined(separator: "\n")
             }
