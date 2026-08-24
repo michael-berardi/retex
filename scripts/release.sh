@@ -42,6 +42,9 @@ lipo -create \
   "$BUILD/x86_64-scratch/release/retex" \
   -output "$BIN_DIR/retex"
 
+echo "==> Strip local symbols"
+strip -x "$BIN_DIR/retex"
+
 echo "==> Codesign ($IDENTITY)"
 codesign --force --sign "$IDENTITY" \
   --options runtime \

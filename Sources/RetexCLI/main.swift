@@ -222,6 +222,22 @@ enum RetexCLI {
         case "version":
             print(RetexCLI.version)
 
+        case "count":
+            let vault = try invocation.vault()
+            var counted = try store.scan(vault)
+            if let type = invocation.option("type") { counted = counted.filter { $0.type.rawValue == type } }
+            let total = counted.count
+            let archivedCount = counted.filter(\.isArchived).count
+            let byType = Dictionary(grouping: counted, by: \.type.rawValue)
+                .mapValues(\.count)
+                .sorted { $0.key < $1.key }
+            let report = CountOutput(notes: total, archived: archivedCount, byType: byType.map { pair in
+                TypeCount(type: pair.key, count: pair.value)
+            })
+            try output(report, json: invocation.isJSON) { _ in
+                "\(total) notes (\(archivedCount) archived)"
+            }
+
         case "watch":
             let vault = try invocation.vault()
             try runWatch(vault, json: invocation.isJSON)
@@ -348,7 +364,10 @@ enum RetexCLI {
         let store = MarkdownStore()
         var notes: [Note] = []
         do {
-            notes = try store.scan(vault)
+            // Single walk: notes and unreadable diagnostics come together.
+            let result = try store.scanWithDiagnostics(vault)
+            notes = result.notes
+            issues.append(contentsOf: result.unreadable.map { "Unreadable note: \($0)" })
         } catch {
             issues.append("Scan failed: \(error.localizedDescription)")
         }
@@ -380,21 +399,6 @@ enum RetexCLI {
             }
         }
 
-
-        // Surface unreadable Markdown entries (dangling symlinks, permission
-        // issues) that scan skips — diagnostics, not fatal.
-        if let enumerator = FileManager.default.enumerator(
-            at: vault.url,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) {
-            for case let url as URL in enumerator
-            where url.pathExtension.lowercased() == "md" {
-                if (try? String(contentsOf: url, encoding: .utf8)) == nil {
-                    issues.append("Unreadable note: \(url.path)")
-                }
-            }
-        }
 
         return DoctorOutput(
             vault: vault.url.path,
@@ -464,6 +468,7 @@ enum RetexCLI {
       board     Print the Kanban board (--view <name> for a saved view)
       views     List saved views defined in .retex/config.json
       schema    Print the stable Retex record contract
+      count     Fast note counts (--type filter supported)
       undo      Restore a record to its state before the last mutation
       log       List undo history entries for a record
       doctor    Validate vault structure, config, and history journal
@@ -755,6 +760,17 @@ private struct UpdateOutput: Encodable {
     let latestVersion: String
     let updated: Bool
     let path: String?
+}
+
+private struct CountOutput: Encodable {
+    let notes: Int
+    let archived: Int
+    let byType: [TypeCount]
+}
+
+private struct TypeCount: Encodable {
+    let type: String
+    let count: Int
 }
 
 private struct UsageError: LocalizedError {
