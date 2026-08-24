@@ -29,6 +29,7 @@ public struct UpdateChecker {
     public func latestRelease() throws -> Release {
         let api = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
         var request = URLRequest(url: api)
+        request.timeoutInterval = 15
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let (data, response) = try syncRequest(request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -72,9 +73,14 @@ public struct UpdateChecker {
     // MARK: - Download & verify
 
     public func download(_ url: URL) throws -> Data {
-        let (data, response) = try syncRequest(URLRequest(url: url))
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 60
+        let (data, response) = try syncRequest(request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw UpdateError.downloadFailed(url.lastPathComponent)
+        }
+        guard data.count <= 64 * 1024 * 1024 else {
+            throw UpdateError.downloadFailed("\(url.lastPathComponent) exceeds size limit")
         }
         return data
     }

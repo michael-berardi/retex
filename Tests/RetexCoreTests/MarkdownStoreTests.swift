@@ -212,3 +212,31 @@ final class ScanResilienceTests: XCTestCase {
         XCTAssertEqual(notes.map(\.title), ["Real"], "One dangling symlink must not zero out the scan")
     }
 }
+
+final class ScanDeterminismTests: XCTestCase {
+    func testParallelScanIsDeterministicWithDuplicateTimestamps() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-det-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Same mtime for all files: ordering must fall through to title/path.
+        let when = Date(timeIntervalSince1970: 1_000_000)
+        for name in ["zulu", "alpha", "mike", "bravo"] {
+            let url = dir.appendingPathComponent("\(name).md")
+            try "---\ntitle: \(name)\n---\nbody".write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: when],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let store = MarkdownStore()
+        let first = try store.scan(Vault(url: dir)).map(\.title)
+        // Repeat several times: concurrency must never reorder output.
+        for _ in 0..<5 {
+            XCTAssertEqual(try store.scan(Vault(url: dir)).map(\.title), first)
+        }
+        XCTAssertEqual(first, ["alpha", "bravo", "mike", "zulu"])
+    }
+}

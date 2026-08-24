@@ -7,31 +7,68 @@ public struct MarkdownStore {
     public init() {}
 
     public func scan(_ vault: Vault) throws -> [Note] {
+        try scanWithDiagnostics(vault).notes
+    }
+
+    /// Full scan with per-file diagnostics. Files are loaded in parallel;
+    /// output ordering is deterministic (modifiedAt desc, then title, then
+    /// path — a total order, so concurrency cannot leak into results).
+    public func scanWithDiagnostics(_ vault: Vault) throws -> ScanResult {
+        let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
-            at: vault.url,
+            at: root,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
-            throw StoreError.unreadableVault(vault.url)
+            throw StoreError.unreadableVault(root)
         }
 
-        var notes: [Note] = []
+        // Single enumeration pass: collect candidate files and diagnostics.
+        var candidates: [URL] = []
+        var unreadable: [String] = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            // Skip symlinks and anything unreadable: one dangling agent
-            // symlink must not zero out an entire vault view.
+            // Skip symlinks and other non-regular entries: one dangling agent
+            // symlink must not zero out an entire vault view — but report it.
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
                   values.isRegularFile == true
-            else { continue }
-            if let note = try? load(url) {
-                notes.append(note)
+            else {
+                unreadable.append(url.path)
+                continue
             }
+            candidates.append(url)
         }
 
-        return notes.sorted {
-            if $0.modifiedAt == $1.modifiedAt { return $0.title < $1.title }
-            return $0.modifiedAt > $1.modifiedAt
+        // Parallel parse, chunked so we schedule work items, not per-file
+        // dispatch overhead (measured: per-item scheduling loses to serial).
+        let statFiles = candidates
+        var loaded = [Note?](repeating: nil, count: statFiles.count)
+        var failed = [Bool](repeating: false, count: statFiles.count)
+        let rootPath = root.path
+        let chunkSize = 64
+        let chunkCount = (statFiles.count + chunkSize - 1) / chunkSize
+        DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
+            for index in (chunk * chunkSize)..<min((chunk + 1) * chunkSize, statFiles.count) {
+                let file = statFiles[index]
+                if let note = try? load(file) {
+                    loaded[index] = note
+                } else {
+                    failed[index] = true
+                }
+            }
         }
+        for (index, didFail) in failed.enumerated() where didFail {
+            unreadable.append(statFiles[index].path)
+        }
+
+        var notes = loaded.compacted().sorted { a, b in
+            if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
+            if a.title != b.title { return a.title < b.title }
+            return a.url.path < b.url.path
+        }
+
+        return ScanResult(notes: notes, unreadable: unreadable.sorted())
     }
+
 
     public func load(_ url: URL) throws -> Note {
         let source = try String(contentsOf: url, encoding: .utf8)
@@ -84,6 +121,8 @@ public struct MarkdownStore {
         return try load(url)
     }
     public func saveBody(_ body: String, for note: Note) throws {
+        // Mutations must operate on a disk-loaded note, never a cached summary.
+        precondition(!note.source.isEmpty, "saveBody called with a cached summary note")
         // Journal first (WAL style); if the file write fails, roll the entry back.
         try history.record(.init(path: note.url.path, previousSource: note.source))
         let source = replacingBody(in: note.source, with: body)

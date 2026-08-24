@@ -322,6 +322,19 @@ public struct MCPServer {
             try store.updateMetadata("archived", value: "true", for: note)
             return .stringDict(["archived": url.path])
 
+        case "get_stats":
+            let notes = try store.scan(vault)
+            let byType = Dictionary(grouping: notes, by: \.type.rawValue)
+                .mapValues(\.count)
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }
+                .joined(separator: ", ")
+            return .stringDict([
+                "notes": String(notes.count),
+                "archived": String(notes.filter(\.isArchived).count),
+                "byType": byType,
+            ])
+
         case "get_board":
             let config = VaultConfig.load(for: vault)
             let deals = try store.scan(vault).filter { $0.type == .deal && !$0.isArchived }
@@ -483,6 +496,14 @@ public struct MCPServer {
                     "type": .string("object"),
                     "properties": .object(["path": .object(["type": .string("string")])]),
                     "required": .array([.string("path")]),
+                ])
+            ),
+            ToolDefinition(
+                name: "get_stats",
+                description: "Vault statistics: total notes, archived count, per-type histogram.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
                 ])
             ),
             ToolDefinition(

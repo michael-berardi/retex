@@ -101,3 +101,21 @@ public struct BoardColumn: Identifiable, Hashable, Sendable {
     ]
 }
 
+
+/// Outcome of a vault scan: parsed notes plus diagnostics for entries that
+/// could not be read (dangling symlinks, permission problems).
+public struct ScanResult: Sendable {
+    public let notes: [Note]
+    public let unreadable: [String]
+
+    public init(notes: [Note], unreadable: [String]) {
+        self.notes = notes
+        self.unreadable = unreadable
+    }
+}
+
+extension Array where Element == Note? {
+    func compacted() -> [Note] {
+        filter { $0 != nil }.map { $0! }
+    }
+}

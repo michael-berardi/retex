@@ -78,6 +78,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(names, [
             "list_notes", "search_notes", "read_note", "create_note",
             "set_property", "move_card", "archive_note", "get_board",
+            "get_stats",
         ])
     }
 
