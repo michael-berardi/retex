@@ -14,12 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       "fastmcp==2.12.*" "mcp>=1.12,<1.17"
 
 COPY --from=build /build/.build/release/retex /usr/local/bin/retex
-COPY --from=build /usr/lib/swift/linux /usr/local/lib/swift
+COPY --from=build /usr/lib/swift/linux /usr/lib/swift/linux
 COPY --from=build /build/deploy/readonly-mcp/gateway.py /app/gateway.py
 COPY --from=build /build/deploy/readonly-mcp/validate_vault.py /app/validate_vault.py
 COPY knowledge /data/vault
 
-ENV LD_LIBRARY_PATH=/usr/local/lib/swift \
+ENV LD_LIBRARY_PATH=/usr/lib/swift/linux \
     RETEX_BIN=/usr/local/bin/retex \
     RETEX_VAULT=/data/vault \
     PORT=8080
