@@ -25,6 +25,12 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "FAIL: tracked tree is dirty"; exit 1
 fi
 
+echo "==> Version file check"
+if ! grep -q "static let version = \"$VERSION\"" Sources/RetexCLI/AppVersion.swift; then
+  echo "FAIL: Sources/RetexCLI/AppVersion.swift does not declare version \"$VERSION\"."
+  echo "      Update it, commit, tag, then re-run."; exit 1
+fi
+
 echo "==> Tests"
 swift test >/dev/null
 

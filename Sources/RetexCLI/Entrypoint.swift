@@ -449,7 +449,7 @@ enum RetexCLI {
     }
 
     static let schemaVersion = 1
-    static let version = "0.2.0"
+    static let version = RetexBuild.version
 
     private static let help = """
     Retex CLI. Read and write a Markdown workspace without opening the app.
