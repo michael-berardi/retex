@@ -3,6 +3,9 @@ import CryptoKit
 #else
 import Crypto
 #endif
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Foundation
 
 /// Self-update channel for the `retex` CLI.
