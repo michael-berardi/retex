@@ -23,8 +23,8 @@ final class MCPServerTests: XCTestCase {
         try? FileManager.default.removeItem(at: vaultDir)
     }
 
-    private func call(_ requests: [String]) throws -> [[String: Any]] {
-        let lines = try MCPTestHarness.run(vault: Vault(url: vaultDir), requests: requests)
+    private func call(_ requests: [String], readOnly: Bool = false) throws -> [[String: Any]] {
+        let lines = try MCPTestHarness.run(vault: Vault(url: vaultDir), requests: requests, readOnly: readOnly)
         return try lines.map { line in
             guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
                 throw NSError(domain: "mcp", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not a JSON object: \(line)"])
@@ -80,6 +80,84 @@ final class MCPServerTests: XCTestCase {
             "set_property", "move_card", "archive_note", "get_board",
             "get_stats",
         ])
+    }
+
+    func testReadOnlyModeExposesOnlyReadToolsAndRejectsWrites() throws {
+        let path = vaultDir.appendingPathComponent("Deals/acme-redesign.md").path
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":30,"method":"tools/list","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"set_property","arguments":{"path":"\#(path)","key":"status","value":"Proposal"}}}"#,
+        ], readOnly: true)
+
+        let payload = try XCTUnwrap(responses[0]["result"] as? [String: Any])
+        let tools = try XCTUnwrap(payload["tools"] as? [[String: Any]])
+        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }), [
+            "list_notes", "search_notes", "read_note", "get_board", "get_stats",
+        ])
+        let error = try XCTUnwrap(responses[1]["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? Int, -32602)
+        XCTAssertEqual(try store.load(URL(fileURLWithPath: path)).status, "Inbox")
+    }
+
+    func testReadNoteRefusesPathsOutsideVault() throws {
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-protected-\(UUID().uuidString).md")
+        try "# Protected\n\nDO NOT EXFILTRATE".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"read_note","arguments":{"path":"\#(outside.path)"}}}"#,
+        ], readOnly: true)
+        let result = try XCTUnwrap(responses[0]["result"] as? [String: Any])
+        XCTAssertEqual(result["isError"] as? Bool, true)
+        let text = try resultText(responses[0])
+        XCTAssertTrue(text.contains("within the vault"))
+        XCTAssertFalse(text.contains("DO NOT EXFILTRATE"))
+    }
+
+    func testReadNoteRefusesSymlinkEscapes() throws {
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-protected-\(UUID().uuidString).md")
+        let link = vaultDir.appendingPathComponent("protected.md")
+        try "# Protected\n\nDO NOT EXFILTRATE".write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"read_note","arguments":{"path":"\#(link.path)"}}}"#,
+        ], readOnly: true)
+        let text = try resultText(responses[0])
+        XCTAssertTrue(text.contains("within the vault"))
+        XCTAssertFalse(text.contains("DO NOT EXFILTRATE"))
+    }
+
+    func testSearchDoesNotIndexSymlinksOutsideVault() throws {
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-protected-\(UUID().uuidString).md")
+        let link = vaultDir.appendingPathComponent("protected.md")
+        try "# Protected\n\nDO NOT EXFILTRATE".write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"search_notes","arguments":{"query":"DO NOT EXFILTRATE"}}}"#,
+        ], readOnly: true)
+        let payload = try toolPayload(try resultText(responses[0]))
+        XCTAssertEqual(payload["count"] as? String, "0")
+        XCTAssertFalse(try resultText(responses[0]).contains("DO NOT EXFILTRATE"))
+    }
+
+    func testCreateNoteRefusesFolderTraversal() throws {
+        let folderName = "retex-escaped-\(UUID().uuidString)"
+        let outside = vaultDir.deletingLastPathComponent().appendingPathComponent(folderName)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"create_note","arguments":{"title":"Escaped","folder":"../\#(folderName)"}}}"#,
+        ])
+        let text = try resultText(responses[0])
+        XCTAssertTrue(text.contains("within the vault"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.path))
     }
 
     func testListAndSearchNotesTools() throws {

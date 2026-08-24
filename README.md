@@ -124,16 +124,18 @@ Internal `.retex/` state never appears in the stream.
 ## MCP server
 
 Retex ships a zero-dependency MCP (Model Context Protocol) server so any MCP
-host can drive a vault directly over stdio:
+host can query a vault directly over stdio. MCP is read-only by default:
 
 ```bash
 retex mcp --vault ./CRM
 ```
 
-Tools: `list_notes`, `search_notes`, `read_note`, `create_note`,
-`set_property`, `move_card`, `archive_note`, and `get_board`. Responses use
-newline-delimited JSON-RPC 2.0 (per the MCP stdio transport spec);
-diagnostics go to stderr only.
+The server exposes `list_notes`, `search_notes`, `read_note`, `get_board`, and
+`get_stats`. Mutation tools are rejected even when called directly, and note
+paths are confined to the selected vault after resolving symlinks. A trusted
+local host can explicitly opt into `create_note`, `set_property`, `move_card`,
+and `archive_note` with `--allow-write`; the hosted helper never enables it.
+Responses use newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
 
 Example host configuration (placeholders, no credentials):
 
@@ -147,6 +149,37 @@ Example host configuration (placeholders, no credentials):
   }
 }
 ```
+
+### Hosted read-only helper
+
+`deploy/readonly-mcp/` is the secure default for connecting authenticated
+agents to a curated repository knowledge folder. Copy its `Dockerfile` to
+`.retex/Dockerfile`, add explicitly shareable Markdown under
+`.retex/knowledge/`, and deploy only that directory as the build context:
+
+```bash
+railway up .retex --path-as-root --service retex-project
+```
+
+Every note must opt in through front matter:
+
+```yaml
+---
+shareable: true
+type: note
+---
+```
+
+The image refuses symlinks, hidden files, non-Markdown files, oversized notes,
+notes without the opt-in marker, and common credential patterns. It copies no
+other repository content, runs as a non-root user against a non-writable vault,
+and leaves Retex in its default read-only mode.
+
+Set a random token of at least 32 characters in `RETEX_MCP_TOKEN`. For
+per-agent tokens or rotation, `RETEX_MCP_TOKENS_JSON` accepts a JSON object
+whose values are tokens. Clients send
+`Authorization: Bearer <token>`; tokens are compared in constant time, never
+logged, and every route is denied when authentication is missing or invalid.
 
 ## Encrypted sync
 
@@ -254,7 +287,7 @@ Implemented today:
 - Encrypted export/import on macOS (PBKDF2 + AES-GCM)
 - Self-update with checksum verification, atomic swap, and rollback
 - Versioned JSON envelope on every CLI response
-- 48 XCTests covering parsing, mutations, the CLI contract, undo, config,
+- 54 XCTests covering parsing, mutations, the CLI contract, undo, config,
   watching, crypto, update logic, and the MCP server
 
 Not yet shipped:

@@ -7,13 +7,19 @@ import Foundation
 public struct MCPServer {
     private let vault: Vault
     private let store: MarkdownStore
+    private let readOnly: Bool
     private let input: FileHandle
     private let output: FileHandle
 
-    public init(vault: Vault, store: MarkdownStore = MarkdownStore()) {
+    public init(
+        vault: Vault,
+        store: MarkdownStore = MarkdownStore(),
+        readOnly: Bool = true
+    ) {
         self.init(
             vault: vault,
             store: store,
+            readOnly: readOnly,
             input: .standardInput,
             output: .standardOutput
         )
@@ -23,11 +29,13 @@ public struct MCPServer {
     init(
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
+        readOnly: Bool = true,
         input: FileHandle,
         output: FileHandle
     ) {
         self.vault = vault
         self.store = store
+        self.readOnly = readOnly
         self.input = input
         self.output = output
     }
@@ -243,6 +251,29 @@ public struct MCPServer {
         }
     }
 
+    private func confinedURL(_ path: String, markdownOnly: Bool = true) throws -> URL {
+        let root = vault.url.standardizedFileURL.resolvingSymlinksInPath()
+        let expanded = NSString(string: path).expandingTildeInPath
+        let unresolved = expanded.hasPrefix("/")
+            ? URL(fileURLWithPath: expanded)
+            : root.appendingPathComponent(expanded)
+        let candidate = unresolved.standardizedFileURL.resolvingSymlinksInPath()
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path == root.path || candidate.path.hasPrefix(rootPrefix) else {
+            throw ToolError(message: "path must stay within the vault")
+        }
+        guard !markdownOnly || candidate.pathExtension.lowercased() == "md" else {
+            throw ToolError(message: "path must identify a Markdown note")
+        }
+        return candidate
+    }
+
+    private func notesInVault() throws -> [Note] {
+        try store.scan(vault).filter { note in
+            (try? confinedURL(note.url.path)) != nil
+        }
+    }
+
     private func dispatchTool(
         _ name: String,
         args: [String: FlexibleValue],
@@ -250,7 +281,7 @@ public struct MCPServer {
     ) throws -> JSONValue {
         switch name {
         case "list_notes":
-            var notes = try store.scan(vault)
+            var notes = try notesInVault()
             if let type = arg("type") { notes = notes.filter { $0.type.rawValue == type } }
             if !((arg("archived") ?? "false").lowercased() == "true") { notes = notes.filter { !$0.isArchived } }
             return .stringDict([
@@ -260,7 +291,7 @@ public struct MCPServer {
 
         case "search_notes":
             guard let query = arg("query") else { throw ToolError(message: "search_notes requires query") }
-            let notes = try store.scan(vault).filter { note in
+            let notes = try notesInVault().filter { note in
                 note.title.localizedCaseInsensitiveContains(query)
                     || note.body.localizedCaseInsensitiveContains(query)
                     || note.metadata.values.contains { $0.localizedCaseInsensitiveContains(query) }
@@ -273,7 +304,7 @@ public struct MCPServer {
 
         case "read_note":
             guard let path = arg("path") else { throw ToolError(message: "read_note requires path") }
-            let note = try store.load(URL(fileURLWithPath: NSString(string: path).expandingTildeInPath))
+            let note = try store.load(confinedURL(path))
             return .stringDict([
                 "title": note.title,
                 "type": note.type.rawValue,
@@ -293,6 +324,11 @@ public struct MCPServer {
                 if parts.count == 2 { metadata[String(parts[0])] = String(parts[1]) }
             }
             let folder = arg("folder") ?? "Notes"
+            let expandedFolder = NSString(string: folder).expandingTildeInPath
+            guard !expandedFolder.hasPrefix("/") else {
+                throw ToolError(message: "folder must be relative to the vault")
+            }
+            _ = try confinedURL(expandedFolder, markdownOnly: false)
             let note = try store.createNote(
                 in: vault,
                 folder: folder,
@@ -307,7 +343,7 @@ public struct MCPServer {
             guard let key = arg("key"), let value = arg("value") else {
                 throw ToolError(message: "set_property requires key and value")
             }
-            let url = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            let url = try confinedURL(path)
             let note = try store.load(url)
             try store.updateMetadata(key, value: value, for: note)
             return .stringDict(["updated": url.path, "\(key)": value])
@@ -316,7 +352,7 @@ public struct MCPServer {
             guard let path = arg("path"), let status = arg("status") else {
                 throw ToolError(message: "move_card requires path and status")
             }
-            let url = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            let url = try confinedURL(path)
             let note = try store.load(url)
             var updates = ["status": status]
             if let rank = arg("rank") { updates["rank"] = rank }
@@ -325,13 +361,13 @@ public struct MCPServer {
 
         case "archive_note":
             guard let path = arg("path") else { throw ToolError(message: "archive_note requires path") }
-            let url = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            let url = try confinedURL(path)
             let note = try store.load(url)
             try store.updateMetadata("archived", value: "true", for: note)
             return .stringDict(["archived": url.path])
 
         case "get_stats":
-            let notes = try store.scan(vault)
+            let notes = try notesInVault()
             let byType = Dictionary(grouping: notes, by: \.type.rawValue)
                 .mapValues(\.count)
                 .sorted { $0.key < $1.key }
@@ -345,7 +381,7 @@ public struct MCPServer {
 
         case "get_board":
             let config = VaultConfig.load(for: vault)
-            let deals = try store.scan(vault).filter { $0.type == .deal && !$0.isArchived }
+            let deals = try notesInVault().filter { $0.type == .deal && !$0.isArchived }
             let columns = config.columns.map { column in
                 let cards = deals.filter { column.statuses.contains($0.status) }.sorted { $0.rank < $1.rank }
                 return "\(column.title):\n" + cards.map { "  [\($0.rank)] \($0.title)" }.joined(separator: "\n")
@@ -420,12 +456,16 @@ public struct MCPServer {
         return .string("\(any)")
     }
 
+    private static let readOnlyTools: Set<String> = [
+        "list_notes", "search_notes", "read_note", "get_board", "get_stats",
+    ]
+
     private var knownTools: Set<String> {
         Set(toolDefinitions.map(\.name))
     }
 
     private var toolDefinitions: [ToolDefinition] {
-        [
+        let definitions = [
             ToolDefinition(
                 name: "list_notes",
                 description: "List records in the vault. Optional: type (note|contact|deal|task|agent-run), archived (true|false).",
@@ -523,6 +563,7 @@ public struct MCPServer {
                 ])
             ),
         ]
+        return readOnly ? definitions.filter { Self.readOnlyTools.contains($0.name) } : definitions
     }
 
     private struct ToolError: Error {
