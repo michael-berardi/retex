@@ -30,6 +30,8 @@ class TokenTests(unittest.TestCase):
             gateway.load_tokens({})
         with self.assertRaises(RuntimeError):
             gateway.load_tokens({"RETEX_MCP_TOKEN": "too-short"})
+        with self.assertRaises(RuntimeError):
+            gateway.load_tokens({"RETEX_MCP_TOKEN": "é" * 32})
 
     def test_authorization_requires_exact_bearer_token(self) -> None:
         original = gateway.TOKENS
