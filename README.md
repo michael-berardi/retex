@@ -59,6 +59,19 @@ unzip retex-universal.zip        # retex binary + docs
 sudo mv retex /usr/local/bin/
 ```
 
+### Agent skill
+
+Retex includes a provider-neutral agent skill with CLI, MCP, security, and
+live-vault safety instructions:
+
+```bash
+mkdir -p ~/.config/agents/skills
+ln -sfn \"$(pwd)/skills/retex\" ~/.config/agents/skills/retex
+```
+
+The skill contains no organization-specific paths, credentials, client rules,
+or deployment workflow.
+
 ## CLI
 
 ```bash
