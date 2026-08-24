@@ -1,8 +1,14 @@
 #if canImport(Darwin)
 import Darwin
+#else
+import Glibc
 #endif
 import Foundation
 import RetexCore
+
+private struct SimpleExit: Error {
+    let code: Int32
+}
 
 @main
 enum RetexCLI {
@@ -21,6 +27,13 @@ enum RetexCLI {
             }
             try run(invocation)
         } catch {
+            if let simpleExit = error as? SimpleExit {
+                #if canImport(Darwin)
+                Darwin.exit(simpleExit.code)
+                #else
+                Glibc.exit(simpleExit.code)
+                #endif
+            }
             let code: Int32 = error is UsageError ? 64 : 74
             writeError(
                 error.localizedDescription,
@@ -199,7 +212,6 @@ enum RetexCLI {
 
         case "export":
 #if canImport(CommonCrypto)
-#if canImport(CommonCrypto)
             let vault = try invocation.vault()
             let destination = try invocation.requiredOption("out")
             let passphrase = try Self.passphrase(invocation)
@@ -213,15 +225,11 @@ enum RetexCLI {
                 "Encrypted vault written to \(destination) (\(blob.count) bytes)"
             }
 #else
-            throw ExitCode(64) // encrypted export requires macOS
-#endif
-#else
-            FileHandle.standardError.write(Data("error: encrypted export requires macOS\n".utf8))
-            exit(64)
+            writeError("encrypted export requires macOS", code: 64, json: invocation.isJSON)
+            throw SimpleExit(code: 64)
 #endif
 
         case "import":
-#if canImport(CommonCrypto)
 #if canImport(CommonCrypto)
             let source = try invocation.requiredOption("from")
             let into = try invocation.requiredOption("into")
@@ -233,11 +241,8 @@ enum RetexCLI {
                 "Restored \(count) notes into \(into)"
             }
 #else
-            throw ExitCode(64) // encrypted import requires macOS
-#endif
-#else
-            FileHandle.standardError.write(Data("error: encrypted import requires macOS\n".utf8))
-            exit(64)
+            writeError("encrypted import requires macOS", code: 64, json: invocation.isJSON)
+            throw SimpleExit(code: 64)
 #endif
 
         case "update":
@@ -385,8 +390,8 @@ enum RetexCLI {
     }
 #else
     private static func runWatch(_ vault: Vault, json: Bool) throws {
-        FileHandle.standardError.write(Data("error: watch is only available on macOS\n".utf8))
-        throw ExitCode(64)
+        writeError("watch is only available on macOS", code: 64, json: json)
+        throw SimpleExit(code: 64)
     }
 #endif
 
