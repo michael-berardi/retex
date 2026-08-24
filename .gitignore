@@ -6,3 +6,4 @@ release/
 .swiftpm/
 *.xcuserstate
 .bench-*/
+__pycache__/

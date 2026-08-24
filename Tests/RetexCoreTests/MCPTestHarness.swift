@@ -5,7 +5,7 @@ import XCTest
 /// without spawning processes or touching real stdio.
 enum MCPTestHarness {
     /// Sends newline-delimited requests, collects newline-delimited responses.
-    static func run(vault: Vault, requests: [String]) throws -> [String] {
+    static func run(vault: Vault, requests: [String], readOnly: Bool = false) throws -> [String] {
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let collected = LockedBox(Data())
@@ -27,6 +27,7 @@ enum MCPTestHarness {
 
         let server = MCPServer(
             vault: vault,
+            readOnly: readOnly,
             input: inputPipe.fileHandleForReading,
             output: outputPipe.fileHandleForWriting
         )

@@ -208,7 +208,7 @@ enum RetexCLI {
 
         case "mcp":
             let vault = try invocation.vault()
-            try MCPServer(vault: vault).run()
+            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write")).run()
 
         case "export":
 #if canImport(CommonCrypto)
@@ -509,7 +509,7 @@ enum RetexCLI {
       log       List undo history entries for a record
       doctor    Validate vault structure, config, and history journal
       watch     Stream file-change events for a vault (Ctrl-C to stop)
-      mcp       Run the MCP server on stdio (JSON-RPC 2.0)
+      mcp       Run the read-only MCP server (--allow-write is explicit opt-in)
       export    Encrypt the vault into a portable file (sync by any channel)
       import    Decrypt and restore an encrypted vault export
       update    Check GitHub releases and upgrade this binary (verified)
@@ -539,6 +539,7 @@ enum RetexCLI {
       --passphrase-env <VAR>
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
+      --allow-write     Add MCP mutation tools for a trusted local host
       --json            Stable machine-readable output
       --all             Include archived records
       --help            Show this help
@@ -572,7 +573,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "all", "help"].contains(raw) {
+            } else if ["json", "all", "help", "allow-write"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {

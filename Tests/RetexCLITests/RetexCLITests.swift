@@ -40,14 +40,22 @@ final class RetexCLITests: XCTestCase {
     }
 
     @discardableResult
-    private func run(_ arguments: [String]) throws -> (status: Int32, stdout: String, stderr: String) {
+    private func run(
+        _ arguments: [String],
+        stdin: String? = nil
+    ) throws -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
-        let stdout = Pipe(), stderr = Pipe()
+        let stdout = Pipe(), stderr = Pipe(), input = Pipe()
         process.executableURL = Self.binPath.appendingPathComponent("retex")
         process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
+        if stdin != nil { process.standardInput = input }
         try process.run()
+        if let stdin {
+            input.fileHandleForWriting.write(Data(stdin.utf8))
+            input.fileHandleForWriting.closeFile()
+        }
         let outData = stdout.fileHandleForReading.readDataToEndOfFile()
         let errData = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -224,5 +232,28 @@ final class RetexCLITests: XCTestCase {
         let schema = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         XCTAssertEqual(schema["statuses"] as? [String], ["Sprint"])
         XCTAssertEqual(schema["views"] as? [String], [], "No saved views defined means an empty list")
+    }
+
+    func testMCPIsReadOnlyByDefaultWithExplicitWriteOptIn() throws {
+        let request = #"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"# + "\n"
+
+        func toolNames(_ output: String) throws -> Set<String> {
+            let response = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
+            )
+            let result = try XCTUnwrap(response["result"] as? [String: Any])
+            let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
+            return Set(tools.compactMap { $0["name"] as? String })
+        }
+
+        let safe = try run(["mcp"] + vaultArg, stdin: request)
+        XCTAssertEqual(safe.status, 0)
+        XCTAssertEqual(try toolNames(safe.stdout), [
+            "list_notes", "search_notes", "read_note", "get_board", "get_stats",
+        ])
+
+        let writable = try run(["mcp"] + vaultArg + ["--allow-write"], stdin: request)
+        XCTAssertEqual(writable.status, 0)
+        XCTAssertTrue(try toolNames(writable.stdout).contains("create_note"))
     }
 }
