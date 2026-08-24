@@ -195,6 +195,7 @@ enum RetexCLI {
 
         case "export":
 #if canImport(CommonCrypto)
+#if canImport(CommonCrypto)
             let vault = try invocation.vault()
             let destination = try invocation.requiredOption("out")
             let passphrase = try Self.passphrase(invocation)
@@ -210,8 +211,13 @@ enum RetexCLI {
 #else
             throw ExitCode(64) // encrypted export requires macOS
 #endif
+#else
+            fputs("error: encrypted export requires macOS\n", stderr)
+            exit(64)
+#endif
 
         case "import":
+#if canImport(CommonCrypto)
 #if canImport(CommonCrypto)
             let source = try invocation.requiredOption("from")
             let into = try invocation.requiredOption("into")
@@ -224,6 +230,10 @@ enum RetexCLI {
             }
 #else
             throw ExitCode(64) // encrypted import requires macOS
+#endif
+#else
+            fputs("error: encrypted import requires macOS\n", stderr)
+            exit(64)
 #endif
 
         case "update":
