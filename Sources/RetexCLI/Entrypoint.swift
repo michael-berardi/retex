@@ -4,6 +4,11 @@ import Darwin
 import Foundation
 import RetexCore
 
+/// Portable exit-code error: caught at top level; exits with the code.
+struct SimpleExit: Error {
+    let code: Int32
+}
+
 @main
 enum RetexCLI {
     static func main() {
@@ -20,6 +25,12 @@ enum RetexCLI {
                 return
             }
             try run(invocation)
+        } catch let exit as SimpleExit {
+            #if canImport(Darwin)
+            Darwin.exit(exit.code)
+            #else
+            Glibc.exit(exit.code)
+            #endif
         } catch {
             let code: Int32 = error is UsageError ? 64 : 74
             writeError(
@@ -213,7 +224,7 @@ enum RetexCLI {
                 "Encrypted vault written to \(destination) (\(blob.count) bytes)"
             }
 #else
-            throw ExitCode(64) // encrypted export requires macOS
+            throw SimpleExit(code: 64) // encrypted export requires macOS
 #endif
 #else
             FileHandle.standardError.write(Data("error: encrypted export requires macOS\n".utf8))
@@ -233,7 +244,7 @@ enum RetexCLI {
                 "Restored \(count) notes into \(into)"
             }
 #else
-            throw ExitCode(64) // encrypted import requires macOS
+            throw SimpleExit(code: 64) // encrypted import requires macOS
 #endif
 #else
             FileHandle.standardError.write(Data("error: encrypted import requires macOS\n".utf8))
@@ -386,7 +397,7 @@ enum RetexCLI {
 #else
     private static func runWatch(_ vault: Vault, json: Bool) throws {
         FileHandle.standardError.write(Data("error: watch is only available on macOS\n".utf8))
-        throw ExitCode(64)
+        throw SimpleExit(code: 64)
     }
 #endif
 
