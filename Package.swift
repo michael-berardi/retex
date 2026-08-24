@@ -14,8 +14,11 @@ let package = Package(
         .executable(name: "retex", targets: ["RetexCLI"]),
         .library(name: "RetexCore", targets: ["RetexCore"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+    ],
     targets: [
-        .target(name: "RetexCore"),
+        .target(name: "RetexCore", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
         .executableTarget(
             name: "RetexCLI",
             dependencies: ["RetexCore"]

@@ -192,6 +192,7 @@ enum RetexCLI {
             try MCPServer(vault: vault).run()
 
         case "export":
+#if canImport(CommonCrypto)
             let vault = try invocation.vault()
             let destination = try invocation.requiredOption("out")
             let passphrase = try Self.passphrase(invocation)
@@ -204,8 +205,12 @@ enum RetexCLI {
             try output(ExportOutput(destination: destination, bytes: blob.count), json: invocation.isJSON) { _ in
                 "Encrypted vault written to \(destination) (\(blob.count) bytes)"
             }
+#else
+            throw ExitCode(64) // encrypted export requires macOS
+#endif
 
         case "import":
+#if canImport(CommonCrypto)
             let source = try invocation.requiredOption("from")
             let into = try invocation.requiredOption("into")
             let passphrase = try Self.passphrase(invocation)
@@ -215,6 +220,9 @@ enum RetexCLI {
             try output(ImportOutput(into: into, notes: count), json: invocation.isJSON) { _ in
                 "Restored \(count) notes into \(into)"
             }
+#else
+            throw ExitCode(64) // encrypted import requires macOS
+#endif
 
         case "update":
             try runUpdate(invocation)

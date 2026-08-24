@@ -1,3 +1,4 @@
+#if os(macOS)
 import CommonCrypto
 import CryptoKit
 import Foundation
@@ -134,3 +135,7 @@ public struct VaultCrypto {
         return SymmetricKey(data: derived)
     }
 }
+
+#else
+// Encrypted export/import uses CommonCrypto and is macOS-only.
+#endif
