@@ -212,7 +212,7 @@ enum RetexCLI {
             throw ExitCode(64) // encrypted export requires macOS
 #endif
 #else
-            fputs("error: encrypted export requires macOS\n", stderr)
+            FileHandle.standardError.write(Data("error: encrypted export requires macOS\n".utf8))
             exit(64)
 #endif
 
@@ -232,7 +232,7 @@ enum RetexCLI {
             throw ExitCode(64) // encrypted import requires macOS
 #endif
 #else
-            fputs("error: encrypted import requires macOS\n", stderr)
+            FileHandle.standardError.write(Data("error: encrypted import requires macOS\n".utf8))
             exit(64)
 #endif
 
@@ -381,7 +381,7 @@ enum RetexCLI {
     }
 #else
     private static func runWatch(_ vault: Vault, json: Bool) throws {
-        fputs("error: watch is only available on macOS\n", stderr)
+        FileHandle.standardError.write(Data("error: watch is only available on macOS\n".utf8))
         throw ExitCode(64)
     }
 #endif
