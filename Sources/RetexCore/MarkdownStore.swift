@@ -17,6 +17,96 @@ public struct MarkdownStore {
         try scanWithDiagnostics(vault).notes
     }
 
+    /// Search raw Markdown first, then parse only matching notes. This avoids
+    /// frontmatter parsing, metadata allocation, file stats, and sorting work
+    /// for the overwhelming majority of non-matching files.
+    public func search(_ vault: Vault, query: String) throws -> [Note] {
+        let root = vault.url.standardizedFileURL
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw StoreError.unreadableVault(root)
+        }
+
+        var candidates: [URL] = []
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+            candidates.append(url)
+        }
+        let files = candidates
+        let asciiNeedle = query.utf8.allSatisfy { $0 < 0x80 }
+            ? query.utf8.map(Self.foldASCII)
+            : nil
+
+        var matches = [Note?](repeating: nil, count: files.count)
+        matches.withUnsafeMutableBufferPointer { matchesBuffer in
+            let selfBox = SendableBox(self)
+            let matchesBox = SendableBox(matchesBuffer)
+            @Sendable func inspect(_ index: Int) {
+                let url = files[index]
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
+                let filename = url.deletingPathExtension().lastPathComponent
+                let decoded = asciiNeedle == nil ? String(data: data, encoding: .utf8) : nil
+                let isMatch: Bool
+                if let asciiNeedle {
+                    isMatch = Self.containsASCIIInsensitive(Data(filename.utf8), needle: asciiNeedle)
+                        || Self.containsASCIIInsensitive(data, needle: asciiNeedle)
+                } else {
+                    isMatch = filename.range(
+                        of: query,
+                        options: [.caseInsensitive, .diacriticInsensitive]
+                    ) != nil || decoded?.range(
+                        of: query,
+                        options: [.caseInsensitive, .diacriticInsensitive]
+                    ) != nil
+                }
+                guard isMatch, let source = decoded ?? String(data: data, encoding: .utf8) else { return }
+                matchesBox.value[index] = try? selfBox.value.note(from: source, at: url)
+            }
+
+            if files.count < 500 {
+                for index in files.indices { inspect(index) }
+            } else {
+                let chunkSize = 64
+                let chunkCount = (files.count + chunkSize - 1) / chunkSize
+                DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
+                    for index in (chunk * chunkSize)..<min((chunk + 1) * chunkSize, files.count) {
+                        inspect(index)
+                    }
+                }
+            }
+        }
+
+        return matches.compacted().sorted { a, b in
+            if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
+            if a.title != b.title { return a.title < b.title }
+            return a.url.path < b.url.path
+        }
+    }
+
+    private static func foldASCII(_ byte: UInt8) -> UInt8 {
+        byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
+    }
+
+    private static func containsASCIIInsensitive(_ data: Data, needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty else { return true }
+        guard data.count >= needle.count else { return false }
+        return data.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            let finalStart = bytes.count - needle.count
+            for start in 0...finalStart {
+                var matched = true
+                for offset in needle.indices where foldASCII(bytes[start + offset]) != needle[offset] {
+                    matched = false
+                    break
+                }
+                if matched { return true }
+            }
+            return false
+        }
+    }
+
     /// Full scan with per-file diagnostics. Files are loaded in parallel;
     /// output ordering is deterministic (modifiedAt desc, then title, then
     /// path — a total order, so concurrency cannot leak into results).
@@ -85,7 +175,7 @@ public struct MarkdownStore {
             unreadable.append(statFiles[index].path)
         }
 
-        var notes = loaded.compacted().sorted { a, b in
+        let notes = loaded.compacted().sorted { a, b in
             if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
             if a.title != b.title { return a.title < b.title }
             return a.url.path < b.url.path
@@ -96,7 +186,10 @@ public struct MarkdownStore {
 
 
     public func load(_ url: URL) throws -> Note {
-        let source = try String(contentsOf: url, encoding: .utf8)
+        try note(from: String(contentsOf: url, encoding: .utf8), at: url)
+    }
+
+    private func note(from source: String, at url: URL) throws -> Note {
         let lines = normalizedLines(source)
         let attributes = try url.resourceValues(forKeys: [.contentModificationDateKey])
         var metadata: [String: String] = [:]

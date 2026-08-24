@@ -39,7 +39,7 @@ public struct UpdateChecker {
         request.timeoutInterval = 15
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let (data, response) = try syncRequest(request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        guard response.statusCode == 200 else {
             throw UpdateError.lookupFailed
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -83,7 +83,7 @@ public struct UpdateChecker {
         var request = URLRequest(url: url)
         request.timeoutInterval = 60
         let (data, response) = try syncRequest(request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        guard response.statusCode == 200 else {
             throw UpdateError.downloadFailed(url.lastPathComponent)
         }
         guard data.count <= 64 * 1024 * 1024 else {

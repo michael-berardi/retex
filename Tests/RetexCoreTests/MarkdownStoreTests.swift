@@ -147,8 +147,8 @@ final class MarkdownStoreTests: XCTestCase {
     }
 
     func testScanSkipsNonMarkdownAndSortsDeterministically() throws {
-        try writeNote("a-note.md", "---\ntitle: A\n---\nbody")
-        try writeNote("ignored.txt", "not markdown")
+        _ = try writeNote("a-note.md", "---\ntitle: A\n---\nbody")
+        _ = try writeNote("ignored.txt", "not markdown")
         try FileManager.default.createDirectory(
             at: vaultDir.appendingPathComponent("Sub"),
             withIntermediateDirectories: true
@@ -160,6 +160,19 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(notes.map(\.title).sorted(), ["A", "b"])
         // b.md has an em-dash frontmatter (invalid) so it parses as plain note titled "b".
         XCTAssertEqual(notes.map { $0.url.lastPathComponent }.sorted(), ["a-note.md", "b.md"])
+    }
+
+    func testSearchMatchesFilenameMetadataAndCase() throws {
+        _ = try writeNote("filename-only-match.md", "Plain body.")
+        _ = try writeNote("metadata.md", "---\ntitle: Metadata\nowner: Needle\n---\nOther body.")
+        _ = try writeNote("accent.md", "---\ntitle: Accent\n---\nÉlan Café")
+        _ = try writeNote("unrelated.md", "Nothing relevant.")
+        let store = MarkdownStore()
+        let vault = Vault(url: vaultDir)
+
+        XCTAssertEqual(try store.search(vault, query: "only").map(\.title), ["filename-only-match"])
+        XCTAssertEqual(try store.search(vault, query: "needle").map(\.title), ["Metadata"])
+        XCTAssertEqual(try store.search(vault, query: "CAFÉ").map(\.title), ["Accent"])
     }
 
     func testSaveBodyKeepsFrontmatterIntact() throws {

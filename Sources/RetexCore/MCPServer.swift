@@ -291,11 +291,8 @@ public struct MCPServer {
 
         case "search_notes":
             guard let query = arg("query") else { throw ToolError(message: "search_notes requires query") }
-            let notes = try notesInVault().filter { note in
-                note.title.localizedCaseInsensitiveContains(query)
-                    || note.body.localizedCaseInsensitiveContains(query)
-                    || note.metadata.values.contains { $0.localizedCaseInsensitiveContains(query) }
-                    || note.tags.contains { $0.localizedCaseInsensitiveContains(query) }
+            let notes = try store.search(vault, query: query).filter { note in
+                (try? confinedURL(note.url.path)) != nil
             }
             return .stringDict([
                 "count": String(notes.count),

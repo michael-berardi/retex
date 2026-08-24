@@ -287,7 +287,7 @@ Implemented today:
 - Encrypted export/import on macOS (PBKDF2 + AES-GCM)
 - Self-update with checksum verification, atomic swap, and rollback
 - Versioned JSON envelope on every CLI response
-- 55 XCTests covering parsing, mutations, the CLI contract, undo, config,
+- 56 XCTests covering parsing, mutations, the CLI contract, undo, config,
   watching, crypto, update logic, and the MCP server
 
 Not yet shipped:
