@@ -29,14 +29,15 @@ third-party runtime dependency.
 - Watch vaults for external changes (`retex watch`).
 - Custom board columns and named saved views per vault.
 - Drive a vault directly from any MCP host with the built-in MCP server.
-- Encrypted vault export/import for sync by any channel.
+- Encrypted vault export/import on macOS for sync by any channel.
 - Self-update with checksum verification and rollback.
 
 ## Requirements
 
-- macOS 14 or later.
-- A Swift 6.0 toolchain to build from source (Xcode 16 or later).
-- `RetexCore` also compiles for iOS 17 for future vault reader apps.
+- macOS 14 or later, or Linux with a Swift 6.0+ toolchain.
+- Building from source requires Swift Package Manager (Xcode 16+ on macOS).
+- File watching and encrypted export/import require macOS. All other CLI
+  commands, including the MCP server, are supported on Linux.
 
 ## Install and run
 
@@ -247,13 +248,13 @@ Implemented today:
 - Kanban boards with custom columns, saved views, and non-destructive
   archiving
 - Undo history with cross-process journal locking
-- FSEvents-based file watching that ignores internal state
+- FSEvents-based file watching on macOS that ignores internal state
 - Vault health checks (`retex doctor`)
 - An MCP server exposing the vault to any MCP host
-- Encrypted export/import (PBKDF2 + AES-GCM)
+- Encrypted export/import on macOS (PBKDF2 + AES-GCM)
 - Self-update with checksum verification, atomic swap, and rollback
 - Versioned JSON envelope on every CLI response
-- 46 XCTests covering parsing, mutations, the CLI contract, undo, config,
+- 48 XCTests covering parsing, mutations, the CLI contract, undo, config,
   watching, crypto, update logic, and the MCP server
 
 Not yet shipped:
