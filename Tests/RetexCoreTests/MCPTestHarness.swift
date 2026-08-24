@@ -5,14 +5,22 @@ import XCTest
 /// without spawning processes or touching real stdio.
 enum MCPTestHarness {
     /// Sends newline-delimited requests, collects newline-delimited responses.
-    static func run(vault: Vault, requests: [String], readOnly: Bool = false) throws -> [String] {
+    static func run(
+        vault: Vault,
+        requests: [String],
+        readOnly: Bool = false,
+        interRequestDelay: TimeInterval = 0
+    ) throws -> [String] {
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let collected = LockedBox(Data())
 
         let feeder = Thread {
-            for request in requests {
+            for (index, request) in requests.enumerated() {
                 inputPipe.fileHandleForWriting.write(Data((request + "\n").utf8))
+                if interRequestDelay > 0, index < requests.count - 1 {
+                    Thread.sleep(forTimeInterval: interRequestDelay)
+                }
             }
             inputPipe.fileHandleForWriting.closeFile()
         }
@@ -38,6 +46,9 @@ enum MCPTestHarness {
         // run() blocks until stdin EOF (feeder closes the write end).
         try server.run()
 
+        while !feeder.isFinished {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
         // Close the response write end so the reader sees EOF, then drain.
         outputPipe.fileHandleForWriting.closeFile()
         while !reader.isFinished {

@@ -23,8 +23,17 @@ final class MCPServerTests: XCTestCase {
         try? FileManager.default.removeItem(at: vaultDir)
     }
 
-    private func call(_ requests: [String], readOnly: Bool = false) throws -> [[String: Any]] {
-        let lines = try MCPTestHarness.run(vault: Vault(url: vaultDir), requests: requests, readOnly: readOnly)
+    private func call(
+        _ requests: [String],
+        readOnly: Bool = false,
+        interRequestDelay: TimeInterval = 0
+    ) throws -> [[String: Any]] {
+        let lines = try MCPTestHarness.run(
+            vault: Vault(url: vaultDir),
+            requests: requests,
+            readOnly: readOnly,
+            interRequestDelay: interRequestDelay
+        )
         return try lines.map { line in
             guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
                 throw NSError(domain: "mcp", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not a JSON object: \(line)"])
@@ -59,6 +68,16 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(result["protocolVersion"] as? String, "2024-11-05")
         let serverInfo = try XCTUnwrap(result["serverInfo"] as? [String: Any])
         XCTAssertEqual(serverInfo["name"] as? String, "retex")
+    }
+
+    func testServerWaitsForTheNextInteractiveRequest() throws {
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":20,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+            #"{"jsonrpc":"2.0","id":21,"method":"tools/list","params":{}}"#,
+        ], interRequestDelay: 0.1)
+        XCTAssertEqual(responses.count, 2)
+        XCTAssertEqual(responses[0]["id"] as? Int, 20)
+        XCTAssertEqual(responses[1]["id"] as? Int, 21)
     }
 
     func testNotificationProducesNoResponse() throws {
