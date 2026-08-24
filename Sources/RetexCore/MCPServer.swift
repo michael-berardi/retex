@@ -72,7 +72,7 @@ public struct MCPServer {
     public func run() throws {
         var buffer = Data()
         while true {
-            let chunk = input.readData(ofLength: 64 * 1024)
+            let chunk = input.availableData
             guard !chunk.isEmpty else { break }
             buffer.append(chunk)
 
