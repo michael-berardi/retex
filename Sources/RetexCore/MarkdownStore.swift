@@ -46,29 +46,30 @@ public struct MarkdownStore {
         var loaded = [Note?](repeating: nil, count: statFiles.count)
         var failed = [Bool](repeating: false, count: statFiles.count)
 
-        func parse(_ index: Int, into loadedBuf: inout UnsafeMutableBufferPointer<Note?>,
-                   marking failedBuf: inout UnsafeMutableBufferPointer<Bool>) {
-            if let note = try? load(statFiles[index]) {
-                loadedBuf[index] = note
-            } else {
-                failedBuf[index] = true
-            }
-        }
-
         loaded.withUnsafeMutableBufferPointer { loadedBuf in
             failed.withUnsafeMutableBufferPointer { failedBuf in
+                // Direct indexed writes through buffer pointers are sound from
+                // concurrent iterations (distinct elements never alias).
+                func store(_ index: Int) {
+                    if let note = try? load(statFiles[index]) {
+                        loadedBuf[index] = note
+                    } else {
+                        failedBuf[index] = true
+                    }
+                }
+
                 if statFiles.count < 500 {
                     // Small vaults stay serial: concurrency overhead loses
                     // below a few hundred files (measured).
                     for index in statFiles.indices {
-                        parse(index, into: &loadedBuf, marking: &failedBuf)
+                        store(index)
                     }
                 } else {
                     let chunkSize = 64
                     let chunkCount = (statFiles.count + chunkSize - 1) / chunkSize
                     DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
                         for index in (chunk * chunkSize)..<min((chunk + 1) * chunkSize, statFiles.count) {
-                            parse(index, into: &loadedBuf, marking: &failedBuf)
+                            store(index)
                         }
                     }
                 }
