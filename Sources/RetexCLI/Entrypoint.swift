@@ -27,7 +27,11 @@ enum RetexCLI {
                 code: Int(code),
                 json: CommandLine.arguments.contains("--json")
             )
+            #if canImport(Darwin)
             Darwin.exit(code)
+            #else
+            Glibc.exit(code)
+            #endif
         }
     }
 
