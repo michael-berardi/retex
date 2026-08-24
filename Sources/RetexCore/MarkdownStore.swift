@@ -1,5 +1,12 @@
 import Foundation
 
+/// @unchecked Sendable wrapper: contents are confined to one concurrent
+/// region at a time by construction (distinct indexed slots never alias).
+private final class SendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
+
 public struct MarkdownStore {
     private let fileManager = FileManager.default
     let history = UndoHistory()
@@ -46,11 +53,14 @@ public struct MarkdownStore {
             failed.withUnsafeMutableBufferPointer { failedBuf in
                 // Direct indexed writes through buffer pointers are sound from
                 // concurrent iterations (distinct elements never alias).
-                func store(_ index: Int) {
-                    if let note = try? load(statFiles[index]) {
-                        loadedBuf[index] = note
+                let selfBox = SendableBox(self)
+                let loadedBox = SendableBox(loadedBuf)
+                let failedBox = SendableBox(failedBuf)
+                @Sendable func store(_ index: Int) {
+                    if let note = try? selfBox.value.load(statFiles[index]) {
+                        loadedBox.value[index] = note
                     } else {
-                        failedBuf[index] = true
+                        failedBox.value[index] = true
                     }
                 }
 
