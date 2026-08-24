@@ -146,6 +146,42 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(second.url.deletingPathExtension().lastPathComponent, "elan-cafe-2")
     }
 
+    func testCreateRejectsFoldersOutsideVault() throws {
+        let store = MarkdownStore()
+        let outsideName = "retex-outside-\(UUID().uuidString)"
+        let outside = vaultDir.deletingLastPathComponent().appendingPathComponent(outsideName)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        XCTAssertThrowsError(
+            try store.createNote(
+                in: Vault(url: vaultDir),
+                folder: "../\(outsideName)",
+                title: "Escaped",
+                metadata: [:],
+                body: ""
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    func testRejectsFrontmatterInjectionBeforeJournaling() throws {
+        let store = MarkdownStore()
+        let note = try store.createNote(
+            in: Vault(url: vaultDir),
+            folder: "Notes",
+            title: "Protected",
+            metadata: [:],
+            body: "unchanged"
+        )
+
+        XCTAssertThrowsError(try store.updateMetadata(["safe\ninjected": "value"], for: note))
+        XCTAssertThrowsError(try store.updateMetadata(["safe": "value\n---\ninjected: true"], for: note))
+        XCTAssertEqual(try store.load(note.url).body, "unchanged")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: vaultDir.appendingPathComponent(".retex/history.jsonl").path
+        ))
+    }
+
     func testScanSkipsNonMarkdownAndSortsDeterministically() throws {
         _ = try writeNote("a-note.md", "---\ntitle: A\n---\nbody")
         _ = try writeNote("ignored.txt", "not markdown")
@@ -173,6 +209,36 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(try store.search(vault, query: "only").map(\.title), ["filename-only-match"])
         XCTAssertEqual(try store.search(vault, query: "needle").map(\.title), ["Metadata"])
         XCTAssertEqual(try store.search(vault, query: "CAFÉ").map(\.title), ["Accent"])
+    }
+
+    func testRankedSearchMatchesAllTermsPrioritizesTitleAndLimitsResults() throws {
+        _ = try writeNote(
+            "best.md",
+            "---\ntitle: Retex release process\n---\nSafe upgrade instructions."
+        )
+        _ = try writeNote(
+            "body.md",
+            "---\ntitle: General operations\n---\nThe release process for Retex is documented here."
+        )
+        _ = try writeNote(
+            "partial.md",
+            "---\ntitle: Retex internals\n---\nNo publication notes."
+        )
+
+        let results = try MarkdownStore().search(
+            Vault(url: vaultDir),
+            query: "Retex release",
+            ranked: true,
+            limit: 1
+        )
+        XCTAssertEqual(results.map(\.title), ["Retex release process"])
+    }
+
+    func testSearchRejectsEmptyQueriesAndInvalidLimits() throws {
+        let store = MarkdownStore()
+        let vault = Vault(url: vaultDir)
+        XCTAssertThrowsError(try store.search(vault, query: "   "))
+        XCTAssertThrowsError(try store.search(vault, query: "note", limit: 0))
     }
 
     func testSaveBodyKeepsFrontmatterIntact() throws {

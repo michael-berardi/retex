@@ -1,5 +1,5 @@
 FROM swift:6.3.1-noble AS build
-ARG RETEX_REF=v0.4.2
+ARG RETEX_REF=v0.5.0
 WORKDIR /build
 RUN git clone --filter=blob:none https://github.com/michael-berardi/retex.git . \
     && git checkout --detach "${RETEX_REF}"
@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --break-system-packages \
-      "fastmcp==2.12.*" "mcp>=1.12,<1.17"
+      "fastmcp==2.12.5" "mcp==1.16.0"
 
 COPY --from=build /build/.build/release/retex /usr/local/bin/retex
 COPY --from=build /usr/lib/swift/linux /usr/lib/swift/linux

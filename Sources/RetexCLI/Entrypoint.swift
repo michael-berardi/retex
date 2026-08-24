@@ -51,12 +51,23 @@ enum RetexCLI {
     private static func run(_ invocation: Invocation) throws {
         let store = MarkdownStore()
         switch invocation.command {
+        case "init":
+            let vault = try invocation.vault()
+            let state = try UndoHistory.prepare(for: vault)
+            try output(
+                ["vault": vault.url.path, "state": state.path],
+                json: invocation.isJSON
+            ) { "Initialized Retex state at \($0["state", default: state.path])" }
+
         case "list":
             let vault = try invocation.vault()
             var notes = try store.scan(vault)
             if let type = invocation.option("type") { notes = notes.filter { $0.type.rawValue == type } }
             if let status = invocation.option("status") { notes = notes.filter { $0.status.caseInsensitiveCompare(status) == .orderedSame } }
             if !invocation.flag("all") { notes = notes.filter { !$0.isArchived } }
+            if let limit = try invocation.positiveIntOption("limit") {
+                notes = Array(notes.prefix(limit))
+            }
             try output(notes.map(NoteSummary.init), json: invocation.isJSON) {
                 $0.map { "\($0.type.padding(toLength: 10, withPad: " ", startingAt: 0)) \($0.status.padding(toLength: 12, withPad: " ", startingAt: 0)) \($0.title)\n  \($0.path)" }.joined(separator: "\n")
             }
@@ -64,7 +75,12 @@ enum RetexCLI {
         case "search":
             let query = try invocation.positional(0, named: "query")
             let vault = try invocation.vault()
-            let notes = try store.search(vault, query: query)
+            let notes = try store.search(
+                vault,
+                query: query,
+                ranked: invocation.flag("ranked"),
+                limit: try invocation.positiveIntOption("limit")
+            )
             try output(notes.map(NoteSummary.init), json: invocation.isJSON) {
                 $0.map { "\($0.title)\n  \($0.path)" }.joined(separator: "\n")
             }
@@ -185,7 +201,8 @@ enum RetexCLI {
 
         case "doctor":
             let vault = try invocation.vault()
-            try output(runDoctor(vault), json: invocation.isJSON) { report in
+            let report = runDoctor(vault)
+            try output(report, json: invocation.isJSON) { report in
                 var lines = [
                     "Vault: \(report.vault)",
                     "Notes: \(report.notes) (\(report.archived) archived)",
@@ -199,6 +216,10 @@ enum RetexCLI {
                     lines.append(contentsOf: report.issues.map { "  - \($0)" })
                 }
                 return lines.joined(separator: "\n")
+            }
+            if invocation.flag("strict"),
+               !report.configOk || !report.journalOk || !report.issues.isEmpty {
+                throw SimpleExit(code: 2)
             }
 
         case "mcp":
@@ -313,25 +334,34 @@ enum RetexCLI {
             }
             return
         }
+        if invocation.flag("check") {
+            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil),
+                       json: invocation.isJSON) { _ in
+                "Update available: \(current) -> \(release.tag)"
+            }
+            return
+        }
 
+#if !os(macOS)
+        throw UsageError("Self-update requires macOS; Linux installations must build the tagged source")
+#else
         let tarball = try checker.download(release.assetURL)
         let sumsBody = String(decoding: try checker.download(release.checksumsURL), as: UTF8.self)
         guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: "retex-universal.zip") else {
-            throw UsageError("Release checksums do not list retex-universal.zip")
+            throw UsageError("Release checksums do not list one valid retex-universal.zip SHA-256")
         }
         let actual = UpdateChecker.sha256(of: tarball)
-        guard actual == expected.lowercased() else {
+        guard actual == expected else {
             throw UsageError("Checksum mismatch: expected \(expected), got \(actual)")
         }
 
-        // Swap the running binary atomically; keep the old one for rollback.
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-        let previous = URL(fileURLWithPath: executable.path + ".previous")
         let fm = FileManager.default
-        if fm.fileExists(atPath: previous.path) { try fm.removeItem(at: previous) }
-        try fm.copyItem(at: executable, to: previous)
-        let workDir = fm.temporaryDirectory.appendingPathComponent("retex-update-\(UUID().uuidString)", isDirectory: true)
+        let workDir = fm.temporaryDirectory.appendingPathComponent(
+            "retex-update-\(UUID().uuidString)",
+            isDirectory: true
+        )
         try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workDir) }
         let zipPath = workDir.appendingPathComponent("retex-universal.zip")
         try tarball.write(to: zipPath, options: .atomic)
         let extract = Process()
@@ -339,24 +369,79 @@ enum RetexCLI {
         extract.arguments = ["-x", "-k", zipPath.path, workDir.path]
         try extract.run()
         extract.waitUntilExit()
-        guard extract.terminationStatus == 0,
-              let newBinary = (try? fm.contentsOfDirectory(atPath: workDir.path))?
-                  .first(where: { $0 == "retex" })
-                  .map({ workDir.appendingPathComponent($0) }),
-              fm.fileExists(atPath: newBinary.path)
-        else {
+        let newBinary = workDir.appendingPathComponent("retex")
+        guard extract.terminationStatus == 0, fm.fileExists(atPath: newBinary.path) else {
             throw UsageError("Release archive did not contain a retex binary")
         }
-        try fm.removeItem(at: executable)
-        try fm.copyItem(at: newBinary, to: executable)
-        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-        try? fm.removeItem(at: workDir)
+        try validateUpdateCandidate(newBinary, releaseTag: release.tag)
 
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        let previous = try UpdateChecker.install(candidate: newBinary, over: executable)
         try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: true, path: executable.path),
                    json: invocation.isJSON) { _ in
             "Updated \(executable.path): \(current) -> \(release.tag). Rollback available at \(previous.path)"
         }
+#endif
     }
+
+#if os(macOS)
+    private static func validateUpdateCandidate(_ candidate: URL, releaseTag: String) throws {
+        let values = try candidate.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+        guard values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              (values.fileSize ?? 0) > 0,
+              (values.fileSize ?? 0) <= 64 * 1024 * 1024
+        else {
+            throw UsageError("Release candidate must be one bounded regular file")
+        }
+
+        let requirement = #"=identifier "retex" and anchor apple generic and certificate leaf[subject.OU] = "T63VT9UAY2""#
+        try runValidationProcess(
+            executable: "/usr/bin/codesign",
+            arguments: ["--verify", "--strict", "-R", requirement, candidate.path],
+            failure: "Release candidate failed Developer ID identity verification"
+        )
+        try runValidationProcess(
+            executable: "/usr/sbin/spctl",
+            arguments: ["-a", "-t", "install", candidate.path],
+            failure: "Release candidate is not accepted by Gatekeeper"
+        )
+
+        let output = Pipe()
+        let version = Process()
+        version.executableURL = candidate
+        version.arguments = ["version"]
+        version.standardOutput = output
+        version.standardError = Pipe()
+        try version.run()
+        let reported = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        version.waitUntilExit()
+        let expected = releaseTag.trimmingCharacters(in: CharacterSet(charactersIn: "v "))
+        guard version.terminationStatus == 0, reported == expected else {
+            throw UsageError("Release candidate version \(reported) does not match \(expected)")
+        }
+    }
+
+    private static func runValidationProcess(
+        executable: String,
+        arguments: [String],
+        failure: String
+    ) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw UsageError(failure) }
+    }
+#endif
 
 #if os(macOS)
     private static func runWatch(_ vault: Vault, json: Bool) throws {
@@ -417,16 +502,21 @@ enum RetexCLI {
 
         let journalURL = UndoHistory.journalURL(for: vault)
         var journalOk = true
-        if FileManager.default.fileExists(atPath: journalURL.path),
-           let raw = try? String(contentsOf: journalURL, encoding: .utf8) {
-            for line in raw.split(separator: "\n", omittingEmptySubsequences: false) where !line.isEmpty {
-                guard let data = String(line).data(using: .utf8),
-                      (try? JSONDecoder().decode(UndoHistory.Entry.self, from: data)) != nil
-                else {
-                    journalOk = false
-                    issues.append("Corrupt history entry at \(journalURL.path)")
-                    break
+        if FileManager.default.fileExists(atPath: journalURL.path) {
+            do {
+                let raw = try String(contentsOf: journalURL, encoding: .utf8)
+                for line in raw.split(separator: "\n", omittingEmptySubsequences: false) where !line.isEmpty {
+                    guard let data = String(line).data(using: .utf8),
+                          (try? JSONDecoder().decode(UndoHistory.Entry.self, from: data)) != nil
+                    else {
+                        journalOk = false
+                        issues.append("Corrupt history entry at \(journalURL.path)")
+                        break
+                    }
                 }
+            } catch {
+                journalOk = false
+                issues.append("Unreadable undo journal at \(journalURL.path)")
             }
         }
 
@@ -489,8 +579,9 @@ enum RetexCLI {
       retex <command> [arguments] [options]
 
     COMMANDS
-      list      List records in a vault
-      search    Search titles, properties, labels, and bodies
+      init      Initialize private vault-local Retex state (idempotent)
+      list      List records in a vault (--limit bounds output)
+      search    Search titles, properties, labels, and bodies (--ranked for relevance)
       show      Print one Markdown record
       create    Create a record
       set       Set one or more YAML properties
@@ -502,32 +593,35 @@ enum RetexCLI {
       count     Fast note counts (--type filter supported)
       undo      Restore a record to its state before the last mutation
       log       List undo history entries for a record
-      doctor    Validate vault structure, config, and history journal
+      doctor    Validate vault structure, config, and journal (--strict gates)
       watch     Stream file-change events for a vault (Ctrl-C to stop)
       mcp       Run the read-only MCP server (--allow-write is explicit opt-in)
       export    Encrypt the vault into a portable file (sync by any channel)
       import    Decrypt and restore an encrypted vault export
-      update    Check GitHub releases and upgrade this binary (verified)
+      update    Check or install a verified GitHub release (--check is read-only)
       version   Print the CLI version
 
     EXAMPLES
-      retex list --vault ~/Documents/CRM --type deal --json
-      retex search "website rebuild" --vault ~/Documents/CRM --json
+      retex init --vault ~/Documents/CRM --json
+      retex list --vault ~/Documents/CRM --type deal --limit 100 --json
+      retex search "website release" --vault ~/Documents/CRM --ranked --limit 20 --json
       retex create --vault ./CRM --type deal --title "Acme redesign" --status Inbox --set owner=Sam --set tags="[crm, priority]" --json
       retex set ./CRM/Deals/acme-redesign.md status=Qualified due=2026-08-01 --json
       retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
       retex board --vault ./CRM --view pipeline --json
       retex undo ./CRM/Deals/acme-redesign.md --json
-      retex doctor --vault ./CRM --json
+      retex doctor --vault ./CRM --strict --json
       retex watch --vault ./CRM --json
       retex mcp --vault ./CRM
       retex export --vault ./CRM --out backup.retex --passphrase-env VAULT_PASS
       retex import --from backup.retex --into ~/Vaults/restored --passphrase-env VAULT_PASS
-      retex update
+      retex update --check --json
 
     OPTIONS
       --vault <path>    Vault directory (required by most commands)
       --view <name>     Saved view name for board
+      --limit <count>   Bound list/search results (1-10000)
+      --ranked         Match all search terms and relevance-rank results
       --out <file>      Destination for export
       --from <file>     Source encrypted file for import
       --into <dir>      Restore target directory for import
@@ -535,6 +629,8 @@ enum RetexCLI {
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
       --allow-write     Add MCP mutation tools for a trusted local host
+      --strict          Exit nonzero when doctor finds any integrity issue
+      --check           Check update availability without installing
       --json            Stable machine-readable output
       --all             Include archived records
       --help            Show this help
@@ -568,7 +664,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "all", "help", "allow-write"].contains(raw) {
+            } else if ["json", "all", "help", "allow-write", "ranked", "strict", "check"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -591,6 +687,14 @@ private struct Invocation {
 
     func requiredOption(_ name: String) throws -> String {
         guard let value = option(name) else { throw UsageError("--\(name) is required") }
+        return value
+    }
+
+    func positiveIntOption(_ name: String, maximum: Int = 10_000) throws -> Int? {
+        guard let raw = option(name) else { return nil }
+        guard let value = Int(raw), value > 0, value <= maximum else {
+            throw UsageError("--\(name) must be an integer from 1 through \(maximum)")
+        }
         return value
     }
 

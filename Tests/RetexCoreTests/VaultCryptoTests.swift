@@ -68,25 +68,102 @@ final class VaultCryptoTests: XCTestCase {
             atPath: out.deletingLastPathComponent().appendingPathComponent("escape.md").path
         ))
     }
+
+    func testRestoreRefusesSymlinkParentEscape() throws {
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-symlink-restore-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-symlink-outside-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: out)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: out.appendingPathComponent("linked"),
+            withDestinationURL: outside
+        )
+        let malicious = try JSONEncoder().encode([
+            VaultCrypto.ArchivedFile(path: "linked/escape.md", content: "pwn"),
+        ])
+
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(malicious, into: out))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("escape.md").path))
+    }
+
+    func testRestoreRefusesNonMarkdownAndDuplicateEntries() throws {
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-invalid-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: out) }
+
+        let nonMarkdown = try JSONEncoder().encode([
+            VaultCrypto.ArchivedFile(path: "config.json", content: "{}"),
+        ])
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(nonMarkdown, into: out))
+
+        let duplicate = try JSONEncoder().encode([
+            VaultCrypto.ArchivedFile(path: "same.md", content: "first"),
+            VaultCrypto.ArchivedFile(path: "same.md", content: "second"),
+        ])
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(duplicate, into: out))
+    }
+
+    func testArchiveRefusesSymlinksOutsideVault() throws {
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-export-outside-\(UUID().uuidString).md")
+        let link = vaultDir.appendingPathComponent("outside.md")
+        try "protected".write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        XCTAssertThrowsError(try VaultCrypto.makeArchive(vaultURL: vaultDir))
+    }
 }
 
 final class UpdateCheckerTests: XCTestCase {
     func testVersionComparison() {
-        XCTAssertTrue(UpdateChecker.isNewer(releaseTag: "v0.3.0", current: "0.2.0"))
-        XCTAssertTrue(UpdateChecker.isNewer(releaseTag: "v1.0", current: "0.9.9"))
-        XCTAssertFalse(UpdateChecker.isNewer(releaseTag: "v0.2.0", current: "0.2.0"))
-        XCTAssertFalse(UpdateChecker.isNewer(releaseTag: "v0.1.0", current: "0.2.0"))
+        XCTAssertTrue(UpdateChecker.isNewer(releaseTag: "v0.5.0", current: "0.4.4"))
+        XCTAssertTrue(UpdateChecker.isNewer(releaseTag: "v1.0.0", current: "0.9.9"))
+        XCTAssertFalse(UpdateChecker.isNewer(releaseTag: "v0.4.4", current: "0.4.4"))
+        XCTAssertFalse(UpdateChecker.isNewer(releaseTag: "v0.4.3", current: "0.4.4"))
+        XCTAssertFalse(UpdateChecker.isNewer(releaseTag: "v0.5.0-beta", current: "0.4.4"))
+        XCTAssertFalse(UpdateChecker.isNewer(releaseTag: "latest", current: "0.4.4"))
     }
 
-    func testChecksumExtraction() {
+    func testChecksumExtractionRequiresExactAssetAndSHA256() {
+        let hash = String(repeating: "a", count: 64)
         let sums = """
-        abcdef0123456789  retex-universal.zip
-        1111222233334444  other-file.zip
+        \(hash)  retex-universal.zip
+        \(String(repeating: "b", count: 64))  other-file.zip
         """
         XCTAssertEqual(
             UpdateChecker.expectedChecksum(in: sums, assetName: "retex-universal.zip"),
-            "abcdef0123456789"
+            hash
         )
-        XCTAssertNil(UpdateChecker.expectedChecksum(in: sums, assetName: "missing.tar.gz"))
+        XCTAssertNil(UpdateChecker.expectedChecksum(
+            in: "\(hash)  retex-universal.zip.evil",
+            assetName: "retex-universal.zip"
+        ))
+        XCTAssertNil(UpdateChecker.expectedChecksum(
+            in: "abcdef  retex-universal.zip",
+            assetName: "retex-universal.zip"
+        ))
+    }
+
+    func testInstallKeepsPreviousExecutableAsRollback() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-install-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("retex")
+        let candidate = directory.appendingPathComponent("candidate")
+        try "old".write(to: executable, atomically: true, encoding: .utf8)
+        try "new".write(to: candidate, atomically: true, encoding: .utf8)
+
+        let previous = try UpdateChecker.install(candidate: candidate, over: executable)
+
+        XCTAssertEqual(try String(contentsOf: executable, encoding: .utf8), "new")
+        XCTAssertEqual(try String(contentsOf: previous, encoding: .utf8), "old")
     }
 }

@@ -6,6 +6,11 @@ import Crypto
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 
 /// Self-update channel for the `retex` CLI.
@@ -53,7 +58,9 @@ public struct UpdateChecker {
         var checksumsURL: URL?
         for asset in assets {
             guard let name = asset["name"] as? String,
-                  let url = (asset["browser_download_url"] as? String).flatMap(URL.init(string:))
+                  let url = (asset["browser_download_url"] as? String).flatMap(URL.init(string:)),
+                  url.scheme == "https",
+                  url.host?.lowercased() == "github.com"
             else { continue }
             if name == "retex-universal.zip" { assetURL = url }
             if name == "SHA256SUMS" { checksumsURL = url }
@@ -64,17 +71,23 @@ public struct UpdateChecker {
         return Release(tag: tag, assetURL: finalAsset, checksumsURL: finalChecksums)
     }
 
-    /// Returns true if `current` is older than `release.tag` (semver-ish compare).
+    /// Returns true only when both values are stable semantic versions and
+    /// `releaseTag` is newer. Malformed/prerelease tags fail closed.
     public static func isNewer(releaseTag: String, current: String) -> Bool {
-        let strip: (String) -> String = { $0.trimmingCharacters(in: CharacterSet(charactersIn: "v ")) }
-        let release = strip(releaseTag).split(separator: ".").map { Int($0) ?? 0 }
-        let local = strip(current).split(separator: ".").map { Int($0) ?? 0 }
-        for index in 0..<max(release.count, local.count) {
-            let r = index < release.count ? release[index] : 0
-            let l = index < local.count ? local[index] : 0
-            if r != l { return r > l }
+        func components(_ value: String) -> [Int]? {
+            let stripped = value.trimmingCharacters(in: CharacterSet(charactersIn: "v "))
+            let fields = stripped.split(separator: ".", omittingEmptySubsequences: false)
+            guard fields.count == 3 else { return nil }
+            let values = fields.compactMap { field -> Int? in
+                guard !field.isEmpty, field.allSatisfy(\.isNumber) else { return nil }
+                return Int(field)
+            }
+            return values.count == 3 ? values : nil
         }
-        return false
+        guard let release = components(releaseTag), let local = components(current) else {
+            return false
+        }
+        return local.lexicographicallyPrecedes(release)
     }
 
     // MARK: - Download & verify
@@ -92,21 +105,61 @@ public struct UpdateChecker {
         return data
     }
 
-    /// Extracts the expected SHA-256 line for `assetName` from a SHA256SUMS body.
+    /// Extracts one exact 64-character SHA-256 for `assetName`.
     public static func expectedChecksum(in sumsBody: String, assetName: String) -> String? {
         for line in sumsBody.split(separator: "\n") {
-            let parts = line.split(separator: " ", maxSplits: 1)
-            if parts.count == 2,
-               let hash = parts.first,
-               parts[1].trimmingCharacters(in: .whitespaces).hasPrefix(assetName) {
-                return String(hash).lowercased()
-            }
+            let parts = line.split(whereSeparator: \.isWhitespace)
+            guard parts.count == 2,
+                  parts[1] == Substring(assetName),
+                  parts[0].count == 64,
+                  parts[0].allSatisfy({ $0.isHexDigit })
+            else { continue }
+            return String(parts[0]).lowercased()
         }
         return nil
     }
 
     public static func sha256(of data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Atomically installs a verified candidate and retains the current binary
+    /// as `<executable>.previous`. The candidate is staged beside the
+    /// executable so replacement cannot cross filesystems.
+    @discardableResult
+    public static func install(candidate: URL, over executable: URL) throws -> URL {
+        let fm = FileManager.default
+        let directory = executable.deletingLastPathComponent()
+        let staged = directory.appendingPathComponent(".retex-update-\(UUID().uuidString)")
+        let previous = URL(fileURLWithPath: executable.path + ".previous")
+        do {
+            try fm.copyItem(at: candidate, to: staged)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+            if fm.fileExists(atPath: previous.path) {
+                try fm.removeItem(at: previous)
+            }
+            try fm.copyItem(at: executable, to: previous)
+            let status = staged.path.withCString { source in
+                executable.path.withCString { destination in
+                    rename(source, destination)
+                }
+            }
+            guard status == 0 else {
+                throw UpdateError.installFailed(
+                    String(cString: strerror(errno))
+                )
+            }
+            guard fm.fileExists(atPath: executable.path),
+                  fm.fileExists(atPath: previous.path)
+            else {
+                throw UpdateError.installFailed("replacement did not preserve both binaries")
+            }
+            return previous
+        } catch {
+            try? fm.removeItem(at: staged)
+            if let updateError = error as? UpdateError { throw updateError }
+            throw UpdateError.installFailed(error.localizedDescription)
+        }
     }
 }
 
@@ -116,6 +169,7 @@ extension UpdateChecker {
         case malformedResponse
         case missingAssets(String)
         case downloadFailed(String)
+        case installFailed(String)
 
         public var errorDescription: String? {
             switch self {
@@ -123,6 +177,7 @@ extension UpdateChecker {
             case .malformedResponse: "GitHub releases response was malformed"
             case .missingAssets(let tag): "Release \(tag) is missing retex-universal.zip or SHA256SUMS"
             case .downloadFailed(let name): "Download failed: \(name)"
+            case .installFailed(let reason): "Retex could not install the verified update: \(reason)"
             }
         }
     }

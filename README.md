@@ -77,6 +77,7 @@ or deployment workflow.
 ```bash
 retex list --vault ~/Documents/CRM --type deal --json
 retex search "website rebuild" --vault ~/Documents/CRM --json
+retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --json
 retex create --vault ./CRM --type deal --title "Acme redesign" --status Inbox --set owner=Sam --json
 retex set ./CRM/Deals/acme-redesign.md due=2026-08-01 'next_action=Send scope' --json
 retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
@@ -103,18 +104,28 @@ the contract changes):
 
 With `--json`, invalid arguments exit with code 64 and file or storage
 failures exit with code 74. Failures use the same machine-readable contract
-with the same `schema_version` field.
+with the same `schema_version` field. `doctor --strict` emits its normal report
+and exits nonzero when it finds an unreadable note, invalid config, or corrupt
+journal.
 
-Exit codes: `0` success, `64` invalid usage, `74` file or storage failure.
+Exit codes: `0` success, `2` failed strict health gate, `64` invalid usage,
+`74` file or storage failure.
 
 ### Undo, views, and doctor
 
+Initialize a vault once before its first mutation:
+
+```bash
+retex init --vault ~/Documents/CRM --json
+```
+
 - **Undo** — every mutation records the file's previous content in
   `<vault>/.retex/history.jsonl` (capped at 50 entries per file, so total
-  journal size scales with how many distinct files a vault touches).
-  Cross-process safe: an MCP server and CLI runs against one vault serialize
-  their journal writes through an advisory lock. `retex undo <file>` restores
-  it; `retex log <file>` lists the journal.
+  journal size scales with how many distinct files a vault touches). State is
+  private to the current user: `.retex` is mode `0700`; journal and lock files
+  are `0600`. Cross-process safe: an MCP server and CLI runs against one vault
+  serialize journal writes through an advisory lock. `retex undo <file>`
+  restores it; `retex log <file>` lists the journal.
 - **Saved views** — `<vault>/.retex/config.json` can define custom board
   columns and named views:
 
@@ -214,15 +225,24 @@ never a command-line argument, so it never leaks through process listings.
 
 ## Updates
 
+Check availability without changing the installation:
+
+```bash
+retex update --check --json
+```
+
+After validating the candidate on disposable vault clones:
+
 ```bash
 retex update
 ```
 
-Checks the latest GitHub release, verifies the SHA-256 checksum of the
-release archive before installing, swaps the binary atomically, and keeps the
-previous binary at `<path>/retex.previous` for manual rollback. A failed
-download, checksum mismatch, or bad archive leaves your current binary
-untouched.
+The macOS updater verifies the exact SHA-256 entry, Developer ID requirement,
+Gatekeeper notarization, regular-file boundary, and reported candidate version
+before atomically replacing the binary. The previous version remains at
+`<path>/retex.previous` for rollback. A failed check leaves the installed
+binary untouched. Linux installations fail closed and build the tagged source;
+the universal release asset is macOS-only.
 
 ## Vault format
 
@@ -298,10 +318,11 @@ Implemented today:
 - Vault health checks (`retex doctor`)
 - An MCP server exposing the vault to any MCP host
 - Encrypted export/import on macOS (PBKDF2 + AES-GCM)
-- Self-update with checksum verification, atomic swap, and rollback
+- Self-update with checksum, Developer ID, notarization, candidate-version,
+  atomic replacement, and rollback verification
 - Versioned JSON envelope on every CLI response
-- 56 XCTests covering parsing, mutations, the CLI contract, undo, config,
-  watching, crypto, update logic, and the MCP server
+- Regression coverage for parsing, mutations, the CLI contract, undo, config,
+  watching, crypto, update logic, hosted gateway security, and the MCP server
 
 Not yet shipped:
 
@@ -319,8 +340,8 @@ changes.
 ## Security
 
 Report vulnerabilities privately via GitHub Security Advisories rather than
-public issues. Release assets are Developer ID–signed, notarized, and stapled; verify
-the `SHA256SUMS` file before installing.
+public issues. macOS release assets are Developer ID–signed and notarized;
+verify `SHA256SUMS` and Gatekeeper acceptance before installing.
 
 ## License
 

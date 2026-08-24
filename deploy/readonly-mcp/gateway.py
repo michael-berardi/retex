@@ -74,25 +74,34 @@ def build_proxy() -> FastMCP:
 
 
 def security_middleware(app):
+    security_headers = {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "X-Content-Type-Options": "nosniff",
+    }
+
     async def middleware(scope, receive, send):
         if scope["type"] != "http":
             await app(scope, receive, send)
             return
 
+        async def reject(message: str, status: int, *, authenticate: bool = False) -> None:
+            headers = dict(security_headers)
+            if authenticate:
+                headers["WWW-Authenticate"] = 'Bearer realm="retex"'
+            response = PlainTextResponse(message, status_code=status, headers=headers)
+            await response(scope, receive, send)
+
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         if not authorized(headers.get(b"authorization", b"")):
-            response = PlainTextResponse(
-                "unauthorized",
-                status_code=401,
-                headers={"WWW-Authenticate": 'Bearer realm="retex"'},
-            )
-            await response(scope, receive, send)
+            await reject("unauthorized", 401, authenticate=True)
             return
 
         content_length = headers.get(b"content-length")
         if scope.get("method") == "POST" and content_length is None:
-            response = PlainTextResponse("content length required", status_code=411)
-            await response(scope, receive, send)
+            await reject("content length required", 411)
             return
         try:
             length = int(content_length or b"0")
@@ -100,23 +109,60 @@ def security_middleware(app):
         except ValueError:
             too_large = True
         if too_large:
-            response = PlainTextResponse("request too large", status_code=413)
-            await response(scope, receive, send)
+            await reject("request too large", 413)
             return
+
+        secured_receive = receive
+        if scope.get("method") == "POST":
+            chunks: list[bytes] = []
+            actual_length = 0
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    await reject("request disconnected", 400)
+                    return
+                if message["type"] != "http.request":
+                    continue
+                chunk = message.get("body", b"")
+                actual_length += len(chunk)
+                if actual_length > MAX_REQUEST_BYTES:
+                    await reject("request too large", 413)
+                    return
+                chunks.append(chunk)
+                if not message.get("more_body", False):
+                    break
+            if actual_length != length:
+                await reject("content length mismatch", 400)
+                return
+
+            body = b"".join(chunks)
+            replayed = False
+
+            async def replay_receive():
+                nonlocal replayed
+                if replayed:
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            secured_receive = replay_receive
 
         async def secure_send(message):
             if message["type"] == "http.response.start":
+                existing = {
+                    key.lower()
+                    for key, _value in message.get("headers", [])
+                }
                 response_headers = list(message.get("headers", []))
                 response_headers.extend(
-                    [
-                        (b"cache-control", b"no-store"),
-                        (b"x-content-type-options", b"nosniff"),
-                    ]
+                    (key.lower().encode(), value.encode())
+                    for key, value in security_headers.items()
+                    if key.lower().encode() not in existing
                 )
                 message["headers"] = response_headers
             await send(message)
 
-        await app(scope, receive, secure_send)
+        await app(scope, secured_receive, secure_send)
 
     return middleware
 

@@ -5,7 +5,7 @@ description: >
   update a Retex Markdown vault through the Retex CLI or MCP server. Prefer this
   structured interface over recursive file discovery or editor-specific APIs.
 category: knowledge
-version: 1.0.0
+version: 1.1.0
 author: Retex contributors
 tags: [retex, markdown, vault, knowledge, mcp, cli]
 trigger_keywords: [retex, markdown vault, knowledge vault, agent memory, kanban]
@@ -29,10 +29,10 @@ either is unavailable.
 Choose the narrowest command that answers the request:
 
 ```bash
-retex doctor --vault "$RETEX_VAULT" --json
+retex doctor --vault "$RETEX_VAULT" --strict --json
 retex count --vault "$RETEX_VAULT" --json
-retex list --vault "$RETEX_VAULT" --type task --json
-retex search "query" --vault "$RETEX_VAULT" --json
+retex list --vault "$RETEX_VAULT" --type task --limit 100 --json
+retex search "query terms" --vault "$RETEX_VAULT" --ranked --limit 20 --json
 retex show "$RETEX_VAULT/Notes/example.md" --json
 retex board --vault "$RETEX_VAULT" --json
 retex views --vault "$RETEX_VAULT" --json
@@ -40,10 +40,11 @@ retex views --vault "$RETEX_VAULT" --json
 
 - Known path: `show`.
 - Total or existence check: `count`.
-- Structured slice: `list` with supported filters.
-- Unknown path or text query: `search`.
+- Structured slice: `list` with supported filters and a bounded `--limit`.
+- Unknown path or text query: ranked `search` with a bounded `--limit`.
+- Exact phrase or compatibility comparison: omit `--ranked`.
 - Workflow state: `board` or `views`.
-- Integrity: `doctor`.
+- Integrity gate: `doctor --strict`.
 
 Use one targeted Retex command instead of recursive glob/search/read sequences.
 For multiple agent queries, prefer a long-lived read-only MCP session so startup
@@ -52,6 +53,13 @@ and transport are amortized.
 ## Safe writes
 
 Read the target first. Retex mutations are explicit and journaled:
+
+Initialize each vault once so future undo records stay in its private
+vault-root state directory:
+
+```bash
+retex init --vault "$RETEX_VAULT" --json
+```
 
 ```bash
 retex create --vault "$RETEX_VAULT" --type task --title "Follow up" --status Inbox --json
@@ -95,17 +103,36 @@ vault files, source control, URLs, logs, examples, or MCP tool arguments.
 
 ## Release and live-vault safety
 
-Treat a live vault like a production database. Before using a new Retex binary
-against one:
+Treat a live vault like a production database. At the start of Retex
+maintenance, check without mutating:
 
-1. Copy or clone the vault to a disposable location.
-2. Run the full Retex test suite for the exact binary.
-3. Run `doctor` on the clone.
-4. Compare representative `list`, `search`, and `board` output with the previous
-   release.
-5. Confirm journal integrity and a rollback binary.
-6. Only then use read commands on the live vault. Test every write on a clone
-   first.
+```bash
+retex version
+retex update --check --json
+```
+
+A newer release is not permission to update. Before using its binary against a
+live vault:
+
+1. Inventory every Retex-managed local vault and hosted Retex service.
+2. Download the immutable release and verify its published SHA-256. On macOS,
+   require the expected Developer ID team and Gatekeeper notarization.
+3. Keep the installed binary and its `.previous` rollback copy.
+4. Copy or clone every live vault to a disposable location.
+5. Run the full Retex test suite for the exact candidate binary.
+6. Run `init` and `doctor --strict` on every clone.
+7. Compare exact-mode `list`, `search`, and `board` JSON with the previous
+   release. Ranked search is additive and evaluated separately.
+8. Test representative create/set/move/archive/undo mutations only on clones,
+   then confirm the previous release can still read every touched file.
+9. Update the local binary, run `init` and `doctor --strict` on every live
+   vault, and retain rollback until the verification window closes.
+10. For hosted services, pin the immutable release tag or commit, deploy one
+    canary, rerun authentication/path-escape/write-denial tests, then roll out
+    the remaining services and verify each live endpoint.
+
+Never run an unverified build or first-time write against a live vault. Never
+mass-update services merely because a new version exists.
 
 ## Performance
 

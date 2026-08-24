@@ -28,6 +28,34 @@ public struct UndoHistory: Sendable {
         vault.url.appendingPathComponent(".retex/history.jsonl")
     }
 
+    /// Creates the vault-local state marker used to keep every future undo
+    /// record at the vault root. Safe to call repeatedly.
+    @discardableResult
+    public static func prepare(for vault: Vault) throws -> URL {
+        let stateDirectory = vault.url.standardizedFileURL
+            .appendingPathComponent(".retex", isDirectory: true)
+        let journalURL = stateDirectory.appendingPathComponent("history.jsonl")
+        if (try? stateDirectory.resourceValues(
+            forKeys: [.isSymbolicLinkKey]
+        ).isSymbolicLink) == true {
+            throw StoreError.historyUnwritable(journalURL)
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: stateDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: stateDirectory.path
+            )
+            return stateDirectory
+        } catch {
+            throw StoreError.historyUnwritable(journalURL)
+        }
+    }
+
     private func journalURL(forPath path: String) -> URL {
         Self.journalURL(for: Vault(url: Self.vaultRoot(for: URL(fileURLWithPath: path))))
     }
@@ -46,24 +74,32 @@ public struct UndoHistory: Sendable {
     }
 
     /// Runs `body` holding an exclusive advisory lock on `<journal>.lock`,
-    /// serializing read-modify-write cycles across processes.
-    private func withJournalLock<R>(journalURL: URL, _ body: () throws -> R) rethrows -> R {
-        try? FileManager.default.createDirectory(
-            at: journalURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+    /// serializing read-modify-write cycles across processes. Undo state can
+    /// contain complete client notes, so the state directory and files are
+    /// always private to the current user.
+    private func withJournalLock<R>(journalURL: URL, _ body: () throws -> R) throws -> R {
+        let stateDirectory = journalURL.deletingLastPathComponent()
+        _ = try Self.prepare(
+            for: Vault(url: stateDirectory.deletingLastPathComponent())
         )
+
         let lockPath = journalURL.path + ".lock"
-        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
-        guard fd >= 0 else { return try body() }
+        let fd = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw StoreError.historyUnwritable(journalURL) }
         defer {
             flock(fd, LOCK_UN)
             close(fd)
         }
-        flock(fd, LOCK_EX)
+        guard fchmod(fd, 0o600) == 0, flock(fd, LOCK_EX) == 0 else {
+            throw StoreError.historyUnwritable(journalURL)
+        }
         return try body()
     }
 
     private func readEntries(from url: URL) throws -> [Entry] {
+        if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw StoreError.historyUnwritable(url)
+        }
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let raw = try String(contentsOf: url, encoding: .utf8)
         var entries: [Entry] = []
@@ -80,6 +116,9 @@ public struct UndoHistory: Sendable {
     }
 
     private func writeEntries(_ entries: [Entry], to url: URL) throws {
+        if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw StoreError.historyUnwritable(url)
+        }
         let lines = entries.map { entry -> String in
             (try? JSONEncoder().encode(entry)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
         }.filter { !$0.isEmpty }
@@ -89,6 +128,10 @@ public struct UndoHistory: Sendable {
         }
         do {
             try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: url.path
+            )
         } catch {
             throw StoreError.historyUnwritable(url)
         }
@@ -102,16 +145,20 @@ public struct UndoHistory: Sendable {
             var entries = try readEntries(from: url)
             entries.append(entry)
 
-            // Keep only the newest `capacityPerFile` entries for this exact path.
+            // Keep only the newest `capacityPerFile` entries for this exact
+            // path. Append while walking backward, then reverse once: inserting
+            // at index zero makes large journals quadratic.
             var survivors: [Entry] = []
+            survivors.reserveCapacity(entries.count)
             var countForPath = 0
             for existing in entries.reversed() {
                 if existing.path == entry.path {
                     countForPath += 1
                     if countForPath > Self.capacityPerFile { continue }
                 }
-                survivors.insert(existing, at: 0)
+                survivors.append(existing)
             }
+            survivors.reverse()
             try writeEntries(survivors, to: url)
         }
     }

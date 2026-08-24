@@ -50,6 +50,40 @@ final class UndoHistoryTests: XCTestCase {
         // Newest entry survives the cap.
         XCTAssertEqual(try history.pop(path: path), "v59")
     }
+
+    func testJournalStateUsesPrivatePermissions() throws {
+        let history = UndoHistory()
+        let path = vaultDir.appendingPathComponent("private.md").path
+        try history.record(.init(path: path, previousSource: "protected client data"))
+
+        func permissions(_ url: URL) throws -> Int {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            return try XCTUnwrap((attributes[.posixPermissions] as? NSNumber)?.intValue)
+        }
+
+        let state = vaultDir.appendingPathComponent(".retex", isDirectory: true)
+        XCTAssertEqual(try permissions(state), 0o700)
+        XCTAssertEqual(try permissions(state.appendingPathComponent("history.jsonl")), 0o600)
+        XCTAssertEqual(try permissions(state.appendingPathComponent("history.jsonl.lock")), 0o600)
+    }
+
+    func testJournalRefusesSymlinkedStateDirectory() throws {
+        let state = vaultDir.appendingPathComponent(".retex", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-history-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.removeItem(at: state)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let path = vaultDir.appendingPathComponent("protected.md").path
+        XCTAssertThrowsError(
+            try UndoHistory().record(.init(path: path, previousSource: "client data"))
+        )
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: outside.appendingPathComponent("history.jsonl").path
+        ))
+    }
 }
 
 final class VaultConfigTests: XCTestCase {
