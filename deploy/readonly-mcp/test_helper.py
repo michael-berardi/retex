@@ -49,7 +49,9 @@ class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
         async def app(_scope, receive, send):
             nonlocal called
             called = True
-            await receive()
+            request = await receive()
+            self.assertEqual(request["type"], "http.request")
+            self.assertEqual((await receive())["type"], "http.disconnect")
             await send(
                 {
                     "type": "http.response.start",

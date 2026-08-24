@@ -141,10 +141,9 @@ def security_middleware(app):
             async def replay_receive():
                 nonlocal replayed
                 if replayed:
-                    return {"type": "http.request", "body": b"", "more_body": False}
+                    return await receive()
                 replayed = True
                 return {"type": "http.request", "body": body, "more_body": False}
-
             secured_receive = replay_receive
 
         async def secure_send(message):
