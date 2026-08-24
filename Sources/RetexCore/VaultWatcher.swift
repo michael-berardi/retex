@@ -1,3 +1,4 @@
+#if os(macOS)
 import CoreServices
 import Foundation
 
@@ -141,3 +142,5 @@ public final class VaultWatcher: @unchecked Sendable {
         })
     }
 }
+
+#endif
