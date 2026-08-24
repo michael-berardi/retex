@@ -27,14 +27,10 @@ public struct MarkdownStore {
         var candidates: [URL] = []
         var unreadable: [String] = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            // Skip symlinks and other non-regular entries: one dangling agent
-            // symlink must not zero out an entire vault view — but report it.
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
-                  values.isRegularFile == true
-            else {
-                unreadable.append(url.path)
-                continue
-            }
+            // Note: do NOT pre-filter on isRegularFile here — it is false for
+            // valid symlinks to regular files (shared-fleet links), which must
+            // be indexed. Unreadable entries (dangling links, permissions)
+            // surface as load failures below and are reported, never fatal.
             candidates.append(url)
         }
 
