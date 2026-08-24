@@ -40,8 +40,8 @@ def load_tokens(environ: Mapping[str, str] = os.environ) -> tuple[str, ...]:
 
     tokens: list[str] = []
     for candidate in candidates:
-        if not isinstance(candidate, str) or len(candidate) < 32:
-            raise RuntimeError("every Retex MCP token must be a string of at least 32 characters")
+        if not isinstance(candidate, str) or len(candidate) < 32 or not candidate.isascii():
+            raise RuntimeError("every Retex MCP token must be an ASCII string of at least 32 characters")
         if candidate not in tokens:
             tokens.append(candidate)
     if not tokens:
