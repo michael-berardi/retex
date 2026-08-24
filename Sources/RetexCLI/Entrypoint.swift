@@ -334,6 +334,7 @@ enum RetexCLI {
         }
     }
 
+#if os(macOS)
     private static func runWatch(_ vault: Vault, json: Bool) throws {
         let printQueue = DispatchQueue(label: "retex.watch.output")
         let watcher = VaultWatcher(vault: vault, queue: printQueue) { paths in
@@ -358,6 +359,12 @@ enum RetexCLI {
 
         dispatchMain()
     }
+#else
+    private static func runWatch(_ vault: Vault, json: Bool) throws {
+        fputs("error: watch is only available on macOS\n", stderr)
+        throw ExitCode(64)
+    }
+#endif
 
     private static func runDoctor(_ vault: Vault) -> DoctorOutput {
         var issues: [String] = []
