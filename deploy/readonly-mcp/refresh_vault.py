@@ -2,7 +2,7 @@
 
 Polls a GitHub-hosted vault with a cheap `git ls-remote` HEAD comparison,
 and on change performs: shallow clone -> fail-closed validation -> atomic
-symlink swap of the serving directory. The Retex binary re-scans the vault
+rename-based swap of the serving directory. The Retex binary re-scans the vault
 on every request, so refreshed content is visible to in-flight sessions
 without restarting the MCP subprocess.
 
@@ -18,8 +18,8 @@ Configuration (environment):
   RETEX_DATA_DIR             Runtime data root (default: /data).
 
 Runtime layout under RETEX_DATA_DIR:
-  volumes/<revision>/   Validated, read-only content for one revision.
-  vault                 Symlink -> volumes/<revision>, swapped atomically.
+  volumes/<revision>/   Staged, validated revision (transient; renamed into place).
+  vault                 Real serving directory (Retex does not scan a symlinked root).
   vault-sync.json       Status document surfaced on /health.
 
 Failure policy: the previously served revision keeps serving; errors are
@@ -63,7 +63,7 @@ class VaultRefresher:
             self.poll_seconds = DEFAULT_POLL_SECONDS
         self.data_dir = Path(env.get("RETEX_DATA_DIR", "/data"))
         self.volumes_dir = self.data_dir / "volumes"
-        self.serving_link = self.data_dir / "vault"
+        self.serving_dir = self.data_dir / "vault"  # real directory, never a symlink
         self.status_path = self.data_dir / "vault-sync.json"
         self.applied_revision: str | None = None
         self.consecutive_failures = 0
@@ -71,8 +71,8 @@ class VaultRefresher:
     # -- git plumbing ---------------------------------------------------------
 
     def git_env(self) -> dict[str, str]:
-        """Environment for git subprocesses; auth token only via askpass."""
-        git_env = dict(self.env)
+        """Environment for git/retex subprocesses; token only via askpass."""
+        git_env = {**os.environ, **self.env}
         git_env["GIT_TERMINAL_PROMPT"] = "0"
         git_env["GIT_HTTP_LOW_SPEED_LIMIT"] = "1024"
         git_env["GIT_HTTP_LOW_SPEED_TIME"] = "30"
@@ -124,16 +124,29 @@ class VaultRefresher:
             shutil.rmtree(stage, ignore_errors=True)
             raise
 
-    # -- layout and swap ------------------------------------------------------
+    # -- layout and publish ---------------------------------------------------
 
     def bootstrap_layout(self) -> None:
         self.volumes_dir.mkdir(parents=True, exist_ok=True)
-        if not self.serving_link.is_symlink() and self.serving_link.exists():
-            # Baked build-time vault becomes the seed volume until first refresh.
-            seed = self.volumes_dir / "seed"
-            if not seed.exists():
-                self.serving_link.rename(seed)
-            os.symlink(os.path.relpath(seed, self.data_dir), self.serving_link)
+        # A baked build-time vault at serving_dir keeps serving as the seed
+        # until the first successful refresh replaces it.
+
+    def _publish(self, target: Path) -> Path | None:
+        """Swap the staged volume into the serving path via two renames.
+
+        Retex does not scan a vault whose root is a symlink (measured: zero
+        results through a symlinked root), so /data/vault stays a real
+        directory. The retired revision is moved aside first; the window in
+        which the serving path does not exist is a single rename wide.
+        """
+        retired: Path | None = None
+        if self.serving_dir.exists():
+            retired = self.volumes_dir / f"retired-{target.name[:12]}"
+            if retired.exists():
+                shutil.rmtree(retired)
+            os.replace(self.serving_dir, retired)
+        os.replace(target, self.serving_dir)
+        return retired
 
     def _write_status(self, error: str | None = None) -> None:
         status = {
@@ -149,11 +162,6 @@ class VaultRefresher:
         tmp.write_text(json.dumps(status), encoding="utf-8")
         os.replace(tmp, self.status_path)
 
-    def _prune_volumes(self, keep: str) -> None:
-        for path in self.volumes_dir.iterdir():
-            if path.is_dir() and path.name not in (keep, "seed"):
-                shutil.rmtree(path, ignore_errors=True)
-
     def apply_revision(self, revision: str) -> None:
         stage, content = self.fetch_revision(revision)
         try:
@@ -162,21 +170,29 @@ class VaultRefresher:
             if target.exists():
                 shutil.rmtree(target)
             shutil.copytree(content, target)
+            # Initialize Retex vault-local state (idempotent) so MCP tools
+            # index this revision; must precede the read-only lockdown.
+            self._run([
+                self.env.get("RETEX_BIN", "retex"),
+                "init", "--vault", str(target),
+            ])
+            state_dir = target / ".retex"
             for path in sorted(target.rglob("*"), reverse=True):
-                path.chmod(path.stat().st_mode & ~0o222)  # best-effort read-only
-            new_link = self.data_dir / f".vault.{revision}.link"
-            if new_link.is_symlink() or new_link.exists():
-                new_link.unlink()
-            os.symlink(f"volumes/{revision}", new_link)
-            os.replace(new_link, self.serving_link)  # atomic swap
-            previous, self.applied_revision = self.applied_revision, revision
-            self._prune_volumes(revision)
+                if path == state_dir or state_dir in path.parents:
+                    continue  # Retex keeps per-note state here; must stay writable
+                path.chmod(path.stat().st_mode & ~0o222)  # content: best-effort read-only
+            retired = self._publish(target)
+            if retired and retired != self.serving_dir:
+                shutil.rmtree(retired, ignore_errors=True)
+            self.applied_revision = revision
+            for stale in self.volumes_dir.iterdir():
+                if stale.is_dir() and stale.name not in (revision, "seed"):
+                    shutil.rmtree(stale, ignore_errors=True)
             self._write_status()
-            log(f"serving revision {revision[:12]} (previous: {(previous or 'none')[:12]})")
+            log(f"serving revision {revision[:12]}")
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
-    # -- loop -----------------------------------------------------------------
 
     def poll_once(self) -> bool:
         """Return True when a revision was applied, False when unchanged."""
