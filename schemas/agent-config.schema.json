@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Retex Agent Configuration",
+  "type": "object",
+  "required": [
+    "agent_id",
+    "name",
+    "identity",
+    "knowledge_vault",
+    "knowledge_mode"
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name; standalone word mentions trigger the agent"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "theme"
+      ],
+      "properties": {
+        "theme": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "knowledge_vault": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "knowledge_vault_repo": {
+      "type": "string"
+    },
+    "knowledge_mode": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "persona_required": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "additionalProperties": true
+}
