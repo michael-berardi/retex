@@ -13,7 +13,7 @@ even though the canonical Obsidian vault on this machine syncs to GitHub
 within seconds via fswatch → `~/bin/sync_vault.sh` (LaunchAgent
 `com.libertydesignstudio.obsidian.sync`).
 
-## Design chosen: service-side HEAD polling + atomic volume swap
+## Design chosen: service-side HEAD polling + rename-based swap
 
 The gateway process runs a background poller (`refresh_vault.py`):
 
@@ -25,10 +25,15 @@ The gateway process runs a background poller (`refresh_vault.py`):
    take `RETEX_VAULT_SUBDIR` if set, delete `.git`, run the fail-closed
    validator (`validate_vault.validate`: shareable frontmatter required,
    Markdown only, no symlinks/hidden paths, secret-pattern scan).
-3. **Atomic publish** — copy the validated tree to
-   `$RETEX_DATA_DIR/volumes/<sha>/` (files made read-only), then flip the
-   `/data/vault` symlink with `os.replace`. Symlink replacement is a single
-   POSIX rename: readers never observe a missing or half-written vault.
+3. **Publish** — copy the validated tree to `$RETEX_DATA_DIR/volumes/<sha>/`,
+   run idempotent `retex init` so MCP tools index it, make everything
+   read-only except `.retex/` (Retex keeps per-note state there and must be
+   able to write), then swap it into the serving path with two renames
+   (retire old, rename new in). The serving path must be a **real
+   directory**: measured on this fleet, Retex returns zero results when the
+   vault root is a symlink. The window where the serving path does not exist
+   is a single `rename(2)` wide; a request landing exactly inside it fails
+   once and succeeds on retry.
 4. **Zero-restart visibility** — the Retex binary re-scans the vault
    directory on every MCP request (no persistent index), so in-flight Felix
    sessions see new content on their next tool call.
@@ -42,16 +47,17 @@ consecutive failures, capped at 8×). A fresh good commit resets the backoff.
 
 | Option | Verdict |
 | --- | --- |
-| Post-commit webhook from `sync_vault.sh` → service refresh endpoint | Rejected: requires an authenticated mutation endpoint on each public service plus coupling to one machine's sync script; commits from any other machine (phone, CI-less agents) would be missed. Polling covers all writers for free. |
+| Post-commit webhook from `sync_vault.sh` → service refresh endpoint | Rejected: requires an authenticated mutation endpoint on each public service plus coupling to one machine's sync script; commits from any other writer would be missed. Polling covers all writers for free. |
 | Push events via GitHub webhooks | Same inbound-endpoint problem; also needs a public URL per vault and replay/secret management. |
 | GitHub Actions | Banned fleet-wide by standing rule. |
-| Keep build-time baking | Current behavior; staleness is unbounded (until manual `railway up`). |
+| Keep build-time baking | Previous behavior; staleness is unbounded (until a manual rebuild). |
 
 Polling trades up to ~45 s of latency for zero new attack surface, zero
 inbound ports, no secrets in repos, and identical behavior regardless of who
 pushed. This matches the requirement of seconds-to-a-minute propagation; set
 `RETEX_VAULT_POLL_SECONDS=15` if a tighter window is ever needed (cost is one
-HTTPS round trip per interval per service).
+HTTPS round trip per interval per service). Measured end-to-end latency on
+this fleet: commit push → visible to MCP search in 6 s at a 10 s interval.
 
 ## Configuration
 
@@ -82,13 +88,14 @@ Secret handling:
 Runtime layout under `$RETEX_DATA_DIR` (default `/data`):
 
 ```
-/data/volumes/<sha>/    validated read-only content (current kept, extras pruned)
-/data/vault -> volumes/<sha>   symlink swapped atomically
-/data/vault-sync.json   {revision, ref, updated_at, last_error?} → /health
+/data/volumes/<sha>/   staged validated revision (transient)
+/data/vault            real serving directory, swapped by rename
+/data/vault-sync.json  {revision, ref, updated_at, last_error?} → /health
 ```
 
-If the image baked a seed vault, it becomes `volumes/seed` and keeps serving
-until the first successful refresh — a repo outage at boot degrades nothing.
+If the image baked a seed vault, it keeps serving as `/data/vault` until the
+first successful refresh replaces it — a repo outage at boot degrades
+nothing.
 
 ## Rollout notes (fleet)
 
@@ -107,6 +114,6 @@ until the first successful refresh — a repo outage at boot degrades nothing.
 
 `deploy/readonly-mcp/test_helper.py::VaultRefresherTests` exercises the full
 loop offline against a local bare remote: apply, no-op on unchanged HEAD,
-second-commit propagation with old-volume pruning, fail-closed rejection of
+second-commit propagation with stale-volume pruning, fail-closed rejection of
 non-shareable content while continuing to serve the previous revision, and
 subdir-only serving.

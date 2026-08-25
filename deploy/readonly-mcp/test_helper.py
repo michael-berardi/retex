@@ -227,9 +227,9 @@ class VaultRefresherTests(unittest.TestCase):
         refresher = self._refresher()
         refresher.bootstrap_layout()
         self.assertTrue(refresher.poll_once())
-        served = (Path(os.readlink(refresher.serving_link)))
-        self.assertTrue(served.is_relative_to("volumes"))
-        self.assertEqual((refresher.serving_link / "project.md").read_text(), self._note_text("# Safe project facts"))
+        self.assertTrue(refresher.serving_dir.is_dir())
+        self.assertFalse(refresher.serving_dir.is_symlink())
+        self.assertEqual((refresher.serving_dir / "project.md").read_text(), self._note_text("# Safe project facts"))
         status = json.loads(refresher.status_path.read_text())
         self.assertIsNone(status.get("last_error"))
         self.assertEqual(len(status["revision"]), 40)
@@ -244,9 +244,12 @@ class VaultRefresherTests(unittest.TestCase):
         self.assertTrue(refresher.poll_once())
         second_status = json.loads(refresher.status_path.read_text())
         self.assertNotEqual(first_status["revision"], second_status["revision"])
-        self.assertIn("# Updated facts", (refresher.serving_link / "project.md").read_text())
-        remaining = [p.name for p in refresher.volumes_dir.iterdir() if p.is_dir()]
-        self.assertEqual(remaining, [second_status["revision"]])
+        self.assertIn("# Updated facts", (refresher.serving_dir / "project.md").read_text())
+        # The current revision lives at the serving path; volumes keeps no
+        # stale copies.
+        remaining = sorted(p.name for p in refresher.volumes_dir.iterdir() if p.is_dir())
+        self.assertEqual(remaining, [])
+        self.assertEqual(second_status["revision"], refresher.applied_revision)
 
     def test_disabled_without_repo(self) -> None:
         refresher = refresh_vault.VaultRefresher({"RETEX_VAULT_REPO": ""})
@@ -264,7 +267,7 @@ class VaultRefresherTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.work), "push", "--quiet", "origin", "main"], check=True)
         self.assertFalse(refresher.poll_once())
         self.assertEqual(json.loads(refresher.status_path.read_text())["revision"], good)
-        self.assertIn("# Safe project facts", (refresher.serving_link / "project.md").read_text())
+        self.assertIn("# Safe project facts", (refresher.serving_dir / "project.md").read_text())
         self.assertIn("last_error", json.loads(refresher.status_path.read_text()))
 
     def test_subdir_serving(self) -> None:
@@ -277,8 +280,8 @@ class VaultRefresherTests(unittest.TestCase):
         refresher = self._refresher(RETEX_VAULT_SUBDIR="curated")
         refresher.bootstrap_layout()
         refresher.poll_once()
-        names = sorted(p.name for p in refresher.serving_link.iterdir())
-        self.assertEqual(names, ["c.md"])
+        names = sorted(p.name for p in refresher.serving_dir.iterdir())
+        self.assertEqual(names, [".retex", "c.md"])
 
 
 
