@@ -14,6 +14,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 
+import refresh_vault
+
 RETEX_BIN = os.environ.get("RETEX_BIN", "retex")
 VAULT = os.environ.get("RETEX_VAULT", "/data/vault")
 SERVICE_NAME = os.environ.get("RETEX_SERVICE_NAME", "retex-readonly")
@@ -167,7 +169,13 @@ def security_middleware(app):
 
 
 async def health(_request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": SERVICE_NAME, "mode": "read-only"})
+    payload = {"status": "ok", "service": SERVICE_NAME, "mode": "read-only"}
+    sync = refresh_vault.load_status(os.environ.get("RETEX_DATA_DIR", "/data"))
+    if sync:
+        payload["vault_sync"] = sync
+        if sync.get("last_error"):
+            payload["status"] = "degraded"
+    return JSONResponse(payload)
 
 
 def main() -> None:
@@ -183,6 +191,7 @@ def main() -> None:
     )
     port = int(os.environ.get("PORT", "8080"))
     print(f"{SERVICE_NAME} serving in read-only mode on :{port}")
+    refresh_vault.start_background()
     uvicorn.run(
         security_middleware(app),
         host=os.environ.get("HOST", "0.0.0.0"),

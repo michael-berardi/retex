@@ -8,7 +8,7 @@ RUN swift build -c release --product retex -j 2
 FROM ubuntu:24.04
 LABEL description="Retex read-only MCP — token-authenticated, curated knowledge only"
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip curl ca-certificates \
+      python3 python3-pip curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --break-system-packages \
       "fastmcp==2.12.5" "mcp==1.16.0"
@@ -18,16 +18,22 @@ COPY --from=build /usr/lib/swift/linux /usr/lib/swift/linux
 COPY --from=build /build/deploy/readonly-mcp/gateway.py /app/gateway.py
 COPY --from=build /build/deploy/readonly-mcp/validate_vault.py /app/validate_vault.py
 COPY knowledge /data/vault
+COPY --from=build /build/deploy/readonly-mcp/refresh_vault.py /app/refresh_vault.py
 
 ENV LD_LIBRARY_PATH=/usr/lib/swift/linux \
     RETEX_BIN=/usr/local/bin/retex \
     RETEX_VAULT=/data/vault \
     PORT=8080
 
+# The baked vault is the seed revision; when RETEX_VAULT_REPO is set the
+# refresher swaps /data/vault atomically to freshly validated revisions.
+# /data itself must be writable to publish new volumes; volume contents
+# stay root-owned and read-only.
 RUN python3 /app/validate_vault.py /data/vault \
-    && useradd -r -u 10001 retex \
-    && chown -R root:root /data/vault \
-    && chmod -R a-w /data/vault
+  && useradd -r -u 10001 retex \
+  && mkdir -p /data/volumes \
+  && chown retex:retex /data /data/volumes \
+  && chmod -R a-w /data/vault
 USER retex
 
 EXPOSE 8080
