@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -8,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import gateway
+import refresh_vault
 import validate_vault
 
 
@@ -179,6 +184,103 @@ class VaultValidationTests(unittest.TestCase):
                 validate_vault.validate(self.root)
         finally:
             outside.unlink(missing_ok=True)
+
+
+
+class VaultRefresherTests(unittest.TestCase):
+    """Offline end-to-end refresh against a local git remote."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.remote = self.root / "remote.git"
+        self.work = self.root / "seed-work"
+        self.data = self.root / "data"
+        subprocess.run(["git", "init", "--quiet", "--bare", str(self.remote)], check=True)
+        self._commit_note("# Safe project facts")
+        self.env = {
+            "RETEX_VAULT_REPO": str(self.remote),
+            "RETEX_VAULT_REF": "main",
+            "RETEX_DATA_DIR": str(self.data),
+        }
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _note_text(self, body: str) -> str:
+        return f"---\nshareable: true\ntype: note\n---\n\n{body}\n"
+
+    def _commit_note(self, body: str, name: str = "project.md") -> None:
+        if not self.work.exists():
+            subprocess.run(["git", "clone", "--quiet", str(self.remote), str(self.work)], check=True)
+            subprocess.run(["git", "-C", str(self.work), "config", "user.email", "t@t"], check=True)
+            subprocess.run(["git", "-C", str(self.work), "config", "user.name", "t"], check=True)
+        (self.work / name).write_text(self._note_text(body), encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.work), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.work), "commit", "--quiet", "-m", f"note {body}"], check=True)
+        subprocess.run(["git", "-C", str(self.work), "push", "--quiet", "origin", "main"], check=True)
+
+    def _refresher(self, **overrides) -> refresh_vault.VaultRefresher:
+        return refresh_vault.VaultRefresher({**self.env, **overrides})
+
+    def test_applies_new_revision_and_serves_content(self) -> None:
+        refresher = self._refresher()
+        refresher.bootstrap_layout()
+        self.assertTrue(refresher.poll_once())
+        served = (Path(os.readlink(refresher.serving_link)))
+        self.assertTrue(served.is_relative_to("volumes"))
+        self.assertEqual((refresher.serving_link / "project.md").read_text(), self._note_text("# Safe project facts"))
+        status = json.loads(refresher.status_path.read_text())
+        self.assertIsNone(status.get("last_error"))
+        self.assertEqual(len(status["revision"]), 40)
+
+    def test_second_commit_propagates_and_old_volume_is_pruned(self) -> None:
+        refresher = self._refresher()
+        refresher.bootstrap_layout()
+        refresher.poll_once()
+        first_status = json.loads(refresher.status_path.read_text())
+        self.assertFalse(refresher.poll_once())  # unchanged HEAD is a no-op
+        self._commit_note("# Updated facts")
+        self.assertTrue(refresher.poll_once())
+        second_status = json.loads(refresher.status_path.read_text())
+        self.assertNotEqual(first_status["revision"], second_status["revision"])
+        self.assertIn("# Updated facts", (refresher.serving_link / "project.md").read_text())
+        remaining = [p.name for p in refresher.volumes_dir.iterdir() if p.is_dir()]
+        self.assertEqual(remaining, [second_status["revision"]])
+
+    def test_disabled_without_repo(self) -> None:
+        refresher = refresh_vault.VaultRefresher({"RETEX_VAULT_REPO": ""})
+        self.assertFalse(refresher.poll_once())
+
+    def test_invalid_revision_is_rejected_fail_closed(self) -> None:
+        refresher = self._refresher()
+        refresher.bootstrap_layout()
+        refresher.poll_once()
+        good = json.loads(refresher.status_path.read_text())["revision"]
+        # A note without shareable frontmatter must never be served.
+        (self.work / "leak.md").write_text("# internal only\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.work), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.work), "commit", "--quiet", "-m", "bad"], check=True)
+        subprocess.run(["git", "-C", str(self.work), "push", "--quiet", "origin", "main"], check=True)
+        self.assertFalse(refresher.poll_once())
+        self.assertEqual(json.loads(refresher.status_path.read_text())["revision"], good)
+        self.assertIn("# Safe project facts", (refresher.serving_link / "project.md").read_text())
+        self.assertIn("last_error", json.loads(refresher.status_path.read_text()))
+
+    def test_subdir_serving(self) -> None:
+        (self.work / "curated").mkdir(exist_ok=True)
+        (self.work / "curated" / "c.md").write_text(self._note_text("# Curated"), encoding="utf-8")
+        (self.work / "secret.md").write_text(self._note_text("# Not served"), encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.work), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.work), "commit", "--quiet", "-m", "subdir"], check=True)
+        subprocess.run(["git", "-C", str(self.work), "push", "--quiet", "origin", "main"], check=True)
+        refresher = self._refresher(RETEX_VAULT_SUBDIR="curated")
+        refresher.bootstrap_layout()
+        refresher.poll_once()
+        names = sorted(p.name for p in refresher.serving_link.iterdir())
+        self.assertEqual(names, ["c.md"])
+
+
 
 
 if __name__ == "__main__":
