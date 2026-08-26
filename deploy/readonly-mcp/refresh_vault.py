@@ -67,6 +67,7 @@ class VaultRefresher:
         self.status_path = self.data_dir / "vault-sync.json"
         self.applied_revision: str | None = None
         self.consecutive_failures = 0
+        self._askpass_dir: str | None = None
 
     # -- git plumbing ---------------------------------------------------------
 
