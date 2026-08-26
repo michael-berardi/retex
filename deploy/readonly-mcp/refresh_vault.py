@@ -181,7 +181,10 @@ class VaultRefresher:
             for path in sorted(target.rglob("*"), reverse=True):
                 if path == state_dir or state_dir in path.parents:
                     continue  # Retex keeps per-note state here; must stay writable
-                path.chmod(path.stat().st_mode & ~0o222)  # content: best-effort read-only
+                if path.is_dir():
+                    path.chmod(path.stat().st_mode | 0o700)
+                else:
+                    path.chmod(path.stat().st_mode & ~0o222)  # content: read-only
             retired = self._publish(target)
             if retired and retired != self.serving_dir:
                 shutil.rmtree(retired, ignore_errors=True)

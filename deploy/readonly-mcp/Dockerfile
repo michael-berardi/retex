@@ -33,7 +33,8 @@ RUN python3 /app/validate_vault.py /data/vault \
   && useradd -r -u 10001 retex \
   && mkdir -p /data/volumes \
   && chown retex:retex /data /data/volumes \
-  && chmod -R a-w /data/vault
+  && chmod -R a-w /data/vault \
+  && find /data/vault -type d -exec chmod u+rwx {} +
 USER retex
 
 EXPOSE 8080
