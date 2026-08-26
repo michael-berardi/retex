@@ -62,6 +62,7 @@ class VaultRefresher:
         except ValueError:
             self.poll_seconds = DEFAULT_POLL_SECONDS
         self.data_dir = Path(env.get("RETEX_DATA_DIR", "/data"))
+        self.seed_dir = Path(env.get("RETEX_SEED_VAULT", "/data/seed-vault"))
         self.volumes_dir = self.data_dir / "volumes"
         self.serving_dir = self.data_dir / "vault"  # real directory, never a symlink
         self.status_path = self.data_dir / "vault-sync.json"
@@ -129,8 +130,13 @@ class VaultRefresher:
 
     def bootstrap_layout(self) -> None:
         self.volumes_dir.mkdir(parents=True, exist_ok=True)
-        # A baked build-time vault at serving_dir keeps serving as the seed
-        # until the first successful refresh replaces it.
+        if not self.serving_dir.exists() and self.seed_dir.is_dir():
+            shutil.copytree(self.seed_dir, self.serving_dir)
+            for path in sorted(self.serving_dir.rglob("*"), reverse=True):
+                if path.is_dir():
+                    path.chmod(path.stat().st_mode | 0o700)
+                else:
+                    path.chmod(path.stat().st_mode & ~0o222)
 
     def _publish(self, target: Path) -> Path | None:
         """Swap the staged volume into the serving path via two renames.
@@ -239,19 +245,23 @@ class VaultRefresher:
 def start_background() -> VaultRefresher | None:
     """Start the poller daemon thread; returns None when disabled."""
     refresher = VaultRefresher()
+    try:
+        refresher.bootstrap_layout()
+    except Exception as exc:  # noqa: BLE001
+        log(f"bootstrap failed: {type(exc).__name__}: {exc}")
     if not refresher.repo:
         return None
 
-    def _bootstrap_and_run() -> None:
+    def _poll_and_run() -> None:
         try:
-            refresher.bootstrap_layout()
             refresher.poll_once()  # immediate first sync at boot
         except Exception as exc:  # noqa: BLE001
-            log(f"bootstrap failed: {type(exc).__name__}: {exc}")
+            log(f"initial refresh failed: {type(exc).__name__}: {exc}")
         refresher.run_forever()
 
-    threading.Thread(target=_bootstrap_and_run, name="vault-refresh", daemon=True).start()
+    threading.Thread(target=_poll_and_run, name="vault-refresh", daemon=True).start()
     return refresher
+
 
 
 def load_status(data_dir: str | os.PathLike[str] = "/data") -> dict | None:
