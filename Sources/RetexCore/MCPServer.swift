@@ -281,12 +281,11 @@ public struct MCPServer {
     private func confinedURL(_ path: String, markdownOnly: Bool = true) throws -> URL {
         let root = vault.url.standardizedFileURL.resolvingSymlinksInPath()
         let expanded = NSString(string: path).expandingTildeInPath
-        let unresolved = expanded.hasPrefix("/")
+        let unresolved = (expanded as NSString).isAbsolutePath
             ? URL(fileURLWithPath: expanded)
             : root.appendingPathComponent(expanded)
         let candidate = unresolved.standardizedFileURL.resolvingSymlinksInPath()
-        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard candidate.path == root.path || candidate.path.hasPrefix(rootPrefix) else {
+        guard isWithinVault(candidate, root: root) else {
             throw ToolError(message: "path must stay within the vault")
         }
         guard !markdownOnly || candidate.pathExtension.lowercased() == "md" else {
@@ -309,7 +308,7 @@ public struct MCPServer {
         switch name {
         case "list_notes":
             var notes = try notesInVault()
-            if let type = arg("type") { notes = notes.filter { $0.type.rawValue == type } }
+            if let type = arg("type") { notes = notes.filter { $0.recordType.caseInsensitiveCompare(type) == .orderedSame } }
             if !((arg("archived") ?? "false").lowercased() == "true") { notes = notes.filter { !$0.isArchived } }
             if let limit = try positiveLimit(arg("limit")) {
                 notes = Array(notes.prefix(limit))
@@ -343,6 +342,7 @@ public struct MCPServer {
             return .stringDict([
                 "title": note.title,
                 "type": note.type.rawValue,
+                "recordType": note.recordType,
                 "status": note.status,
                 "tags": note.tags.joined(separator: ", "),
                 "metadata": note.metadata.sorted { $0.key < $1.key }
@@ -358,9 +358,12 @@ public struct MCPServer {
                 let parts = pair.split(separator: "=", maxSplits: 1)
                 if parts.count == 2 { metadata[String(parts[0])] = String(parts[1]) }
             }
-            let folder = arg("folder") ?? "Notes"
+            let config = VaultConfig.load(for: vault)
+            let folder = arg("folder") ?? config.folder(
+                for: metadata["type", default: NoteType.note.rawValue]
+            )
             let expandedFolder = NSString(string: folder).expandingTildeInPath
-            guard !expandedFolder.hasPrefix("/") else {
+            guard !(expandedFolder as NSString).isAbsolutePath else {
                 throw ToolError(message: "folder must be relative to the vault")
             }
             _ = try confinedURL(expandedFolder, markdownOnly: false)
@@ -401,9 +404,111 @@ public struct MCPServer {
             try store.updateMetadata("archived", value: "true", for: note)
             return .stringDict(["archived": url.path])
 
+        case "query_records":
+            let filters = try propertyFilters(arg("where"))
+            var notes = try notesInVault().filter {
+                MarkdownStore.matches(
+                    $0,
+                    type: arg("type"),
+                    status: arg("status"),
+                    tag: arg("tag"),
+                    metadata: filters
+                )
+            }
+            if !((arg("archived") ?? "false").lowercased() == "true") {
+                notes = notes.filter { !$0.isArchived }
+            }
+            let total = notes.count
+            let limit = try positiveLimit(arg("limit")) ?? 100
+            notes = Array(notes.prefix(limit))
+            return .object([
+                "count": .string(String(notes.count)),
+                "total": .string(String(total)),
+                "truncated": .bool(notes.count < total),
+                "records": .array(notes.map(Self.recordJSON)),
+            ])
+
+        case "recall_context":
+            guard let query = arg("query") else { throw ToolError(message: "recall_context requires query") }
+            let limit = try positiveLimit(arg("limit")) ?? 20
+            let budget = try positiveInteger(arg("budget"), name: "budget", maximum: 1_000_000) ?? 12_000
+            guard budget >= 256 else {
+                throw ToolError(message: "budget must be an integer from 256 through 1000000")
+            }
+            let includeArchived = (arg("archived") ?? "false").lowercased() == "true"
+            let filters = try propertyFilters(arg("where"))
+            let hits = try store.recall(
+                vault,
+                query: query,
+                type: arg("type"),
+                status: arg("status"),
+                tag: arg("tag"),
+                metadata: filters,
+                includeArchived: includeArchived,
+                limit: limit
+            ).filter {
+                (try? confinedURL($0.note.url.path)) != nil
+            }
+            let encoder = JSONEncoder()
+            var records: [JSONValue] = []
+            for hit in hits {
+                let candidate = records + [Self.recallJSON(hit)]
+                guard let bytes = try? encoder.encode(candidate).count, bytes <= budget else {
+                    continue
+                }
+                records = candidate
+            }
+            let usedBytes = (try? encoder.encode(records).count) ?? 0
+            return .object([
+                "query": .string(query),
+                "budgetBytes": .string(String(budget)),
+                "usedBytes": .string(String(usedBytes)),
+                "truncated": .bool(records.count < hits.count),
+                "records": .array(records),
+            ])
+
+        case "get_links":
+            guard let path = arg("path") else { throw ToolError(message: "get_links requires path") }
+            let limit = try positiveLimit(arg("limit")) ?? 100
+            let graph = try store.links(vault, for: confinedURL(path))
+            let allOutgoing = graph.outgoing.filter { (try? confinedURL($0.url.path)) != nil }
+            let allBacklinks = graph.backlinks.filter { (try? confinedURL($0.url.path)) != nil }
+            let outgoing = Array(allOutgoing.prefix(limit))
+            let backlinks = Array(allBacklinks.prefix(limit))
+            return .object([
+                "outgoing": .array(outgoing.map(Self.recordJSON)),
+                "backlinks": .array(backlinks.map(Self.recordJSON)),
+                "unresolved": .array(graph.unresolved.prefix(limit).map(JSONValue.string)),
+                "truncated": .bool(
+                    outgoing.count < allOutgoing.count
+                        || backlinks.count < allBacklinks.count
+                        || graph.unresolved.count > limit
+                ),
+            ])
+
+        case "get_schema":
+            let notes = try notesInVault()
+            let config = VaultConfig.load(for: vault)
+            let types = Set(
+                NoteType.allCases.map(\.rawValue)
+                    + config.recordTypes.map(\.name)
+                    + notes.map(\.recordType)
+            ).sorted()
+            let properties = Set(notes.flatMap { $0.metadata.keys }).sorted()
+            return .object([
+                "recordTypes": .array(types.map(JSONValue.string)),
+                "properties": .array(properties.map(JSONValue.string)),
+                "configuredSchemas": .array(config.recordTypes.map(Self.schemaJSON)),
+            ])
+
         case "get_stats":
             let notes = try notesInVault()
             let byType = Dictionary(grouping: notes, by: \.type.rawValue)
+                .mapValues(\.count)
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }
+                .joined(separator: ", ")
+            let byRecordType = Dictionary(grouping: notes, by: \.recordType)
                 .mapValues(\.count)
                 .sorted { $0.key < $1.key }
                 .map { "\($0.key): \($0.value)" }
@@ -412,11 +517,12 @@ public struct MCPServer {
                 "notes": String(notes.count),
                 "archived": String(notes.filter(\.isArchived).count),
                 "byType": byType,
+                "byRecordType": byRecordType,
             ])
 
         case "get_board":
             let config = VaultConfig.load(for: vault)
-            let deals = try notesInVault().filter { $0.type == .deal && !$0.isArchived }
+            let deals = try notesInVault().filter { $0.recordType == NoteType.deal.rawValue && !$0.isArchived }
             let columns = config.columns.map { column in
                 let cards = deals.filter { column.statuses.contains($0.status) }.sorted { $0.rank < $1.rank }
                 return "\(column.title):\n" + cards.map { "  [\($0.rank)] \($0.title)" }.joined(separator: "\n")
@@ -435,6 +541,66 @@ public struct MCPServer {
         }
         return limit
     }
+
+    private func positiveInteger(
+        _ raw: String?,
+        name: String,
+        maximum: Int
+    ) throws -> Int? {
+        guard let raw else { return nil }
+        guard let value = Int(raw), (1...maximum).contains(value) else {
+            throw ToolError(message: "\(name) must be an integer from 1 through \(maximum)")
+        }
+        return value
+    }
+
+    private func propertyFilters(_ raw: String?) throws -> [String: String] {
+        guard let raw, !raw.isEmpty else { return [:] }
+        return try raw.split(separator: ";").reduce(into: [:]) { result, pair in
+            let fields = pair.split(separator: "=", maxSplits: 1)
+            guard fields.count == 2, !fields[0].isEmpty else {
+                throw ToolError(message: "where must contain semicolon-separated key=value filters")
+            }
+            result[String(fields[0])] = String(fields[1])
+        }
+    }
+
+    private static func recordJSON(_ note: Note) -> JSONValue {
+        .object([
+            "id": .string(note.id),
+            "path": .string(note.url.path),
+            "title": .string(note.title),
+            "type": .string(note.recordType),
+            "status": .string(note.status),
+            "tags": .array(note.tags.map(JSONValue.string)),
+            "metadata": .object(note.metadata.mapValues(JSONValue.string)),
+            "archived": .bool(note.isArchived),
+        ])
+    }
+
+    private static func recallJSON(_ hit: RecallHit) -> JSONValue {
+        .object([
+            "id": .string(hit.note.id),
+            "path": .string(hit.note.url.path),
+            "title": .string(hit.note.title),
+            "type": .string(hit.note.recordType),
+            "status": .string(hit.note.status),
+            "tags": .array(hit.note.tags.map(JSONValue.string)),
+            "score": .string(String(hit.score)),
+            "matchedTerms": .array(hit.matchedTerms.map(JSONValue.string)),
+            "excerpt": .string(hit.excerpt),
+        ])
+    }
+
+    private static func schemaJSON(_ schema: VaultConfig.RecordSchema) -> JSONValue {
+        .object([
+            "name": .string(schema.name),
+            "folder": .string(schema.folder ?? ""),
+            "required": .array(schema.required.map(JSONValue.string)),
+            "properties": .array(schema.properties.map(JSONValue.string)),
+        ])
+    }
+
 
     // MARK: - Output
 
@@ -500,7 +666,8 @@ public struct MCPServer {
     }
 
     private static let readOnlyTools: Set<String> = [
-        "list_notes", "search_notes", "read_note", "get_board", "get_stats",
+        "list_notes", "search_notes", "read_note", "query_records",
+        "recall_context", "get_links", "get_schema", "get_board", "get_stats",
     ]
 
     private var knownTools: Set<String> {
@@ -592,6 +759,59 @@ public struct MCPServer {
                     "type": .string("object"),
                     "properties": .object(["path": .object(["type": .string("string")])]),
                     "required": .array([.string("path")]),
+                ])
+            ),
+            ToolDefinition(
+                name: "query_records",
+                description: "Structured records filtered by arbitrary type, status, tag, and semicolon-separated key=value properties. Defaults to 100 results.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "type": .object(["type": .string("string")]),
+                        "status": .object(["type": .string("string")]),
+                        "tag": .object(["type": .string("string")]),
+                        "where": .object(["type": .string("string")]),
+                        "archived": .object(["type": .string("boolean")]),
+                        "limit": .object(["type": .string("integer")]),
+                    ]),
+                ])
+            ),
+            ToolDefinition(
+                name: "recall_context",
+                description: "Agent recall that removes filler words, ranks partial matches, returns evidence excerpts, and enforces a byte budget.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "query": .object(["type": .string("string")]),
+                        "type": .object(["type": .string("string")]),
+                        "status": .object(["type": .string("string")]),
+                        "tag": .object(["type": .string("string")]),
+                        "where": .object(["type": .string("string")]),
+                        "archived": .object(["type": .string("boolean")]),
+                        "limit": .object(["type": .string("integer")]),
+                        "budget": .object(["type": .string("integer")]),
+                    ]),
+                    "required": .array([.string("query")]),
+                ])
+            ),
+            ToolDefinition(
+                name: "get_links",
+                description: "Resolve one note's outgoing wiki links, backlinks, and unresolved targets. Defaults to 100 per group.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string")]),
+                        "limit": .object(["type": .string("integer")]),
+                    ]),
+                    "required": .array([.string("path")]),
+                ])
+            ),
+            ToolDefinition(
+                name: "get_schema",
+                description: "Discover record types, properties, and configured record schemas in this vault.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
                 ])
             ),
             ToolDefinition(

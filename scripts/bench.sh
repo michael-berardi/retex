@@ -33,6 +33,10 @@ done
 T=$( { /usr/bin/time -p "$BIN" search "Lucero" --vault "$LDS" --json >/dev/null; } 2>&1 | awk '/real/{print $2}' )
 echo "search_s: $T"
 
+# Agent recall (natural question, bounded evidence)
+T=$( { /usr/bin/time -p "$BIN" recall "what is the Retex vault upgrade standard" --vault "$LDS" --limit 20 --budget 12000 --json >/dev/null; } 2>&1 | awk '/real/{print $2}' )
+echo "recall_s: $T"
+
 # Doctor
 T=$( { /usr/bin/time -p "$BIN" doctor --vault "$LDS" --json >/dev/null; } 2>&1 | awk '/real/{print $2}' )
 echo "doctor_s: $T"

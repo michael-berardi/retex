@@ -1,6 +1,11 @@
-#if os(macOS)
+#if canImport(CommonCrypto)
 import CommonCrypto
+#endif
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 
 /// Passphrase-encrypted vault export/import.
@@ -41,7 +46,6 @@ public struct VaultCrypto {
     public static func makeArchive(vaultURL: URL) throws -> Data {
         let lexicalRoot = vaultURL.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
-        let rootPrefix = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
         guard let enumerator = FileManager.default.enumerator(
             at: lexicalRoot,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
@@ -53,11 +57,13 @@ public struct VaultCrypto {
         var files: [ArchivedFile] = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
             let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
-            guard resolved.path == resolvedRoot.path || resolved.path.hasPrefix(rootPrefix) else {
+            guard isWithinVault(resolved, root: resolvedRoot) else {
                 throw StoreError.pathOutsideVault(url)
             }
             let content = try String(contentsOf: resolved, encoding: .utf8)
-            let relative = String(url.standardizedFileURL.path.dropFirst(lexicalRoot.path.count + 1))
+            let relative = url.standardizedFileURL.pathComponents
+                .dropFirst(lexicalRoot.pathComponents.count)
+                .joined(separator: "/")
             files.append(ArchivedFile(path: relative, content: content))
         }
         files.sort { $0.path < $1.path }
@@ -73,13 +79,12 @@ public struct VaultCrypto {
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let lexicalRoot = dir.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
-        let rootPrefix = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
         var seen: Set<String> = []
 
         for file in files {
             let relative = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !relative.isEmpty,
-                  !relative.hasPrefix("/"),
+                  !(relative as NSString).isAbsolutePath,
                   URL(fileURLWithPath: relative).pathExtension.lowercased() == "md",
                   seen.insert(relative).inserted
             else {
@@ -87,14 +92,13 @@ public struct VaultCrypto {
             }
 
             let target = lexicalRoot.appendingPathComponent(relative).standardizedFileURL
-            let lexicalPrefix = lexicalRoot.path.hasSuffix("/") ? lexicalRoot.path : lexicalRoot.path + "/"
-            guard target.path.hasPrefix(lexicalPrefix) else {
+            guard isWithinVault(target, root: lexicalRoot) else {
                 throw StoreError.pathOutsideVault(target)
             }
             let parent = target.deletingLastPathComponent()
             try fm.createDirectory(at: parent, withIntermediateDirectories: true)
             let resolvedParent = parent.resolvingSymlinksInPath()
-            guard resolvedParent.path == resolvedRoot.path || resolvedParent.path.hasPrefix(rootPrefix) else {
+            guard isWithinVault(resolvedParent, root: resolvedRoot) else {
                 throw StoreError.pathOutsideVault(target)
             }
             if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
@@ -137,6 +141,7 @@ public struct VaultCrypto {
     }
 
     private static func deriveKey(passphrase: String, salt: [UInt8]) throws -> SymmetricKey {
+        #if canImport(CommonCrypto)
         var derived = Data(repeating: 0, count: 32)
         let status = derived.withUnsafeMutableBytes { (derivedPtr: UnsafeMutableRawBufferPointer) -> CCCryptorStatus in
             passphrase.withCString { passwordPtr in
@@ -157,9 +162,19 @@ public struct VaultCrypto {
         }
         guard status == kCCSuccess else { throw CryptoError.keyDerivationFailed }
         return SymmetricKey(data: derived)
+        #else
+        let passwordKey = SymmetricKey(data: Data(passphrase.utf8))
+        var block = Data(salt)
+        block.append(contentsOf: [0, 0, 0, 1])
+        var previous = Data(HMAC<SHA256>.authenticationCode(for: block, using: passwordKey))
+        var derived = previous
+        for _ in 1..<iterations {
+            previous = Data(HMAC<SHA256>.authenticationCode(for: previous, using: passwordKey))
+            for index in derived.indices {
+                derived[index] ^= previous[index]
+            }
+        }
+        return SymmetricKey(data: derived)
+        #endif
     }
 }
-
-#else
-// Encrypted export/import uses CommonCrypto and is macOS-only.
-#endif

@@ -20,7 +20,17 @@ public struct Note: Identifiable, Hashable, Sendable, Codable {
     public var modifiedAt: Date
 
     public var id: String { url.standardizedFileURL.path }
-    public var type: NoteType { NoteType(rawValue: metadata["type", default: "note"]) ?? .note }
+    /// Exact front-matter record type. Retex accepts any non-empty type so a
+    /// vault can model CRM records, agent memory, or project-specific data
+    /// without changing the binary.
+    public var recordType: String {
+        let value = metadata["type", default: NoteType.note.rawValue]
+        return value.isEmpty ? NoteType.note.rawValue : value
+    }
+
+    /// Compatibility view for clients that use the original built-in enum.
+    /// Unknown record types remain available through `recordType`.
+    public var type: NoteType { NoteType(rawValue: recordType) ?? .note }
     public var status: String { metadata["status", default: "Unsorted"] }
     public var owner: String { metadata["owner", default: "Unassigned"] }
     public var value: String? { metadata["value"] }
@@ -83,6 +93,32 @@ public enum NoteType: String, CaseIterable, Sendable, Codable {
     }
 }
 
+public struct RecallHit: Sendable {
+    public let note: Note
+    public let score: Int
+    public let matchedTerms: [String]
+    public let excerpt: String
+
+    public init(note: Note, score: Int, matchedTerms: [String], excerpt: String) {
+        self.note = note
+        self.score = score
+        self.matchedTerms = matchedTerms
+        self.excerpt = excerpt
+    }
+}
+
+public struct NoteLinks: Sendable {
+    public let outgoing: [Note]
+    public let backlinks: [Note]
+    public let unresolved: [String]
+
+    public init(outgoing: [Note], backlinks: [Note], unresolved: [String]) {
+        self.outgoing = outgoing
+        self.backlinks = backlinks
+        self.unresolved = unresolved
+    }
+}
+
 public struct BoardColumn: Identifiable, Hashable, Sendable {
     public let title: String
     public let statuses: Set<String>
@@ -118,4 +154,15 @@ extension Array where Element == Note? {
     func compacted() -> [Note] {
         filter { $0 != nil }.map { $0! }
     }
+}
+
+func isWithinVault(_ candidate: URL, root: URL) -> Bool {
+    #if os(Windows)
+    let candidateComponents = candidate.standardizedFileURL.pathComponents.map { $0.lowercased() }
+    let rootComponents = root.standardizedFileURL.pathComponents.map { $0.lowercased() }
+    #else
+    let candidateComponents = candidate.standardizedFileURL.pathComponents
+    let rootComponents = root.standardizedFileURL.pathComponents
+    #endif
+    return candidateComponents.starts(with: rootComponents)
 }

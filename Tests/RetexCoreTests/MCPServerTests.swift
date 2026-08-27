@@ -95,9 +95,9 @@ final class MCPServerTests: XCTestCase {
         let tools = try XCTUnwrap(payload["tools"] as? [[String: Any]])
         let names = Set(tools.compactMap { $0["name"] as? String })
         XCTAssertEqual(names, [
-            "list_notes", "search_notes", "read_note", "create_note",
-            "set_property", "move_card", "archive_note", "get_board",
-            "get_stats",
+            "list_notes", "search_notes", "read_note", "query_records",
+            "recall_context", "get_links", "get_schema", "create_note",
+            "set_property", "move_card", "archive_note", "get_board", "get_stats",
         ])
     }
 
@@ -111,7 +111,8 @@ final class MCPServerTests: XCTestCase {
         let payload = try XCTUnwrap(responses[0]["result"] as? [String: Any])
         let tools = try XCTUnwrap(payload["tools"] as? [[String: Any]])
         XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }), [
-            "list_notes", "search_notes", "read_note", "get_board", "get_stats",
+            "list_notes", "search_notes", "read_note", "query_records",
+            "recall_context", "get_links", "get_schema", "get_board", "get_stats",
         ])
         let error = try XCTUnwrap(responses[1]["error"] as? [String: Any])
         XCTAssertEqual(error["code"] as? Int, -32602)
@@ -190,6 +191,33 @@ final class MCPServerTests: XCTestCase {
 
         let search = try toolPayload(try resultText(responses[1]))
         XCTAssertEqual(search["count"] as? String, "1")
+    }
+
+    func testStructuredQueryRecallAndSchemaTools() throws {
+        _ = try store.createNote(
+            in: Vault(url: vaultDir),
+            folder: "Records",
+            title: "August invoice",
+            metadata: ["type": "invoice", "owner": "Sam", "amount": "11500"],
+            body: "Payment is due this month."
+        )
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"query_records","arguments":{"type":"invoice","where":"owner=Sam;amount=11500"}}}"#,
+            #"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"recall_context","arguments":{"query":"what is the august invoice payment","budget":1000}}}"#,
+            #"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"get_schema","arguments":{}}}"#,
+        ], readOnly: true)
+
+        let queried = try toolPayload(try resultText(responses[0]))
+        XCTAssertEqual(queried["count"] as? String, "1")
+        XCTAssertEqual((queried["records"] as? [[String: Any]])?.first?["type"] as? String, "invoice")
+
+        let recalled = try toolPayload(try resultText(responses[1]))
+        XCTAssertEqual((recalled["records"] as? [[String: Any]])?.first?["title"] as? String, "August invoice")
+        XCTAssertLessThanOrEqual(Int(recalled["usedBytes"] as? String ?? "") ?? .max, 1000)
+
+        let schema = try toolPayload(try resultText(responses[2]))
+        XCTAssertTrue((schema["recordTypes"] as? [String] ?? []).contains("invoice"))
+        XCTAssertTrue((schema["properties"] as? [String] ?? []).contains("amount"))
     }
 
     func testSearchSupportsRankedAllTermQueriesAndLimits() throws {

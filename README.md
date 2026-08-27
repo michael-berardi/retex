@@ -10,34 +10,44 @@
 </p>
 
 Retex is a local-first Markdown vault architecture: your vault is an ordinary
-folder of Markdown files with YAML front matter, and Retex gives it a fast
-query surface — search, boards, saved views, undo, watching, and an MCP
-server — without ever locking your files in a database.
+folder of Markdown files with YAML front matter, and Retex gives it a fast,
+structured query surface — exact search, agent recall, arbitrary record types,
+property filters, backlinks, boards, saved views, undo, watching, and MCP —
+without locking files in a database.
 
 Retex is intentionally headless. There is no bundled reader UI; the vault
-format and the CLI are the product, and any future reader consumes the same
+format and the CLI are the product, and any reader consumes the same
 `RetexCore` package. No account system, analytics, remote database, or
-third-party runtime dependency.
+third-party runtime service.
 
 ## Features
 
+- Model any Markdown collection with arbitrary record types and properties:
+  CRM contacts and deals, invoices, tasks, agent memories, runbooks, or custom data.
+- Query type, status, tag, and repeated `key=value` property filters.
+- Recall natural-language questions with filler-word removal, partial-match
+  ranking, evidence excerpts, provenance, and a strict context-byte budget.
+- Resolve `[[wiki links]]`, backlinks, and unresolved targets without an editor.
 - Navigate and query multiple Markdown vaults from one CLI.
-- Search titles, bodies, properties, and labels.
-- Edit notes with atomic writes while preserving unknown YAML properties.
+- Preserve unknown YAML properties and edit notes atomically.
 - Create, filter, rank, move, and archive Kanban cards without deleting files.
+- Validate optional per-type folders, properties, and required fields.
 - Undo any mutation (`retex undo`), inspect history (`retex log`).
-- Watch vaults for external changes (`retex watch`).
+- Watch vaults for external changes with native FSEvents on macOS and a
+  lightweight polling fallback on Linux and Windows.
 - Custom board columns and named saved views per vault.
 - Drive a vault directly from any MCP host with the built-in MCP server.
-- Encrypted vault export/import on macOS for sync by any channel.
-- Self-update with checksum verification and rollback.
+- Encrypted vault export/import on macOS, Linux, and Windows.
+- Self-update on macOS with checksum verification and rollback.
 
 ## Requirements
 
-- macOS 14 or later, or Linux with a Swift 6.0+ toolchain.
-- Building from source requires Swift Package Manager (Xcode 16+ on macOS).
-- File watching and encrypted export/import require macOS. All other CLI
-  commands, including the MCP server, are supported on Linux.
+- macOS 14 or later, Linux, or Windows 10/11.
+- Building from source requires a Swift 6.0+ toolchain. Xcode 16+ supplies it
+  on macOS; Swift.org publishes Linux and Windows toolchains.
+- The signed universal release asset is for macOS. Linux and Windows use the
+  same tagged source and feature-complete `RetexCore`/CLI build; only the
+  notarized self-updater is macOS-specific.
 
 ## Install and run
 
@@ -49,6 +59,8 @@ cd retex
 swift build
 .build/debug/retex --help
 ```
+
+On Windows, run `.build\debug\retex.exe --help`.
 
 Or grab a signed, notarized release from the
 [Releases](https://github.com/michael-berardi/retex/releases) page:
@@ -75,19 +87,29 @@ or deployment workflow.
 ## CLI
 
 ```bash
-retex list --vault ~/Documents/CRM --type deal --json
+retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --json
 retex search "website rebuild" --vault ~/Documents/CRM --json
 retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --json
-retex create --vault ./CRM --type deal --title "Acme redesign" --status Inbox --set owner=Sam --json
-retex set ./CRM/Deals/acme-redesign.md due=2026-08-01 'next_action=Send scope' --json
-retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
+retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --json
+retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --json
+retex create --vault ./CRM --type invoice --title "Acme August" --folder Invoices --set amount=11500 --json
+retex set ./CRM/Invoices/acme-august.md due=2026-09-01 'client=Acme' --json
 retex board --vault ./CRM --view pipeline --json
 ```
 
-Commands: `list`, `search`, `show`, `create`, `set`, `move`, `archive`,
-`board`, `views`, `schema`, `undo`, `log`, `doctor`, `watch`, `mcp`,
-`export`, `import`, `update`, `version`. Run `retex schema` for the record
-types, core properties, and board statuses understood by the current build.
+Use `list` and `search` for their stable v0.5-compatible output contracts.
+Use `query` for structured records with exact arbitrary types and metadata.
+Use `recall` for natural agent questions: it removes common filler, ranks
+partial matches, returns source paths plus evidence excerpts, and keeps the
+encoded record array within `--budget` bytes. `list`, `query`, `search`,
+`recall`, and `count` accept arbitrary `--type`, `--status`, `--tag`, and
+repeated `--where key=value` filters.
+
+Commands: `list`, `query`, `search`, `recall`, `links`, `show`, `create`,
+`set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
+`doctor`, `watch`, `mcp`, `export`, `import`, `update`, `version`. Run
+`retex schema --vault ...` to discover built-in, configured, and existing
+record types and properties.
 
 ### JSON output
 
@@ -121,23 +143,38 @@ retex init --vault ~/Documents/CRM --json
 
 - **Undo** — every mutation records the file's previous content in
   `<vault>/.retex/history.jsonl` (capped at 50 entries per file, so total
-  journal size scales with how many distinct files a vault touches). State is
-  private to the current user: `.retex` is mode `0700`; journal and lock files
-  are `0600`. Cross-process safe: an MCP server and CLI runs against one vault
-  serialize journal writes through an advisory lock. `retex undo <file>`
-  restores it; `retex log <file>` lists the journal.
-- **Saved views** — `<vault>/.retex/config.json` can define custom board
-  columns and named views:
+  journal size scales with how many distinct files a vault touches). POSIX
+  state is mode `0700` with `0600` files; Windows uses the current user's
+  directory ACL. Cross-process locks serialize journal updates. `retex undo
+  <file>` restores the prior Markdown; `retex log <file>` lists history.
+- **Schemas and views** — `<vault>/.retex/config.json` can define board
+  columns, named views with arbitrary property filters, and optional record
+  schemas. Schemas choose the default folder, advertise properties to agents,
+  and let `doctor --strict` enforce required fields:
 
 ```json
 {
   "columns": [{ "title": "Backlog", "statuses": ["Inbox", "New"] }],
-  "views": [{ "name": "pipeline", "type": "deal", "status": "Proposal" }]
+  "views": [{
+    "name": "my-pipeline",
+    "type": "deal",
+    "status": "Proposal",
+    "properties": { "owner": "Sam" }
+  }],
+  "recordTypes": [{
+    "name": "invoice",
+    "folder": "Invoices",
+    "required": ["client", "amount"],
+    "properties": ["client", "amount", "currency", "due"]
+  }]
 }
 ```
 
-Use them with `retex board --view pipeline`, list with `retex views`, and
-validate a vault's structure, config, and journal with `retex doctor`.
+Configuration is optional. Ad-hoc types retain the v0.5-compatible `Notes/`
+default; use `--folder` or a record schema for intentional collections.
+Existing built-in folders remain unchanged. Use `retex schema --vault ...`,
+`retex views`, and `retex doctor --strict` to discover and validate the
+contract.
 
 ### Watching
 
@@ -154,12 +191,14 @@ host can query a vault directly over stdio. MCP is read-only by default:
 retex mcp --vault ./CRM
 ```
 
-The server exposes `list_notes`, `search_notes`, `read_note`, `get_board`, and
-`get_stats`. Mutation tools are rejected even when called directly, and note
-paths are confined to the selected vault after resolving symlinks. A trusted
-local host can explicitly opt into `create_note`, `set_property`, `move_card`,
-and `archive_note` with `--allow-write`; the hosted helper never enables it.
-Responses use newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
+The server preserves `list_notes`, `search_notes`, `read_note`, `get_board`,
+and `get_stats`, and adds structured `query_records`, budgeted
+`recall_context`, `get_links`, and `get_schema`. Mutation tools are rejected
+even when invoked directly, and note paths are confined to the selected vault
+after resolving symlinks. A trusted local host can explicitly opt into
+`create_note`, `set_property`, `move_card`, and `archive_note` with
+`--allow-write`; the hosted helper never enables it. Responses use
+newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
 
 Example host configuration (placeholders, no credentials):
 
@@ -219,9 +258,10 @@ retex import --from crm.retex --into ~/Vaults/CRM-restored --passphrase-env RETE
 ```
 
 The export is a single `RETEXENC1` file: PBKDF2-HMAC-SHA256 (600k iterations)
-key derivation and AES-GCM authenticated encryption via Apple CryptoKit. The
-passphrase is read from an environment variable or an interactive prompt —
-never a command-line argument, so it never leaks through process listings.
+key derivation and AES-GCM authenticated encryption through CryptoKit on
+Apple platforms and Swift Crypto elsewhere. The file format is identical
+across operating systems. The passphrase comes from an environment variable
+or interactive prompt, never a process-list-visible argument.
 
 ## Updates
 
@@ -241,8 +281,8 @@ The macOS updater verifies the exact SHA-256 entry, Developer ID requirement,
 Gatekeeper notarization, regular-file boundary, and reported candidate version
 before atomically replacing the binary. The previous version remains at
 `<path>/retex.previous` for rollback. A failed check leaves the installed
-binary untouched. Linux installations fail closed and build the tagged source;
-the universal release asset is macOS-only.
+binary untouched. Linux and Windows self-update checks fail closed and use the
+tagged source; the universal release asset is macOS-only.
 
 ## Vault format
 
@@ -251,10 +291,11 @@ credential is ever required to read or write one:
 
 ```
 MyVault/
-├── Deals/acme-redesign.md     # plain Markdown + YAML front matter
-├── Contacts/jamie-doe.md
+├── Deals/acme-redesign.md     # built-in CRM type
+├── Invoices/acme-august.md    # configured custom type
+├── Records/runbook.md         # explicit custom folder
 └── .retex/                    # optional internal state
-    ├── config.json            # custom columns / saved views
+    ├── config.json            # schemas, columns, and saved views
     └── history.jsonl          # undo journal
 ```
 
@@ -265,8 +306,10 @@ through `retex schema`.
 
 ## Data API (Markdown contract)
 
-Retex reads ordinary Markdown files. YAML front matter describes each record
-as a note, contact, deal, task, or agent-run. The parser supports flat
+Retex reads ordinary Markdown files. YAML front matter may describe any record
+type. Built-ins (`note`, `contact`, `deal`, `task`, `agent-run`) retain their
+convenient defaults; values such as `invoice`, `memory`, `runbook`, or a
+project-specific type are preserved exactly. The parser supports flat
 properties and inline lists; note bodies remain intact, including wiki links
 and Markdown checklists.
 
@@ -309,20 +352,23 @@ file.
 
 Implemented today:
 
-- Multi-vault navigation, search, atomic editing with unknown-property
-  preservation
-- Kanban boards with custom columns, saved views, and non-destructive
-  archiving
+- Arbitrary record types, discoverable schemas, required-field validation,
+  generic property filters, saved views, and non-destructive archiving
+- Exact search plus agent recall with partial matching, evidence excerpts,
+  provenance, and output budgets
+- Derived wiki-link graph with outgoing links, backlinks, and unresolved targets
+- Multi-vault navigation and atomic editing with unknown-property preservation
 - Undo history with cross-process journal locking
-- FSEvents-based file watching on macOS that ignores internal state
+- Native FSEvents watching on macOS and lightweight polling on Linux/Windows
 - Vault health checks (`retex doctor`)
-- An MCP server exposing the vault to any MCP host
-- Encrypted export/import on macOS (PBKDF2 + AES-GCM)
-- Self-update with checksum, Developer ID, notarization, candidate-version,
-  atomic replacement, and rollback verification
+- Backwards-compatible MCP tools plus structured query, recall, link, and
+  schema interfaces
+- Cross-platform encrypted export/import (PBKDF2 + AES-GCM)
+- macOS self-update with checksum, Developer ID, notarization,
+  candidate-version, atomic replacement, and rollback verification
 - Versioned JSON envelope on every CLI response
-- Regression coverage for parsing, mutations, the CLI contract, undo, config,
-  watching, crypto, update logic, hosted gateway security, and the MCP server
+- Regression coverage for parsing, mutations, CLI/MCP contracts, undo, config,
+  watching, crypto, update logic, and hosted gateway security
 
 Not yet shipped:
 
