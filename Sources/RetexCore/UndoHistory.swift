@@ -1,11 +1,16 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 /// Append-only undo journal at `<vault>/.retex/history.jsonl`.
 /// Each mutation records the full previous file content so any change can be
 /// reverted exactly. Entries are capped per file (oldest dropped) to bound
-/// size. Cross-process safety: every read-modify-write holds an advisory
-/// `flock` on `<vault>/.retex/history.lock`, so an MCP server and CLI runs
-/// against the same vault never interleave journal writes.
+/// size. Cross-process safety: every read-modify-write holds an advisory lock
+/// so an MCP server and CLI runs against the same vault never interleave
+/// journal writes.
 public struct UndoHistory: Sendable {
     public struct Entry: Sendable, Equatable, Codable {
         public let path: String
@@ -41,6 +46,12 @@ public struct UndoHistory: Sendable {
             throw StoreError.historyUnwritable(journalURL)
         }
         do {
+            #if os(Windows)
+            try FileManager.default.createDirectory(
+                at: stateDirectory,
+                withIntermediateDirectories: true
+            )
+            #else
             try FileManager.default.createDirectory(
                 at: stateDirectory,
                 withIntermediateDirectories: true,
@@ -50,6 +61,7 @@ public struct UndoHistory: Sendable {
                 [.posixPermissions: 0o700],
                 ofItemAtPath: stateDirectory.path
             )
+            #endif
             return stateDirectory
         } catch {
             throw StoreError.historyUnwritable(journalURL)
@@ -83,6 +95,27 @@ public struct UndoHistory: Sendable {
             for: Vault(url: stateDirectory.deletingLastPathComponent())
         )
 
+        #if os(Windows)
+        let lockURL = URL(fileURLWithPath: journalURL.path + ".lockdir", isDirectory: true)
+        var acquired = false
+        for _ in 0..<500 where !acquired {
+            do {
+                try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: false)
+                acquired = true
+            } catch {
+                if let attributes = try? FileManager.default.attributesOfItem(atPath: lockURL.path),
+                   let modifiedAt = attributes[.modificationDate] as? Date,
+                   modifiedAt < Date().addingTimeInterval(-300) {
+                    try? FileManager.default.removeItem(at: lockURL)
+                } else {
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+            }
+        }
+        guard acquired else { throw StoreError.historyUnwritable(journalURL) }
+        defer { try? FileManager.default.removeItem(at: lockURL) }
+        return try body()
+        #else
         let lockPath = journalURL.path + ".lock"
         let fd = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw StoreError.historyUnwritable(journalURL) }
@@ -94,6 +127,7 @@ public struct UndoHistory: Sendable {
             throw StoreError.historyUnwritable(journalURL)
         }
         return try body()
+        #endif
     }
 
     private func readEntries(from url: URL) throws -> [Entry] {
@@ -128,10 +162,12 @@ public struct UndoHistory: Sendable {
         }
         do {
             try data.write(to: url, options: .atomic)
+            #if !os(Windows)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: url.path
             )
+            #endif
         } catch {
             throw StoreError.historyUnwritable(url)
         }

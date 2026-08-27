@@ -8,7 +8,7 @@ import FoundationNetworking
 #endif
 #if canImport(Darwin)
 import Darwin
-#else
+#elseif canImport(Glibc)
 import Glibc
 #endif
 import Foundation
@@ -134,21 +134,26 @@ public struct UpdateChecker {
         let previous = URL(fileURLWithPath: executable.path + ".previous")
         do {
             try fm.copyItem(at: candidate, to: staged)
+            #if !os(Windows)
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+            #endif
             if fm.fileExists(atPath: previous.path) {
                 try fm.removeItem(at: previous)
             }
             try fm.copyItem(at: executable, to: previous)
+            #if os(Windows)
+            try fm.removeItem(at: executable)
+            try fm.moveItem(at: staged, to: executable)
+            #else
             let status = staged.path.withCString { source in
                 executable.path.withCString { destination in
                     rename(source, destination)
                 }
             }
             guard status == 0 else {
-                throw UpdateError.installFailed(
-                    String(cString: strerror(errno))
-                )
+                throw UpdateError.installFailed(String(cString: strerror(errno)))
             }
+            #endif
             guard fm.fileExists(atPath: executable.path),
                   fm.fileExists(atPath: previous.path)
             else {
@@ -156,6 +161,10 @@ public struct UpdateChecker {
             }
             return previous
         } catch {
+            if !fm.fileExists(atPath: executable.path),
+               fm.fileExists(atPath: previous.path) {
+                try? fm.copyItem(at: previous, to: executable)
+            }
             try? fm.removeItem(at: staged)
             if let updateError = error as? UpdateError { throw updateError }
             throw UpdateError.installFailed(error.localizedDescription)

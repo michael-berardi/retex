@@ -110,13 +110,17 @@ final class VaultConfigTests: XCTestCase {
         try FileManager.default.createDirectory(at: retexDir, withIntermediateDirectories: true)
         try """
         {"columns":[{"title":"Backlog","statuses":["Inbox","New"]},{"title":"Done","statuses":["Won"]}],
-         "views":[{"name":"pipeline","type":"deal","status":"Proposal"},{"name":"urgent","tag":"hot"}]}
+         "views":[{"name":"pipeline","type":"deal","status":"Proposal","properties":{"owner":"Sam"}},{"name":"urgent","tag":"hot"}],
+         "recordTypes":[{"name":"invoice","folder":"Invoices","required":["amount"],"properties":["client","amount","due"]}]}
         """.write(to: retexDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
 
         let config = VaultConfig.load(for: Vault(url: vaultDir))
         XCTAssertEqual(config.columns.map(\.title), ["Backlog", "Done"])
         XCTAssertEqual(config.view(named: "PIPELINE")?.type, "deal")
         XCTAssertEqual(config.view(named: "urgent")?.tag, "hot")
+        XCTAssertEqual(config.view(named: "pipeline")?.properties, ["owner": "Sam"])
+        XCTAssertEqual(config.recordType(named: "INVOICE")?.folder, "Invoices")
+        XCTAssertEqual(config.recordType(named: "invoice")?.required, ["amount"])
         XCTAssertNil(config.view(named: "missing"))
     }
 

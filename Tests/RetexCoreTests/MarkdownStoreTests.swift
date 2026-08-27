@@ -85,6 +85,22 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(note.metadata["another"], "42")
     }
 
+    func testPreservesArbitraryRecordTypeAlongsideCompatibilityEnum() throws {
+        let url = try writeNote("invoice.md", """
+        ---
+        title: August invoice
+        type: invoice
+        amount: 11500
+        ---
+
+        Due this month.
+        """)
+
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.recordType, "invoice")
+        XCTAssertEqual(note.type, .note)
+    }
+
     func testNoteWithoutFrontmatterFallsBackToHeadingTitle() throws {
         let url = try writeNote("plain.md", "# My Heading\n\nBody only.")
         let note = try MarkdownStore().load(url)
@@ -211,6 +227,17 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(try store.search(vault, query: "CAFÉ").map(\.title), ["Accent"])
     }
 
+    func testASCIIByteSearchHandlesOverlapsAndFileBoundaries() throws {
+        _ = try writeNote("overlap.md", "prefix AAAAAB")
+        _ = try writeNote("suffix.md", "content ending in FinalNeedle")
+        let store = MarkdownStore()
+        let vault = Vault(url: vaultDir)
+
+        XCTAssertEqual(try store.search(vault, query: "aaab").map(\.title), ["overlap"])
+        XCTAssertEqual(try store.search(vault, query: "FINALNEEDLE").map(\.title), ["suffix"])
+        XCTAssertTrue(try store.search(vault, query: "missing").isEmpty)
+    }
+
     func testRankedSearchMatchesAllTermsPrioritizesTitleAndLimitsResults() throws {
         _ = try writeNote(
             "best.md",
@@ -232,6 +259,67 @@ final class MarkdownStoreTests: XCTestCase {
             limit: 1
         )
         XCTAssertEqual(results.map(\.title), ["Retex release process"])
+    }
+
+    func testRecallRemovesFillerRanksEvidenceAndFiltersMetadata() throws {
+        _ = try writeNote(
+            "standard.md",
+            """
+            ---
+            title: Retex Vault Upgrade Standard
+            type: standard
+            owner: Ops
+            ---
+
+            Validate every upgrade on a disposable vault clone.
+            """
+        )
+        _ = try writeNote(
+            "partial.md",
+            "---\ntitle: Retex notes\nowner: Other\n---\nGeneral release information."
+        )
+        _ = try writeNote(
+            "archived.md",
+            "---\ntitle: Retex Vault Upgrade Standard Archive\ntype: standard\nowner: Ops\narchived: true\n---\nOld upgrade standard."
+        )
+
+        let results = try MarkdownStore().recall(
+            Vault(url: vaultDir),
+            query: "what is the Retex vault upgrade standard",
+            metadata: ["owner": "Ops"],
+            limit: 5
+        )
+
+        XCTAssertEqual(results.map(\.note.recordType), ["standard"])
+        XCTAssertEqual(results[0].matchedTerms, ["retex", "standard", "upgrade", "vault"])
+        XCTAssertTrue(results[0].excerpt.contains("disposable vault clone"))
+        XCTAssertEqual(
+            try MarkdownStore().recall(
+                Vault(url: vaultDir),
+                query: "Retex vault upgrade standard",
+                metadata: ["owner": "Ops"],
+                includeArchived: true,
+                limit: 5
+            ).count,
+            2
+        )
+    }
+
+    func testLinksResolvesOutgoingBacklinksAndUnresolvedTargets() throws {
+        let alpha = try writeNote(
+            "alpha.md",
+            "---\ntitle: Alpha\n---\nSee [[Beta|the beta note]] and [[Missing]]."
+        )
+        _ = try writeNote(
+            "beta.md",
+            "---\ntitle: Beta\n---\nThe decision is linked from [[Alpha#Decision]]."
+        )
+
+        let graph = try MarkdownStore().links(Vault(url: vaultDir), for: alpha)
+
+        XCTAssertEqual(graph.outgoing.map(\.title), ["Beta"])
+        XCTAssertEqual(graph.backlinks.map(\.title), ["Beta"])
+        XCTAssertEqual(graph.unresolved, ["Missing"])
     }
 
     func testSearchRejectsEmptyQueriesAndInvalidLimits() throws {

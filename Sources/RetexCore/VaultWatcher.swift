@@ -143,4 +143,99 @@ public final class VaultWatcher: @unchecked Sendable {
     }
 }
 
+#else
+import Foundation
+
+/// Portable polling watcher for Linux and Windows. It keeps no persistent
+/// index and reports only changed Markdown paths, matching the macOS contract.
+public final class VaultWatcher: @unchecked Sendable {
+    private struct Signature: Equatable {
+        let modifiedAt: Date
+        let bytes: Int
+    }
+
+    private let vaultURL: URL
+    private let interval: TimeInterval
+    private let onChange: @Sendable ([String]) -> Void
+    private let callbackQueue: DispatchQueue
+    private let stateLock = NSLock()
+    private var snapshot: [String: Signature] = [:]
+    private var timer: DispatchSourceTimer?
+
+    public init(
+        vault: Vault,
+        debounce: TimeInterval = 0.3,
+        queue: DispatchQueue = .main,
+        onChange: @escaping @Sendable ([String]) -> Void
+    ) {
+        vaultURL = vault.url.standardizedFileURL
+        interval = max(debounce, 1.0)
+        callbackQueue = queue
+        self.onChange = onChange
+    }
+
+    public func start() throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard timer == nil else { return }
+        snapshot = try makeSnapshot()
+        let source = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        source.schedule(deadline: .now() + interval, repeating: interval)
+        source.setEventHandler { [weak self] in self?.poll() }
+        timer = source
+        source.resume()
+    }
+
+    public func stop() {
+        stateLock.lock()
+        let source = timer
+        timer = nil
+        snapshot = [:]
+        stateLock.unlock()
+        source?.cancel()
+    }
+
+    deinit { stop() }
+
+    private func poll() {
+        guard let current = try? makeSnapshot() else { return }
+        stateLock.lock()
+        guard timer != nil else {
+            stateLock.unlock()
+            return
+        }
+        let previous = snapshot
+        snapshot = current
+        stateLock.unlock()
+
+        let changed = Set(previous.keys).union(current.keys).filter {
+            previous[$0] != current[$0]
+        }.sorted()
+        guard !changed.isEmpty else { return }
+        callbackQueue.async { [onChange] in onChange(changed) }
+    }
+
+    private func makeSnapshot() throws -> [String: Signature] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: vaultURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw StoreError.unreadableVault(vaultURL)
+        }
+        var result: [String: Signature] = [:]
+        let rootComponents = vaultURL.pathComponents.count
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            else { continue }
+            let relative = url.pathComponents.dropFirst(rootComponents).joined(separator: "/")
+            result[relative] = Signature(
+                modifiedAt: values.contentModificationDate ?? .distantPast,
+                bytes: values.fileSize ?? 0
+            )
+        }
+        return result
+    }
+}
+
 #endif

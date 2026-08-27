@@ -7,6 +7,24 @@ private final class SendableBox<T>: @unchecked Sendable {
     init(_ value: T) { self.value = value }
 }
 
+private struct ASCIINeedle: Sendable {
+    let bytes: [UInt8]
+    let shifts: [Int]
+
+    init(_ bytes: [UInt8]) {
+        self.bytes = bytes.map { byte in
+            byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
+        }
+        var shifts = [Int](repeating: max(bytes.count, 1), count: 256)
+        if bytes.count > 1 {
+            for index in 0..<(bytes.count - 1) {
+                shifts[Int(self.bytes[index])] = bytes.count - 1 - index
+            }
+        }
+        self.shifts = shifts
+    }
+}
+
 public struct MarkdownStore {
     private let fileManager = FileManager.default
     let history = UndoHistory()
@@ -48,8 +66,8 @@ public struct MarkdownStore {
         let terms = ranked
             ? normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
             : [normalizedQuery]
-        let asciiNeedles: [[UInt8]?] = terms.map { term in
-            term.utf8.allSatisfy { $0 < 0x80 } ? term.utf8.map(Self.foldASCII) : nil
+        let asciiNeedles: [ASCIINeedle?] = terms.map { term in
+            term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
         }
 
         var matches = [Note?](repeating: nil, count: files.count)
@@ -115,27 +133,275 @@ public struct MarkdownStore {
         return limit.map { Array(sorted.prefix($0)) } ?? sorted
     }
 
+    /// Agent-oriented retrieval. Unlike exact and ranked search, recall drops
+    /// common conversational filler, accepts any distinctive term, returns
+    /// evidence excerpts, and supports arbitrary record metadata filters.
+    public func recall(
+        _ vault: Vault,
+        query: String,
+        type: String? = nil,
+        status: String? = nil,
+        tag: String? = nil,
+        metadata: [String: String] = [:],
+        includeArchived: Bool = false,
+        limit: Int = 20
+    ) throws -> [RecallHit] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
+        guard limit > 0 else { throw StoreError.invalidLimit }
+
+        let terms = Self.recallTerms(normalizedQuery)
+        let phrase = Self.foldedForRanking(normalizedQuery)
+        let root = vault.url.standardizedFileURL
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw StoreError.unreadableVault(root)
+        }
+        var candidates: [URL] = []
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+            candidates.append(url)
+        }
+        let files = candidates
+        let asciiNeedles: [ASCIINeedle?] = terms.map { term in
+            term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
+        }
+        var hits = [RecallHit?](repeating: nil, count: files.count)
+        hits.withUnsafeMutableBufferPointer { buffer in
+            let selfBox = SendableBox(self)
+            let hitsBox = SendableBox(buffer)
+            @Sendable func inspect(_ index: Int) {
+                let url = files[index]
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
+                let filenameData = Data(url.deletingPathExtension().lastPathComponent.utf8)
+                var decoded: String?
+                var matched: [String] = []
+                for (termIndex, term) in terms.enumerated() {
+                    let isMatch: Bool
+                    if let needle = asciiNeedles[termIndex] {
+                        isMatch = Self.containsASCIIInsensitive(filenameData, needle: needle)
+                            || Self.containsASCIIInsensitive(data, needle: needle)
+                    } else {
+                        if decoded == nil { decoded = String(data: data, encoding: .utf8) }
+                        isMatch = decoded?.range(
+                            of: term,
+                            options: [.caseInsensitive, .diacriticInsensitive]
+                        ) != nil
+                    }
+                    if isMatch { matched.append(term) }
+                }
+                guard !matched.isEmpty,
+                      let source = decoded ?? String(data: data, encoding: .utf8),
+                      let note = try? selfBox.value.note(from: source, at: url),
+                      (includeArchived || !note.isArchived),
+                      Self.matches(note, type: type, status: status, tag: tag, metadata: metadata)
+                else { return }
+                hitsBox.value[index] = RecallHit(
+                    note: note,
+                    score: Self.recallScore(note, phrase: phrase, terms: terms, matched: matched),
+                    matchedTerms: matched,
+                    excerpt: Self.evidenceExcerpt(note.body, terms: matched)
+                )
+            }
+
+            if files.count < 500 {
+                for index in files.indices { inspect(index) }
+            } else {
+                let chunkSize = 64
+                let chunkCount = (files.count + chunkSize - 1) / chunkSize
+                DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
+                    for index in (chunk * chunkSize)..<min((chunk + 1) * chunkSize, files.count) {
+                        inspect(index)
+                    }
+                }
+            }
+        }
+        return hits.compactMap { $0 }.sorted { left, right in
+            if left.score != right.score { return left.score > right.score }
+            return Self.precedes(left.note, right.note)
+        }.prefix(limit).map { $0 }
+    }
+
+    /// Resolves `[[wiki links]]` without depending on an editor or plugin.
+    /// Markdown remains authoritative; this graph is derived on read.
+    public func links(_ vault: Vault, for url: URL) throws -> NoteLinks {
+        let target = try load(url)
+        let notes = try scan(vault)
+        var index: [String: [Note]] = [:]
+        for note in notes {
+            for key in Self.linkKeys(note, root: vault.url) {
+                index[key, default: []].append(note)
+            }
+        }
+
+        var outgoing: [Note] = []
+        var outgoingIDs: Set<String> = []
+        var unresolved: Set<String> = []
+        for rawLink in Self.wikiLinks(in: target.body) {
+            let candidates = Self.lookupKeys(rawLink).flatMap { index[$0] ?? [] }
+            if candidates.isEmpty {
+                unresolved.insert(rawLink)
+            }
+            for note in candidates where note.id != target.id && outgoingIDs.insert(note.id).inserted {
+                outgoing.append(note)
+            }
+        }
+
+        let targetKeys = Self.linkKeys(target, root: vault.url)
+        let backlinks = notes.filter { note in
+            note.id != target.id && Self.wikiLinks(in: note.body).contains { rawLink in
+                !Set(Self.lookupKeys(rawLink)).isDisjoint(with: targetKeys)
+            }
+        }
+        return NoteLinks(
+            outgoing: outgoing.sorted(by: Self.precedes),
+            backlinks: backlinks.sorted(by: Self.precedes),
+            unresolved: unresolved.sorted()
+        )
+    }
+
+    public static func matches(
+        _ note: Note,
+        type: String? = nil,
+        status: String? = nil,
+        tag: String? = nil,
+        metadata: [String: String] = [:]
+    ) -> Bool {
+        if let type, note.recordType.caseInsensitiveCompare(type) != .orderedSame { return false }
+        if let status, note.status.caseInsensitiveCompare(status) != .orderedSame { return false }
+        if let tag, !note.tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
+            return false
+        }
+        return metadata.allSatisfy { key, expected in
+            note.metadata[key]?.caseInsensitiveCompare(expected) == .orderedSame
+        }
+    }
+
+    private static func recallTerms(_ query: String) -> [String] {
+        let words = query.unicodeScalars.split { !CharacterSet.alphanumerics.contains($0) }
+            .map { foldedForRanking(String($0)) }
+            .filter { !$0.isEmpty }
+        let distinctive = words.filter { $0.count > 1 && !recallStopwords.contains($0) }
+        return Array(Set(distinctive.isEmpty ? words : distinctive)).sorted()
+    }
+
+    private static func recallScore(
+        _ note: Note,
+        phrase: String,
+        terms: [String],
+        matched: [String]
+    ) -> Int {
+        let title = foldedForRanking(note.title)
+        let filename = foldedForRanking(note.url.deletingPathExtension().lastPathComponent)
+        let path = foldedForRanking(note.url.path)
+        let tags = note.tags.map(foldedForRanking)
+        let metadata = note.metadata.map { (foldedForRanking($0.key), foldedForRanking($0.value)) }
+        let body = foldedForRanking(note.body)
+        var score = matched.count * 1_000
+
+        if matched.count == terms.count { score += 2_000 }
+        if title == phrase { score += 10_000 }
+        else if title.contains(phrase) { score += 4_000 }
+        if body.contains(phrase) { score += 800 }
+        for term in matched {
+            if title.contains(term) { score += 700 }
+            if filename.contains(term) { score += 400 }
+            if tags.contains(where: { $0.contains(term) }) { score += 300 }
+            if metadata.contains(where: { $0.0.contains(term) || $0.1.contains(term) }) { score += 220 }
+            if path.contains(term) { score += 80 }
+            if body.contains(term) { score += 30 }
+        }
+        return score
+    }
+
+    private static func evidenceExcerpt(_ body: String, terms: [String]) -> String {
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard !lines.isEmpty else { return "" }
+        let best = lines.indices.max { left, right in
+            let leftScore = terms.filter {
+                lines[left].range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }.count
+            let rightScore = terms.filter {
+                lines[right].range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }.count
+            return leftScore < rightScore
+        } ?? lines.startIndex
+        let excerpt = lines[max(lines.startIndex, best - 1)...min(lines.index(before: lines.endIndex), best + 1)]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(excerpt.prefix(600))
+    }
+
+    private static func wikiLinks(in body: String) -> [String] {
+        var links: [String] = []
+        var cursor = body.startIndex
+        while let open = body[cursor...].range(of: "[["),
+              let close = body[open.upperBound...].range(of: "]]") {
+            let value = body[open.upperBound..<close.lowerBound]
+                .split(separator: "|", maxSplits: 1)[0]
+                .split(separator: "#", maxSplits: 1)[0]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { links.append(value) }
+            cursor = close.upperBound
+        }
+        return links
+    }
+
+    private static func linkKeys(_ note: Note, root: URL) -> Set<String> {
+        let rootComponents = root.standardizedFileURL.pathComponents.count
+        let relative = note.url.deletingPathExtension().pathComponents
+            .dropFirst(rootComponents)
+            .joined(separator: "/")
+        return Set([
+            normalizedLink(note.title),
+            normalizedLink(note.url.deletingPathExtension().lastPathComponent),
+            normalizedLink(relative),
+        ])
+    }
+
+    private static func lookupKeys(_ rawLink: String) -> [String] {
+        let normalized = normalizedLink(rawLink)
+        let filename = normalizedLink(URL(fileURLWithPath: rawLink).lastPathComponent)
+        return normalized == filename ? [normalized] : [normalized, filename]
+    }
+
+    private static func normalizedLink(_ value: String) -> String {
+        foldedForRanking(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static let recallStopwords: Set<String> = [
+        "a", "about", "an", "and", "are", "as", "at", "be", "by", "did",
+        "do", "does", "for", "from", "how", "i", "in", "is", "it", "of",
+        "on", "or", "that", "the", "this", "to", "was", "what", "when",
+        "where", "which", "who", "why", "with",
+    ]
+
     private static func foldASCII(_ byte: UInt8) -> UInt8 {
         byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
     }
 
-    private static func containsASCIIInsensitive(_ data: Data, needle: [UInt8]) -> Bool {
-        guard !needle.isEmpty else { return true }
-        guard data.count >= needle.count else { return false }
+    private static func containsASCIIInsensitive(_ data: Data, needle: ASCIINeedle) -> Bool {
+        let pattern = needle.bytes
+        guard !pattern.isEmpty else { return true }
+        guard data.count >= pattern.count else { return false }
         return data.withUnsafeBytes { rawBuffer in
             let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            let finalStart = bytes.count - needle.count
-            for start in 0...finalStart {
-                var matched = true
-                for offset in needle.indices where foldASCII(bytes[start + offset]) != needle[offset] {
-                    matched = false
-                    break
+            var end = pattern.count - 1
+            while end < bytes.count {
+                var offset = 0
+                while offset < pattern.count,
+                      foldASCII(bytes[end - offset]) == pattern[pattern.count - 1 - offset] {
+                    offset += 1
                 }
-                if matched { return true }
+                if offset == pattern.count { return true }
+                end += needle.shifts[Int(foldASCII(bytes[end]))]
             }
             return false
         }
     }
+
 
     private static func foldedForRanking(_ value: String) -> String {
         value.folding(
@@ -427,13 +693,12 @@ public struct MarkdownStore {
 
     private func confinedDirectory(in vault: Vault, folder: String) throws -> URL {
         let expanded = NSString(string: folder).expandingTildeInPath
-        guard !expanded.hasPrefix("/") else { throw StoreError.folderOutsideVault }
+        guard !(expanded as NSString).isAbsolutePath else { throw StoreError.folderOutsideVault }
         let root = vault.url.standardizedFileURL.resolvingSymlinksInPath()
         let candidate = root.appendingPathComponent(expanded, isDirectory: true)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard candidate.path == root.path || candidate.path.hasPrefix(rootPrefix) else {
+        guard isWithinVault(candidate, root: root) else {
             throw StoreError.folderOutsideVault
         }
         return candidate
