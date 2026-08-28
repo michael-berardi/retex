@@ -276,8 +276,8 @@ public struct FleetUpgradeVerifier {
         let token = UUID().uuidString
         let stdoutURL = fm.temporaryDirectory.appendingPathComponent("retex-fleet-\(token).out")
         let stderrURL = fm.temporaryDirectory.appendingPathComponent("retex-fleet-\(token).err")
-        fm.createFile(atPath: stdoutURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        fm.createFile(atPath: stderrURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        _ = fm.createFile(atPath: stdoutURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        _ = fm.createFile(atPath: stderrURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
         let stdout = try FileHandle(forWritingTo: stdoutURL)
         let stderr = try FileHandle(forWritingTo: stderrURL)
         defer {
