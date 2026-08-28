@@ -151,13 +151,15 @@ then enable auto-update only on vaults whose owner authorized it:
 ```bash
 retex fleet register --vault "$RETEX_VAULT" --auto-update --json
 retex fleet status --json
+retex fleet initialize --json
 retex fleet install-updater --json
 ```
 
 Scheduled `update --auto --fleet` must clone-verify every registered scope,
-require strict doctor and exact list/board compatibility, confirm previous-
-version readability, retain rollback, and only then initialize opted-in live
-vaults. Any confirmation failure restores the previous binary.
+require strict doctor, exact list/search/board compatibility, and a full
+mutation/undo probe; confirm previous-version readability, retain rollback,
+and only then initialize opted-in live vaults. Any confirmation failure
+restores the previous binary.
 
 A newer release is not permission to update. Before using its binary against a
 live vault:
