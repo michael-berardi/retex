@@ -461,6 +461,14 @@ enum RetexCLI {
             try output(reports, json: invocation.isJSON) { reports in
                 "Verified \(reports.count)/\(reports.count) fleet vaults in \(reports.reduce(0) { $0 + $1.milliseconds }) ms"
             }
+        case "initialize":
+            let reports = try FleetUpgradeVerifier().confirmLive(
+                vaults: registry.load().vaults,
+                executable: executableURL()
+            )
+            try output(reports, json: invocation.isJSON) { reports in
+                "Initialized and strict-checked \(reports.count)/\(reports.count) opted-in vaults in \(reports.reduce(0) { $0 + $1.milliseconds }) ms"
+            }
         case "install-updater":
             let executable = executableURL()
             let schedule = try AutoUpdateScheduler().install(executable: executable)
@@ -469,7 +477,7 @@ enum RetexCLI {
             let schedule = try AutoUpdateScheduler().remove()
             try output(schedule, json: invocation.isJSON) { "Removed \($0.platform) updater from \($0.configurationPath)" }
         default:
-            throw UsageError("fleet action must be register, unregister, status, verify, install-updater, or remove-updater")
+            throw UsageError("fleet action must be register, unregister, status, verify, initialize, install-updater, or remove-updater")
         }
     }
 

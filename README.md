@@ -314,13 +314,15 @@ vaults into post-update initialization:
 ```bash
 retex fleet register --vault ~/Vaults/CRM --auto-update --json
 retex fleet status --json
+retex fleet initialize --json       # idempotent live init + strict doctor
 retex fleet install-updater --json
 ```
 
 The optional scheduler runs `retex update --auto --fleet` every six hours.
 Before replacing the binary, Retex copies only Markdown and vault config into
-disposable clones, requires strict doctor success, compares exact `list` and
-`board` JSON with the installed version, and confirms that the installed
+disposable clones, requires strict doctor success, compares exact `list`,
+`search`, and `board` JSON with the installed version, exercises a complete
+create/set/move/archive/undo round trip, and confirms that the installed
 version can still read candidate-initialized clones. Only then is the binary
 swapped atomically. Registered live vaults are initialized and strict-checked;
 any failure restores the previous binary.
