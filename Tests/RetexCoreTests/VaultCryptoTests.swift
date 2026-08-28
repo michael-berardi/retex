@@ -13,6 +13,8 @@ final class VaultCryptoTests: XCTestCase {
                                  title: "Secret Deal", metadata: ["type": "deal"], body: "confidential")
         try FileManager.default.createDirectory(at: vaultDir.appendingPathComponent("deep/sub"), withIntermediateDirectories: true)
         try "nested".write(to: vaultDir.appendingPathComponent("deep/sub/note.md"), atomically: true, encoding: .utf8)
+        try Data([0, 1, 2, 255]).write(to: vaultDir.appendingPathComponent("deep/sub/attachment.png"))
+        try "const secret = true".write(to: vaultDir.appendingPathComponent("deep/sub/source.ts"), atomically: true, encoding: .utf8)
     }
 
     override func tearDownWithError() throws {
@@ -35,17 +37,25 @@ final class VaultCryptoTests: XCTestCase {
             .appendingPathComponent("retex-crypto-restore-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: out) }
         let count = try VaultCrypto.restoreArchive(restored, into: out)
-        XCTAssertEqual(count, 2, "Root note plus nested note")
+        XCTAssertEqual(count, 3, "Two Markdown notes plus one attachment")
         XCTAssertTrue(FileManager.default.fileExists(atPath: out.appendingPathComponent("Deals/secret-deal.md").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: out.appendingPathComponent("deep/sub/note.md").path))
+        XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent("deep/sub/attachment.png")), Data([0, 1, 2, 255]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: out.appendingPathComponent("deep/sub/source.ts").path))
     }
 
     func testWrongPassphraseFailsCleanly() throws {
         let crypto = VaultCrypto()
         let archive = try VaultCrypto.makeArchive(vaultURL: vaultDir)
-        let blob = try crypto.encrypt(archive, passphrase: "right")
-        XCTAssertThrowsError(try crypto.decrypt(blob, passphrase: "wrong")) { error in
+        let blob = try crypto.encrypt(archive, passphrase: "correct horse battery staple")
+        XCTAssertThrowsError(try crypto.decrypt(blob, passphrase: "wrong but long enough")) { error in
             XCTAssertEqual(error as? VaultCrypto.CryptoError, .wrongPassphrase)
+        }
+    }
+
+    func testExportRejectsWeakPassphrases() throws {
+        XCTAssertThrowsError(try VaultCrypto().encrypt(Data("secret".utf8), passphrase: "short")) { error in
+            XCTAssertEqual(error as? VaultCrypto.CryptoError, .weakPassphrase)
         }
     }
 

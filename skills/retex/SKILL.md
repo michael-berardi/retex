@@ -5,7 +5,7 @@ description: >
   update a Retex Markdown vault through the Retex CLI or MCP server. Prefer this
   structured interface over recursive file discovery or editor-specific APIs.
 category: knowledge
-version: 1.2.0
+version: 1.3.0
 author: Retex contributors
 tags: [retex, markdown, vault, knowledge, mcp, cli]
 trigger_keywords: [retex, markdown vault, knowledge vault, agent memory, kanban]
@@ -82,6 +82,29 @@ retex undo "$RETEX_VAULT/Tasks/follow-up.md" --json
 Run `doctor` after a write batch. Use `undo` for the latest journaled mutation.
 Do not replace an entire note to change one property.
 
+## Import and encrypted export
+
+Import only into a new or empty destination. Notion should be exported as
+Markdown & CSV; Obsidian and ordinary Markdown vaults may be imported from
+their directories:
+
+```bash
+retex import --from notion-export.zip --into ~/Vaults/notion --format notion --json
+retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --json
+```
+
+Imports preserve attachments, reject symlinks/path escapes, skip hidden
+editor/VCS state, and initialize Retex only after content succeeds.
+
+Encrypted exports include Markdown and portable document/media attachments with
+per-file SHA-256 validation. Export passphrases require at least 12 characters
+and come from a prompt or named environment variable, never a command-line value:
+
+```bash
+retex export --vault "$RETEX_VAULT" --out backup.retex --passphrase-env RETEX_PASS
+retex import --from backup.retex --into ~/Vaults/restored --passphrase-env RETEX_PASS
+```
+
 ## MCP
 
 Run the stdio server with:
@@ -122,6 +145,20 @@ retex version
 retex update --check --json
 ```
 
+Opt-in fleet automation does not weaken the gate. Register the complete fleet,
+then enable auto-update only on vaults whose owner authorized it:
+
+```bash
+retex fleet register --vault "$RETEX_VAULT" --auto-update --json
+retex fleet status --json
+retex fleet install-updater --json
+```
+
+Scheduled `update --auto --fleet` must clone-verify every registered scope,
+require strict doctor and exact list/board compatibility, confirm previous-
+version readability, retain rollback, and only then initialize opted-in live
+vaults. Any confirmation failure restores the previous binary.
+
 A newer release is not permission to update. Before using its binary against a
 live vault:
 
@@ -136,9 +173,11 @@ live vault:
    release. Ranked search is additive and evaluated separately.
 8. Test representative create/set/move/archive/undo mutations only on clones,
    then confirm the previous release can still read every touched file.
-9. Update the local binary, run `init` and `doctor --strict` on every live
-   vault, and retain rollback until the verification window closes.
-10. For hosted services, pin the immutable release tag or commit, deploy one
+9. Use `retex update --fleet` for registered scopes; it performs the clone
+   compatibility gate before replacement and reports numeric verification.
+10. On each live vault, keep post-install verification to idempotent `init` and
+    read-only `doctor --strict`; retain rollback until the window closes.
+11. For hosted services, pin the immutable release tag or commit, deploy one
     canary, rerun authentication/path-escape/write-denial tests, then roll out
     the remaining services and verify each live endpoint.
 

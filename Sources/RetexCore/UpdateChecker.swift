@@ -24,6 +24,7 @@ public struct UpdateChecker {
         public let tag: String
         public let assetURL: URL
         public let checksumsURL: URL
+        public let assetName: String
     }
 
     private let repo: String
@@ -34,6 +35,24 @@ public struct UpdateChecker {
     public init(repo: String = "michael-berardi/retex", session: URLSession = .shared) {
         self.repo = repo
         self.session = session
+    }
+
+    public static var releaseAssetName: String {
+#if os(macOS)
+        "retex-universal.zip"
+#elseif os(Windows)
+#if arch(arm64)
+        "retex-windows-arm64.zip"
+#else
+        "retex-windows-x86_64.zip"
+#endif
+#else
+#if arch(arm64)
+        "retex-linux-aarch64.tar.gz"
+#else
+        "retex-linux-x86_64.tar.gz"
+#endif
+#endif
     }
 
     // MARK: - Discovery
@@ -62,13 +81,13 @@ public struct UpdateChecker {
                   url.scheme == "https",
                   url.host?.lowercased() == "github.com"
             else { continue }
-            if name == "retex-universal.zip" { assetURL = url }
+            if name == Self.releaseAssetName { assetURL = url }
             if name == "SHA256SUMS" { checksumsURL = url }
         }
         guard let finalAsset = assetURL, let finalChecksums = checksumsURL else {
             throw UpdateError.missingAssets(tag)
         }
-        return Release(tag: tag, assetURL: finalAsset, checksumsURL: finalChecksums)
+        return Release(tag: tag, assetURL: finalAsset, checksumsURL: finalChecksums, assetName: Self.releaseAssetName)
     }
 
     /// Returns true only when both values are stable semantic versions and

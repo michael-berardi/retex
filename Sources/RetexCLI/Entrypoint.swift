@@ -314,14 +314,34 @@ enum RetexCLI {
         case "import":
             let source = try invocation.requiredOption("from")
             let into = try invocation.requiredOption("into")
-            let passphrase = try Self.passphrase(invocation)
-            let blob = try Data(contentsOf: URL(fileURLWithPath: NSString(string: source).expandingTildeInPath))
-            let archive = try VaultCrypto().decrypt(blob, passphrase: passphrase)
-            let count = try VaultCrypto.restoreArchive(archive, into: URL(fileURLWithPath: NSString(string: into).expandingTildeInPath, isDirectory: true))
-            try output(ImportOutput(into: into, notes: count), json: invocation.isJSON) { _ in
-                "Restored \(count) notes into \(into)"
+            let sourceURL = URL(fileURLWithPath: NSString(string: source).expandingTildeInPath)
+                .standardizedFileURL
+            let destinationURL = URL(fileURLWithPath: NSString(string: into).expandingTildeInPath, isDirectory: true)
+                .standardizedFileURL
+            if sourceURL.pathExtension.lowercased() == "retex", invocation.option("format") == nil {
+                let passphrase = try Self.passphrase(invocation)
+                let blob = try Data(contentsOf: sourceURL)
+                let archive = try VaultCrypto().decrypt(blob, passphrase: passphrase)
+                let files = try VaultCrypto.restoreArchive(archive, into: destinationURL)
+                _ = try UndoHistory.prepare(for: Vault(url: destinationURL))
+                let notes = try store.scan(Vault(url: destinationURL)).count
+                try output(ImportOutput(into: destinationURL.path, files: files, notes: notes), json: invocation.isJSON) {
+                    "Restored \($0.files) files (\($0.notes) notes) into \($0.into)"
+                }
+            } else {
+                let rawFormat = invocation.option("format") ?? VaultImportFormat.auto.rawValue
+                guard let format = VaultImportFormat(rawValue: rawFormat) else {
+                    throw UsageError("--format must be auto, notion, obsidian, or markdown")
+                }
+                let result = try VaultImporter().importSource(sourceURL, into: destinationURL, format: format)
+                _ = try UndoHistory.prepare(for: Vault(url: destinationURL))
+                try output(result, json: invocation.isJSON) {
+                    "Imported \($0.notes) notes and \($0.assets) assets from \($0.format.rawValue) into \($0.destination)"
+                }
             }
 
+        case "fleet":
+            try runFleet(invocation)
         case "update":
             try runUpdate(invocation)
 
@@ -399,32 +419,86 @@ enum RetexCLI {
         return try promptPassphrase()
     }
 
+    private static func executableURL() -> URL {
+        Bundle.main.executableURL?.standardizedFileURL
+            ?? URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+    }
+
+    private static func runFleet(_ invocation: Invocation) throws {
+        let action = try invocation.positional(0, named: "fleet action")
+        let registry = FleetRegistry()
+        switch action {
+        case "register":
+            let vault = try invocation.vault()
+            let document = try registry.register(path: vault.url.path, autoUpdate: invocation.flag("auto-update"))
+            try output(document, json: invocation.isJSON) { result in
+                "Registered \(vault.url.path) (\(result.vaults.count) fleet vaults; auto-update \(invocation.flag("auto-update") ? "on" : "off"))"
+            }
+        case "unregister":
+            let vault = try invocation.vault()
+            let document = try registry.unregister(path: vault.url.path)
+            try output(document, json: invocation.isJSON) { result in
+                "Unregistered \(vault.url.path) (\(result.vaults.count) fleet vaults remain)"
+            }
+        case "status":
+            let document = try registry.load()
+            try output(document, json: invocation.isJSON) { result in
+                result.vaults.isEmpty ? "No fleet vaults registered." : result.vaults.map {
+                    "\($0.autoUpdate ? "auto" : "manual") \($0.path)"
+                }.joined(separator: "\n")
+            }
+        case "verify":
+            let candidate = URL(fileURLWithPath: NSString(string: try invocation.requiredOption("candidate")).expandingTildeInPath)
+                .standardizedFileURL
+            let current = invocation.option("current").map {
+                URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath).standardizedFileURL
+            } ?? executableURL()
+            let reports = try FleetUpgradeVerifier().verify(
+                vaults: registry.load().vaults,
+                candidate: candidate,
+                current: current
+            )
+            try output(reports, json: invocation.isJSON) { reports in
+                "Verified \(reports.count)/\(reports.count) fleet vaults in \(reports.reduce(0) { $0 + $1.milliseconds }) ms"
+            }
+        case "install-updater":
+            let executable = executableURL()
+            let schedule = try AutoUpdateScheduler().install(executable: executable)
+            try output(schedule, json: invocation.isJSON) { "Installed \($0.platform) updater at \($0.configurationPath)" }
+        case "remove-updater":
+            let schedule = try AutoUpdateScheduler().remove()
+            try output(schedule, json: invocation.isJSON) { "Removed \($0.platform) updater from \($0.configurationPath)" }
+        default:
+            throw UsageError("fleet action must be register, unregister, status, verify, install-updater, or remove-updater")
+        }
+    }
+
     private static func runUpdate(_ invocation: Invocation) throws {
+        guard !invocation.flag("auto") || invocation.flag("fleet") else {
+            throw UsageError("--auto requires --fleet and an explicitly registered fleet")
+        }
         let checker = UpdateChecker()
         let current = RetexCLI.version
         let release = try checker.latestRelease()
         guard UpdateChecker.isNewer(releaseTag: release.tag, current: current) else {
-            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil),
+            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil, fleetVerified: nil, fleetUpdated: nil, milliseconds: nil),
                        json: invocation.isJSON) { _ in
                 "Already on the latest version (\(current))"
             }
             return
         }
         if invocation.flag("check") {
-            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil),
+            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil, fleetVerified: nil, fleetUpdated: nil, milliseconds: nil),
                        json: invocation.isJSON) { _ in
                 "Update available: \(current) -> \(release.tag)"
             }
             return
         }
 
-#if !os(macOS)
-        throw UsageError("Self-update requires macOS; Linux and Windows installations must build the tagged source")
-#else
         let tarball = try checker.download(release.assetURL)
         let sumsBody = String(decoding: try checker.download(release.checksumsURL), as: UTF8.self)
-        guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: "retex-universal.zip") else {
-            throw UsageError("Release checksums do not list one valid retex-universal.zip SHA-256")
+        guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: release.assetName) else {
+            throw UsageError("Release checksums do not list one valid \(release.assetName) SHA-256")
         }
         let actual = UpdateChecker.sha256(of: tarball)
         guard actual == expected else {
@@ -438,29 +512,66 @@ enum RetexCLI {
         )
         try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: workDir) }
-        let zipPath = workDir.appendingPathComponent("retex-universal.zip")
-        try tarball.write(to: zipPath, options: .atomic)
+        let archivePath = workDir.appendingPathComponent(release.assetName)
+        try tarball.write(to: archivePath, options: .atomic)
         let extract = Process()
+#if os(macOS)
         extract.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        extract.arguments = ["-x", "-k", zipPath.path, workDir.path]
+        extract.arguments = ["-x", "-k", archivePath.path, workDir.path]
+        let binaryName = "retex"
+#elseif os(Windows)
+        extract.executableURL = URL(fileURLWithPath: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+        extract.arguments = ["-NoProfile", "-NonInteractive", "-Command", "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force", archivePath.path, workDir.path]
+        let binaryName = "retex.exe"
+#else
+        extract.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        extract.arguments = ["-xzf", archivePath.path, "-C", workDir.path]
+        let binaryName = "retex"
+#endif
+        extract.standardOutput = Pipe()
+        extract.standardError = Pipe()
         try extract.run()
         extract.waitUntilExit()
-        let newBinary = workDir.appendingPathComponent("retex")
+        let newBinary = workDir.appendingPathComponent(binaryName)
         guard extract.terminationStatus == 0, fm.fileExists(atPath: newBinary.path) else {
-            throw UsageError("Release archive did not contain a retex binary")
+            throw UsageError("Release archive did not contain a \(binaryName) binary")
         }
         try validateUpdateCandidate(newBinary, releaseTag: release.tag)
 
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        let executable = executableURL()
+        let fleetDocument = invocation.flag("fleet") ? try FleetRegistry().load() : nil
+        let verifier = FleetUpgradeVerifier()
+        let verified = try fleetDocument.map {
+            try verifier.verify(vaults: $0.vaults, candidate: newBinary, current: executable)
+        } ?? []
         let previous = try UpdateChecker.install(candidate: newBinary, over: executable)
-        try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: true, path: executable.path),
-                   json: invocation.isJSON) { _ in
-            "Updated \(executable.path): \(current) -> \(release.tag). Rollback available at \(previous.path)"
+        let liveVaults = fleetDocument.map { document in
+            invocation.flag("auto")
+                ? document.vaults
+                : document.vaults.map { FleetVault(path: $0.path, autoUpdate: true) }
+        } ?? []
+        let confirmed: [FleetUpgradeReport]
+        do {
+            confirmed = try verifier.confirmLive(vaults: liveVaults, executable: executable)
+        } catch {
+            _ = try? UpdateChecker.install(candidate: previous, over: executable)
+            throw error
         }
-#endif
+        let milliseconds = verified.reduce(0) { $0 + $1.milliseconds } + confirmed.reduce(0) { $0 + $1.milliseconds }
+        try output(UpdateOutput(
+            currentVersion: current,
+            latestVersion: release.tag,
+            updated: true,
+            path: executable.path,
+            fleetVerified: fleetDocument == nil ? nil : verified.count,
+            fleetUpdated: fleetDocument == nil ? nil : confirmed.count,
+            milliseconds: fleetDocument == nil ? nil : milliseconds
+        ), json: invocation.isJSON) { result in
+            let fleet = result.fleetVerified.map { " Fleet: \($0) verified, \(result.fleetUpdated ?? 0) initialized in \(result.milliseconds ?? 0) ms." } ?? ""
+            return "Updated \(executable.path): \(current) -> \(release.tag). Rollback available at \(previous.path).\(fleet)"
+        }
     }
 
-#if os(macOS)
     private static func validateUpdateCandidate(_ candidate: URL, releaseTag: String) throws {
         let values = try candidate.resourceValues(
             forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
@@ -473,6 +584,7 @@ enum RetexCLI {
             throw UsageError("Release candidate must be one bounded regular file")
         }
 
+#if os(macOS)
         let requirement = #"=identifier "retex" and anchor apple generic and certificate leaf[subject.OU] = "T63VT9UAY2""#
         try runValidationProcess(
             executable: "/usr/bin/codesign",
@@ -484,6 +596,7 @@ enum RetexCLI {
             arguments: ["-a", "-t", "install", candidate.path],
             failure: "Release candidate is not accepted by Gatekeeper"
         )
+#endif
 
         let output = Pipe()
         let version = Process()
@@ -517,7 +630,6 @@ enum RetexCLI {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw UsageError(failure) }
     }
-#endif
 
     private static func runWatch(_ vault: Vault, json: Bool) throws {
         let printQueue = DispatchQueue(label: "retex.watch.output")
@@ -717,8 +829,9 @@ enum RetexCLI {
       doctor    Validate vault structure, config, and journal (--strict gates)
       watch     Stream file-change events for a vault (Ctrl-C to stop)
       mcp       Run the read-only MCP server (--allow-write is explicit opt-in)
-      export    Encrypt the vault into a portable file (sync by any channel)
-      import    Decrypt and restore an encrypted vault export
+      export    Encrypt the vault and attachments into a portable file
+      import    Restore encrypted Retex exports or import Notion/Obsidian vaults
+      fleet     Register, verify, and safely initialize a vault fleet
       update    Check or install a verified GitHub release (--check is read-only)
       version   Print the CLI version
 
@@ -738,6 +851,11 @@ enum RetexCLI {
       retex mcp --vault ./CRM
       retex export --vault ./CRM --out backup.retex --passphrase-env VAULT_PASS
       retex import --from backup.retex --into ~/Vaults/restored --passphrase-env VAULT_PASS
+      retex import --from notion-export.zip --into ~/Vaults/notion --format notion --json
+      retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --json
+      retex fleet register --vault ~/Vaults/CRM --auto-update --json
+      retex fleet install-updater --json
+      retex update --auto --fleet --json
       retex update --check --json
 
     OPTIONS
@@ -751,13 +869,19 @@ enum RetexCLI {
       --where k=v       Filter any property; repeat for AND semantics
       --ranked          Match all search terms and relevance-rank results
       --out <file>      Destination for export
-      --from <file>     Source encrypted file for import
-      --into <dir>      Restore target directory for import
+      --from <path>     Retex export, Notion ZIP, or extracted vault directory
+      --into <dir>      New or empty import destination
+      --format <name>   auto, notion, obsidian, or markdown
       --passphrase-env <VAR>
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
       --allow-write     Add MCP mutation tools for a trusted local host
       --strict          Exit nonzero when doctor finds any integrity issue
+      --auto-update     Opt one registered vault into post-verification init
+      --fleet           Clone-verify every registered vault before update
+      --auto            Scheduled fleet update; requires --fleet
+      --candidate <bin> Verify one candidate against registered vault clones
+      --current <bin>   Installed Retex binary for explicit fleet comparison
       --check           Check update availability without installing
       --json            Stable machine-readable output
       --all             Include archived records
@@ -792,7 +916,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "all", "help", "allow-write", "ranked", "strict", "check"].contains(raw) {
+            } else if ["json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -1095,6 +1219,7 @@ private struct ExportOutput: Encodable {
 
 private struct ImportOutput: Encodable {
     let into: String
+    let files: Int
     let notes: Int
 }
 
@@ -1103,6 +1228,9 @@ private struct UpdateOutput: Encodable {
     let latestVersion: String
     let updated: Bool
     let path: String?
+    let fleetVerified: Int?
+    let fleetUpdated: Int?
+    let milliseconds: Int?
 }
 
 private struct CountOutput: Encodable {
