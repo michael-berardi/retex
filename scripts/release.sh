@@ -70,10 +70,13 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   STATIC_ROOT="$(print -r -- "$CONFIG" | sed -n 's/^swiftStaticResourcesPath: //p')"
   [[ -d "$SDK_ROOT" && -d "$STATIC_ROOT" ]] || { echo "FAIL: incomplete $LINUX_SDK config for $TRIPLE"; exit 1; }
   BUILTINS_SOURCE="$SDK_ROOT/usr/lib/swift/clang/lib/linux/libclang_rt.builtins-$ARCH.a"
-  BUILTINS_DIR="$STATIC_ROOT/clang/lib/$TRIPLE"
+  SDK_BASE="${SDK_ROOT%/$ARCH}"
   [[ -f "$BUILTINS_SOURCE" ]] || { echo "FAIL: missing compiler runtime for $TRIPLE"; exit 1; }
-  mkdir -p "$BUILTINS_DIR"
-  ln -sfn "../linux/libclang_rt.builtins-$ARCH.a" "$BUILTINS_DIR/libclang_rt.builtins.a"
+  for resource_arch in aarch64 x86_64; do
+    BUILTINS_DIR="$SDK_BASE/$resource_arch/usr/lib/swift_static/clang/lib/$TRIPLE"
+    mkdir -p "$BUILTINS_DIR"
+    ln -sfn "$BUILTINS_SOURCE" "$BUILTINS_DIR/libclang_rt.builtins.a"
+  done
 
   SCRATCH="$BUILD/linux-$ARCH"
   "$LINUX_SWIFT" build -c release --swift-sdk "$LINUX_SDK" --triple "$TRIPLE" \
