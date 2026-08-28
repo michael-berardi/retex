@@ -5,6 +5,7 @@
   <a href="#install-and-run">Install</a> ·
   <a href="#cli">CLI</a> ·
   <a href="#mcp-server">MCP</a> ·
+  <a href="#import-existing-knowledge">Import</a> ·
   <a href="#encrypted-sync">Encrypted sync</a> ·
   <a href="#updates">Updates</a>
 </p>
@@ -37,17 +38,20 @@ third-party runtime service.
   lightweight polling fallback on Linux and Windows.
 - Custom board columns and named saved views per vault.
 - Drive a vault directly from any MCP host with the built-in MCP server.
-- Encrypted vault export/import on macOS, Linux, and Windows.
-- Self-update on macOS with checksum verification and rollback.
+- Import Notion Markdown/CSV ZIP exports, Obsidian vaults, and ordinary
+  Markdown directories while preserving attachments and rejecting symlinks.
+- Encrypted, checksummed vault-and-attachment export/import on every platform.
+- Opt-in fleet updates verify disposable clones before changing the binary or
+  initializing registered live vaults; rollback remains automatic on failure.
 
 ## Requirements
 
 - macOS 14 or later, Linux, or Windows 10/11.
 - Building from source requires a Swift 6.0+ toolchain. Xcode 16+ supplies it
   on macOS; Swift.org publishes Linux and Windows toolchains.
-- The signed universal release asset is for macOS. Linux and Windows use the
-  same tagged source and feature-complete `RetexCore`/CLI build; only the
-  notarized self-updater is macOS-specific.
+- Releases provide a signed universal macOS archive and static Linux archives.
+  Windows uses the same CLI and expects the matching release asset when
+  self-update is enabled; source builds remain supported on every platform.
 
 ## Install and run
 
@@ -107,7 +111,7 @@ repeated `--where key=value` filters.
 
 Commands: `list`, `query`, `search`, `recall`, `links`, `show`, `create`,
 `set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
-`doctor`, `watch`, `mcp`, `export`, `import`, `update`, `version`. Run
+`doctor`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
 `retex schema --vault ...` to discover built-in, configured, and existing
 record types and properties.
 
@@ -244,6 +248,30 @@ whose values are tokens. Clients send
 `Authorization: Bearer <token>`; tokens are compared in constant time, never
 logged, and every route is denied when authentication is missing or invalid.
 
+## Import existing knowledge
+
+Import a Notion **Markdown & CSV** export directly from its ZIP:
+
+```bash
+retex import --from ~/Downloads/notion-export.zip \
+  --into ~/Vaults/Notion --format notion --json
+```
+
+Retex strips Notion's opaque page IDs from names, rewrites local Markdown
+links, preserves attachments, and converts CSV databases into readable
+Markdown tables while retaining the source CSV.
+
+Import an Obsidian or generic Markdown vault from an extracted directory:
+
+```bash
+retex import --from ~/Documents/Obsidian \
+  --into ~/Vaults/Imported --format obsidian --json
+```
+
+Imports require a new or empty destination, reject symlinks and path escapes,
+skip hidden editor/VCS state, cap individual files at 64 MiB and total input at
+1 GiB, and initialize private Retex state only after content succeeds.
+
 ## Encrypted sync
 
 Vault contents stay plain Markdown on disk; when you need to move a vault
@@ -251,17 +279,20 @@ through a third-party channel (iCloud, Dropbox, git, email), export it
 encrypted:
 
 ```bash
-export RETEX_PASS='your passphrase'
+read -s RETEX_PASS
+export RETEX_PASS
 retex export --vault ~/Vaults/CRM --out crm.retex --passphrase-env RETEX_PASS
-# sync crm.retex anywhere, then:
 retex import --from crm.retex --into ~/Vaults/CRM-restored --passphrase-env RETEX_PASS
+unset RETEX_PASS
 ```
 
-The export is a single `RETEXENC1` file: PBKDF2-HMAC-SHA256 (600k iterations)
-key derivation and AES-GCM authenticated encryption through CryptoKit on
-Apple platforms and Swift Crypto elsewhere. The file format is identical
-across operating systems. The passphrase comes from an environment variable
-or interactive prompt, never a process-list-visible argument.
+The single `RETEXENC1` envelope uses PBKDF2-HMAC-SHA256 (600,000 iterations)
+and AES-GCM authenticated encryption. Its versioned inner manifest preserves
+Markdown plus portable document/media attachments with a SHA-256 per file;
+v0.7 still reads Markdown-only v1 archives. Source code, hidden editor/VCS
+state, and Retex-derived state remain excluded. Export passphrases require at
+least 12 characters and come from an interactive prompt or named environment
+variable, never a process-list-visible argument.
 
 ## Updates
 
@@ -271,18 +302,33 @@ Check availability without changing the installation:
 retex update --check --json
 ```
 
-After validating the candidate on disposable vault clones:
+For one installation, the verified updater remains:
 
 ```bash
 retex update
 ```
 
-The macOS updater verifies the exact SHA-256 entry, Developer ID requirement,
-Gatekeeper notarization, regular-file boundary, and reported candidate version
-before atomically replacing the binary. The previous version remains at
-`<path>/retex.previous` for rollback. A failed check leaves the installed
-binary untouched. Linux and Windows self-update checks fail closed and use the
-tagged source; the universal release asset is macOS-only.
+For multiple vaults, explicitly register the full fleet and opt individual
+vaults into post-update initialization:
+
+```bash
+retex fleet register --vault ~/Vaults/CRM --auto-update --json
+retex fleet status --json
+retex fleet install-updater --json
+```
+
+The optional scheduler runs `retex update --auto --fleet` every six hours.
+Before replacing the binary, Retex copies only Markdown and vault config into
+disposable clones, requires strict doctor success, compares exact `list` and
+`board` JSON with the installed version, and confirms that the installed
+version can still read candidate-initialized clones. Only then is the binary
+swapped atomically. Registered live vaults are initialized and strict-checked;
+any failure restores the previous binary.
+
+Every release download requires the exact published SHA-256. macOS also
+requires the Retex Developer ID requirement, Gatekeeper notarization, a bounded
+regular file, and an exact reported version. Linux uses static platform
+archives; Windows uses the matching signed release asset when available.
 
 ## Vault format
 
@@ -350,7 +396,7 @@ file.
 
 ## Project status
 
-Implemented today:
+Implemented:
 
 - Arbitrary record types, discoverable schemas, required-field validation,
   generic property filters, saved views, and non-destructive archiving
@@ -363,12 +409,14 @@ Implemented today:
 - Vault health checks (`retex doctor`)
 - Backwards-compatible MCP tools plus structured query, recall, link, and
   schema interfaces
-- Cross-platform encrypted export/import (PBKDF2 + AES-GCM)
-- macOS self-update with checksum, Developer ID, notarization,
-  candidate-version, atomic replacement, and rollback verification
-- Versioned JSON envelope on every CLI response
-- Regression coverage for parsing, mutations, CLI/MCP contracts, undo, config,
-  watching, crypto, update logic, and hosted gateway security
+- Notion ZIP, Obsidian, and generic Markdown-vault imports with attachment
+  preservation, collision handling, and path/symlink limits
+- Cross-platform encrypted export/import with per-file checksums and legacy
+  archive compatibility
+- Verified self-update, atomic rollback, disposable clone gates, opt-in fleet
+  initialization, and native macOS/Linux/Windows schedulers
+- Versioned JSON envelopes and regression coverage for parsing, mutations,
+  CLI/MCP contracts, imports, crypto, updates, and hosted gateway security
 
 Not yet shipped:
 

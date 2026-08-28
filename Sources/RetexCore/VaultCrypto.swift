@@ -25,12 +25,16 @@ public struct VaultCrypto {
         case badFormat
         case wrongPassphrase
         case keyDerivationFailed
+        case invalidArchive
+        case weakPassphrase
 
         public var errorDescription: String? {
             switch self {
             case .badFormat: "Not a Retex encrypted export (missing RETEXENC1 header)."
             case .wrongPassphrase: "Decryption failed: wrong passphrase or corrupted file."
             case .keyDerivationFailed: "Passphrase key derivation failed."
+            case .invalidArchive: "Retex archive manifest, checksum, path, or size validation failed."
+            case .weakPassphrase: "Export passphrase must contain at least 12 characters."
             }
         }
     }
@@ -42,53 +46,103 @@ public struct VaultCrypto {
         let content: String
     }
 
-    /// Collects every `.md` file under `vaultURL` into a portable archive blob.
+    private struct ArchiveEnvelope: Codable {
+        let version: Int
+        let files: [ArchiveEntry]
+    }
+
+    private struct ArchiveEntry: Codable {
+        let path: String
+        let data: Data
+        let sha256: String
+    }
+
+    private static let maximumFileBytes = 64 * 1024 * 1024
+    private static let maximumArchiveBytes = 1024 * 1024 * 1024
+    private static let portableVaultExtensions: Set<String> = [
+        "md", "markdown", "txt", "csv", "json", "canvas", "excalidraw",
+        "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic", "avif",
+        "mp3", "m4a", "wav", "flac", "ogg", "mp4", "mov", "webm",
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip",
+    ]
+
+    /// Collects portable, non-hidden vault documents and attachments. Retex
+    /// state, source code, VCS/editor state, symlinks, and packages are excluded.
     public static func makeArchive(vaultURL: URL) throws -> Data {
         let lexicalRoot = vaultURL.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
         guard let enumerator = FileManager.default.enumerator(
             at: lexicalRoot,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             throw StoreError.unreadableVault(vaultURL)
         }
 
-        var files: [ArchivedFile] = []
-        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+        var files: [ArchiveEntry] = []
+        var totalBytes = 0
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isSymbolicLink != true else { throw StoreError.pathOutsideVault(url) }
+            guard values.isRegularFile == true else { continue }
+            guard portableVaultExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            let size = values.fileSize ?? 0
+            totalBytes += size
+            guard size <= maximumFileBytes, totalBytes <= maximumArchiveBytes else {
+                throw CryptoError.invalidArchive
+            }
             let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
             guard isWithinVault(resolved, root: resolvedRoot) else {
                 throw StoreError.pathOutsideVault(url)
             }
-            let content = try String(contentsOf: resolved, encoding: .utf8)
             let relative = url.standardizedFileURL.pathComponents
                 .dropFirst(lexicalRoot.pathComponents.count)
                 .joined(separator: "/")
-            files.append(ArchivedFile(path: relative, content: content))
+            let data = try Data(contentsOf: resolved, options: [.mappedIfSafe])
+            files.append(ArchiveEntry(path: relative, data: data, sha256: sha256(data)))
         }
         files.sort { $0.path < $1.path }
-        return try JSONEncoder().encode(files)
+        return try JSONEncoder().encode(ArchiveEnvelope(version: 2, files: files))
     }
 
-    /// Writes archived files back into an existing directory.
-    /// Returns the number of notes written. Refuses paths that escape `into`.
+    /// Restores a versioned vault archive. Version 1 Markdown-only exports
+    /// remain readable; version 2 also preserves attachments and other
+    /// non-hidden vault files with per-file SHA-256 validation.
     @discardableResult
     public static func restoreArchive(_ data: Data, into dir: URL) throws -> Int {
-        let files = try JSONDecoder().decode([ArchivedFile].self, from: data)
+        if let envelope = try? JSONDecoder().decode(ArchiveEnvelope.self, from: data) {
+            guard envelope.version == 2 else { throw CryptoError.invalidArchive }
+            return try restoreEntries(envelope.files, into: dir)
+        }
+        let legacy = try JSONDecoder().decode([ArchivedFile].self, from: data)
+        guard legacy.allSatisfy({ URL(fileURLWithPath: $0.path).pathExtension.lowercased() == "md" }) else {
+            throw CryptoError.invalidArchive
+        }
+        return try restoreEntries(legacy.map {
+            let bytes = Data($0.content.utf8)
+            return ArchiveEntry(path: $0.path, data: bytes, sha256: sha256(bytes))
+        }, into: dir)
+    }
+
+    private static func restoreEntries(_ files: [ArchiveEntry], into dir: URL) throws -> Int {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let lexicalRoot = dir.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
         var seen: Set<String> = []
+        var totalBytes = 0
 
         for file in files {
             let relative = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            totalBytes += file.data.count
             guard !relative.isEmpty,
                   !(relative as NSString).isAbsolutePath,
-                  URL(fileURLWithPath: relative).pathExtension.lowercased() == "md",
-                  seen.insert(relative).inserted
+                  seen.insert(relative).inserted,
+                  file.data.count <= maximumFileBytes,
+                  totalBytes <= maximumArchiveBytes,
+                  sha256(file.data) == file.sha256
             else {
-                throw StoreError.pathOutsideVault(URL(fileURLWithPath: file.path))
+                throw CryptoError.invalidArchive
             }
 
             let target = lexicalRoot.appendingPathComponent(relative).standardizedFileURL
@@ -104,14 +158,19 @@ public struct VaultCrypto {
             if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
                 throw StoreError.pathOutsideVault(target)
             }
-            try file.content.write(to: target, atomically: true, encoding: .utf8)
+            try file.data.write(to: target, options: .atomic)
         }
         return files.count
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Symmetric envelope
 
     public func encrypt(_ plaintext: Data, passphrase: String) throws -> Data {
+        guard passphrase.count >= 12 else { throw CryptoError.weakPassphrase }
         let salt = (0..<Self.saltLength).map { _ in UInt8.random(in: .min ... .max) }
         let key = try Self.deriveKey(passphrase: passphrase, salt: salt)
         let nonce = AES.GCM.Nonce()
