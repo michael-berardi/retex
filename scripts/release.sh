@@ -8,6 +8,7 @@
 #   NOTARY_PROFILE           notarytool Keychain profile for the macOS archive
 #   RETEX_LINUX_SDK          installed Swift static Linux SDK ID
 #   RETEX_LINUX_SWIFT        Swift executable matching RETEX_LINUX_SDK
+#   RETEX_LLVM_STRIP         LLVM strip executable for Linux ELF binaries
 #
 # The official static SDK currently omits target-named compiler-rt symlinks;
 # this script repairs those links inside the user-owned SDK before building.
@@ -19,6 +20,7 @@ VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.7.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:--}"
 LINUX_SDK="${RETEX_LINUX_SDK:-swift-6.3.3-RELEASE_static-linux-0.1.0}"
 LINUX_SWIFT="${RETEX_LINUX_SWIFT:-swift}"
+LLVM_STRIP="${RETEX_LLVM_STRIP:-llvm-strip}"
 OUT="${RETEX_OUT:-release}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -29,6 +31,7 @@ cd "$ROOT"
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "FAIL: repository is not clean"; exit 1
 fi
+command -v "$LLVM_STRIP" >/dev/null || { echo "FAIL: RETEX_LLVM_STRIP is unavailable"; exit 1; }
 if ! grep -q "static let version = \"$VERSION\"" Sources/RetexCLI/AppVersion.swift; then
   echo "FAIL: AppVersion.swift does not declare $VERSION"; exit 1
 fi
@@ -83,7 +86,7 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   STAGE="$BUILD/linux-$ARCH-stage"
   mkdir -p "$STAGE"
   cp "$BINARY" "$STAGE/retex"
-  xcrun llvm-strip "$STAGE/retex"
+  "$LLVM_STRIP" "$STAGE/retex"
   chmod 755 "$STAGE/retex"
   cp README.md LICENSE "$STAGE/"
   COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" retex README.md LICENSE
