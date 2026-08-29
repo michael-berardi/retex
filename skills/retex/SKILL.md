@@ -5,7 +5,7 @@ description: >
   update a Retex Markdown vault through the Retex CLI or MCP server. Prefer this
   structured interface over recursive file discovery or editor-specific APIs.
 category: knowledge
-version: 1.3.0
+version: 1.4.0
 author: Retex contributors
 tags: [retex, markdown, vault, knowledge, mcp, cli]
 trigger_keywords: [retex, markdown vault, knowledge vault, agent memory, kanban]
@@ -32,6 +32,7 @@ Choose the narrowest command that answers the request:
 retex doctor --vault "$RETEX_VAULT" --strict --json
 retex count --vault "$RETEX_VAULT" --type invoice --where owner=alex --json
 retex query --vault "$RETEX_VAULT" --type invoice --status Inbox --tag priority --where owner=alex --limit 100 --json
+retex query --vault "$RETEX_VAULT" --on-or-before review_after=2026-08-28 --limit 100 --json
 retex search "exact terms" --vault "$RETEX_VAULT" --ranked --limit 20 --json
 retex recall "what changed in the release" --vault "$RETEX_VAULT" --budget 12000 --json
 retex links "$RETEX_VAULT/Notes/example.md" --vault "$RETEX_VAULT" --json
@@ -43,8 +44,10 @@ retex board --vault "$RETEX_VAULT" --json
 - Known path: `show`.
 - Total or existence check: `count`.
 - Structured slice: `query` with `--type`, `--status`, `--tag`, repeated
-  `--where key=value`, and a bounded `--limit`. Use `list` only when a
-  v0.5-compatible compact summary is required.
+  `--where key=value`, inclusive `--on-or-before key=YYYY-MM-DD` /
+  `--on-or-after key=YYYY-MM-DD`, and a bounded `--limit`. Use `list` only when
+  a v0.5-compatible compact summary is required. Missing or invalid record
+  dates do not satisfy a date filter.
 - Natural agent question: `recall` with a bounded `--budget`; it returns
   ranked evidence excerpts and provenance.
 - Exact phrase or stable compatibility comparison: `search` without
@@ -62,7 +65,8 @@ so startup and transport are amortized.
 
 ## Safe writes
 
-Read the target first. Retex mutations are explicit and journaled:
+Read the target first and keep its returned `contentHash`. Retex mutations are
+explicit, journaled, and optionally compare-and-set:
 
 Initialize each vault once so future undo records stay in its private
 vault-root state directory:
@@ -73,14 +77,16 @@ retex init --vault "$RETEX_VAULT" --json
 
 ```bash
 retex create --vault "$RETEX_VAULT" --type invoice --folder Invoices --title "August" --set client=Acme --set amount=11500 --json
-retex set "$RETEX_VAULT/Invoices/august.md" owner=alex due=2026-09-01 --json
-retex move "$RETEX_VAULT/Tasks/follow-up.md" "In Progress" --json
-retex archive "$RETEX_VAULT/Tasks/follow-up.md" --json
+retex set "$RETEX_VAULT/Invoices/august.md" owner=alex due=2026-09-01 --if-hash "$INVOICE_HASH" --json
+retex move "$RETEX_VAULT/Tasks/follow-up.md" "In Progress" --if-hash "$TASK_HASH" --json
+retex archive "$RETEX_VAULT/Tasks/follow-up.md" --if-hash "$FRESH_TASK_HASH" --json
 retex undo "$RETEX_VAULT/Tasks/follow-up.md" --json
 ```
 
-Run `doctor` after a write batch. Use `undo` for the latest journaled mutation.
-Do not replace an entire note to change one property.
+Pass the hash from the immediately preceding read as `--if-hash`; read again
+between mutations. A change since the read then fails instead of being
+overwritten. Run `doctor` after a write batch. Use `undo` for the latest
+journaled mutation. Do not replace an entire note to change one property.
 
 ## Import and encrypted export
 
@@ -115,8 +121,10 @@ retex mcp --vault "$RETEX_VAULT"
 
 MCP is read-only by default. The compatibility tools remain, with structured
 `query_records`, budgeted `recall_context`, `get_links`, and `get_schema`
-available for agents. Mutation tools require explicit `--allow-write` and a
-trusted local host.
+available for agents. `read_note` returns `contentHash`; write tools accept
+optional `expected_hash`; query and recall accept semicolon-separated
+`on_or_before` and `on_or_after` filters. Mutation tools require explicit
+`--allow-write` and a trusted local host.
 
 Remote agent access must use the hosted read-only helper, TLS at the platform
 edge, and a random bearer token of at least 32 characters. Never put tokens in

@@ -16,7 +16,7 @@
 #   RETEX_OUT                output directory (default: ./release)
 set -euo pipefail
 
-VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.7.0)}"
+VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:--}"
 LINUX_SDK="${RETEX_LINUX_SDK:-swift-6.3.3-RELEASE_static-linux-0.1.0}"
 LINUX_SWIFT="${RETEX_LINUX_SWIFT:-swift}"

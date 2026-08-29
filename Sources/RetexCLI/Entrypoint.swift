@@ -115,6 +115,8 @@ enum RetexCLI {
                 status: invocation.option("status"),
                 tag: invocation.option("tag"),
                 metadata: invocation.keyValueOptions("where"),
+                onOrBefore: invocation.dateFilters("on-or-before"),
+                onOrAfter: invocation.dateFilters("on-or-after"),
                 includeArchived: invocation.flag("all"),
                 limit: limit
             )
@@ -165,7 +167,11 @@ enum RetexCLI {
             let note = try store.load(url)
             let updates = try invocation.keyValuePositionals(startingAt: 1)
             guard !updates.isEmpty else { throw UsageError("set requires one or more key=value pairs") }
-            try store.updateMetadata(updates, for: note)
+            try store.updateMetadata(
+                updates,
+                for: note,
+                expectedHash: invocation.option("if-hash")
+            )
             let updated = try store.load(url)
             try output(NoteDetail(updated), json: invocation.isJSON) { "Updated \($0.path)" }
 
@@ -175,14 +181,23 @@ enum RetexCLI {
             let note = try store.load(url)
             var updates = ["status": status]
             if let rank = invocation.option("rank") { updates["rank"] = rank }
-            try store.updateMetadata(updates, for: note)
+            try store.updateMetadata(
+                updates,
+                for: note,
+                expectedHash: invocation.option("if-hash")
+            )
             let updated = try store.load(url)
             try output(NoteDetail(updated), json: invocation.isJSON) { "Moved \($0.title) to \($0.status)" }
 
         case "archive":
             let url = try invocation.noteURL()
             let note = try store.load(url)
-            try store.updateMetadata("archived", value: "true", for: note)
+            try store.updateMetadata(
+                "archived",
+                value: "true",
+                for: note,
+                expectedHash: invocation.option("if-hash")
+            )
             let updated = try store.load(url)
             try output(NoteDetail(updated), json: invocation.isJSON) { "Archived \($0.path)" }
 
@@ -758,7 +773,15 @@ enum RetexCLI {
         let status = invocation.option("status")
         let tag = invocation.option("tag")
         let metadata = try invocation.keyValueOptions("where")
-        guard type != nil || status != nil || tag != nil || !metadata.isEmpty else {
+        let onOrBefore = try invocation.dateFilters("on-or-before")
+        let onOrAfter = try invocation.dateFilters("on-or-after")
+        guard type != nil
+                || status != nil
+                || tag != nil
+                || !metadata.isEmpty
+                || !onOrBefore.isEmpty
+                || !onOrAfter.isEmpty
+        else {
             return notes
         }
         return notes.filter {
@@ -767,7 +790,9 @@ enum RetexCLI {
                 type: type,
                 status: status,
                 tag: tag,
-                metadata: metadata
+                metadata: metadata,
+                onOrBefore: onOrBefore,
+                onOrAfter: onOrAfter
             )
         }
     }
@@ -851,6 +876,7 @@ enum RetexCLI {
       retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --json
       retex create --vault ./CRM --type invoice --title "Acme August" --set amount=11500 --json
       retex set ./CRM/Deals/acme-redesign.md status=Qualified due=2026-08-01 --json
+      retex query --vault ./CRM --on-or-before review_after=2026-08-28 --json
       retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
       retex board --vault ./CRM --view pipeline --json
       retex undo ./CRM/Deals/acme-redesign.md --json
@@ -875,6 +901,12 @@ enum RetexCLI {
       --status <name>   Filter workflow state
       --tag <name>      Filter a tag
       --where k=v       Filter any property; repeat for AND semantics
+      --on-or-before k=YYYY-MM-DD
+                        Include records whose property date is on/before the value
+      --on-or-after k=YYYY-MM-DD
+                        Include records whose property date is on/after the value
+      --if-hash <sha256>
+                        Mutate only the exact record version previously read
       --ranked          Match all search terms and relevance-rank results
       --out <file>      Destination for export
       --from <path>     Retex export, Notion ZIP, or extracted vault directory
@@ -979,6 +1011,16 @@ private struct Invocation {
 
     func keyValueOptions(_ name: String) throws -> [String: String] {
         try parseKeyValues(options[name] ?? [])
+    }
+
+    func dateFilters(_ name: String) throws -> [String: String] {
+        let filters = try keyValueOptions(name)
+        do {
+            try MarkdownStore.validateDateFilters(filters)
+            return filters
+        } catch {
+            throw UsageError(error.localizedDescription)
+        }
     }
 
     func keyValuePositionals(startingAt index: Int) throws -> [String: String] {
@@ -1140,6 +1182,7 @@ private struct NoteDetail: Encodable {
     let tags: [String]
     let body: String
     let modifiedAt: Date
+    let contentHash: String
 
     init(_ note: Note) {
         id = note.id
@@ -1152,6 +1195,7 @@ private struct NoteDetail: Encodable {
         tags = note.tags
         body = note.body
         modifiedAt = note.modifiedAt
+        contentHash = note.contentHash
     }
 }
 

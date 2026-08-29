@@ -1,4 +1,5 @@
 import Foundation
+import Crypto
 
 public struct Vault: Identifiable, Hashable, Sendable {
     public let url: URL
@@ -41,6 +42,9 @@ public struct Note: Identifiable, Hashable, Sendable, Codable {
     public var dueDate: String? { metadata["due"] }
     public var rank: Double { Double(metadata["rank", default: "0"]) ?? 0 }
     public var isArchived: Bool { metadata["archived"]?.lowercased() == "true" }
+    public var contentHash: String {
+        SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
     public var displayPath: String { url.deletingPathExtension().lastPathComponent }
 
     public var checklistProgress: (completed: Int, total: Int) {

@@ -147,6 +147,7 @@ public struct UpdateChecker {
     /// executable so replacement cannot cross filesystems.
     @discardableResult
     public static func install(candidate: URL, over executable: URL) throws -> URL {
+        let executable = executable.resolvingSymlinksInPath()
         let fm = FileManager.default
         let directory = executable.deletingLastPathComponent()
         let staged = directory.appendingPathComponent(".retex-update-\(UUID().uuidString)")

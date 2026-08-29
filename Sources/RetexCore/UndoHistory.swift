@@ -178,25 +178,56 @@ public struct UndoHistory: Sendable {
         defer { lock.unlock() }
         let url = journalURL(forPath: entry.path)
         try withJournalLock(journalURL: url) {
-            var entries = try readEntries(from: url)
-            entries.append(entry)
-
-            // Keep only the newest `capacityPerFile` entries for this exact
-            // path. Append while walking backward, then reverse once: inserting
-            // at index zero makes large journals quadratic.
-            var survivors: [Entry] = []
-            survivors.reserveCapacity(entries.count)
-            var countForPath = 0
-            for existing in entries.reversed() {
-                if existing.path == entry.path {
-                    countForPath += 1
-                    if countForPath > Self.capacityPerFile { continue }
-                }
-                survivors.append(existing)
-            }
-            survivors.reverse()
-            try writeEntries(survivors, to: url)
+            let entries = try readEntries(from: url)
+            try writeEntries(appending(entry, to: entries), to: url)
         }
+    }
+
+    /// Serializes a note mutation with its undo journal across Retex processes.
+    /// `prepare` runs after the lock is acquired so expected-hash checks and
+    /// writes form one compare-and-set operation for cooperating clients.
+    func performMutation(
+        path: String,
+        prepare: () throws -> (previousSource: String, nextSource: String)
+    ) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        let journalURL = journalURL(forPath: path)
+        try withJournalLock(journalURL: journalURL) {
+            let entries = try readEntries(from: journalURL)
+            let change = try prepare()
+            let entry = Entry(path: path, previousSource: change.previousSource)
+            try writeEntries(appending(entry, to: entries), to: journalURL)
+            do {
+                try change.nextSource.write(
+                    to: URL(fileURLWithPath: path),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            } catch {
+                try? writeEntries(entries, to: journalURL)
+                throw error
+            }
+        }
+    }
+
+    private func appending(_ entry: Entry, to entries: [Entry]) -> [Entry] {
+        var entries = entries
+        entries.append(entry)
+
+        // Keep only the newest `capacityPerFile` entries for this exact path.
+        var survivors: [Entry] = []
+        survivors.reserveCapacity(entries.count)
+        var countForPath = 0
+        for existing in entries.reversed() {
+            if existing.path == entry.path {
+                countForPath += 1
+                if countForPath > Self.capacityPerFile { continue }
+            }
+            survivors.append(existing)
+        }
+        survivors.reverse()
+        return survivors
     }
 
     /// Pops the newest entry for the given file, returning its previous source.
