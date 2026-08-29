@@ -76,7 +76,7 @@ final class RetexCLITests: XCTestCase {
 
     func testSuccessEnvelopeCarriesSchemaVersionAndOkTrue() throws {
         _ = try run(["create"] + vaultArg + ["--title", "Envelope", "--type", "note"])
-        let (status, stdout, _) = try run(["list"] + vaultArg + ["--json"])
+        let (status, stdout, _) = try run(["list"] + vaultArg + ["--raw-json"])
         XCTAssertEqual(status, 0)
 
         let envelope = try jsonEnvelope(stdout)
@@ -86,7 +86,7 @@ final class RetexCLITests: XCTestCase {
     }
 
     func testUsageErrorExits64WithMachineReadableFailure() throws {
-        let (status, _, stderr) = try run(["list", "--json"])
+        let (status, _, stderr) = try run(["list", "--raw-json"])
         XCTAssertEqual(status, 64)
         let envelope = try jsonEnvelope(stderr)
         XCTAssertEqual(envelope["ok"] as? Bool, false)
@@ -109,28 +109,28 @@ final class RetexCLITests: XCTestCase {
                 "--title", "Lifecycle Deal",
                 "--status", "Inbox",
                 "--set", "owner=Sam",
-            ] + ["--json"])
+            ] + ["--raw-json"])
         XCTAssertEqual(try jsonEnvelope(createOut)["ok"] as? Bool, true)
         let created = try XCTUnwrap(try jsonEnvelope(createOut)["data"] as? [String: Any])
         let path = try XCTUnwrap(created["path"] as? String)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
 
-        let (_, showOut, _) = try run(["show", path, "--json"])
+        let (_, showOut, _) = try run(["show", path, "--raw-json"])
         let shown = try XCTUnwrap(try jsonEnvelope(showOut)["data"] as? [String: Any])
         XCTAssertEqual(shown["title"] as? String, "Lifecycle Deal")
 
-        let (_, moveOut, _) = try run(["move", path, "Proposal", "--rank", "4", "--json"])
+        let (_, moveOut, _) = try run(["move", path, "Proposal", "--rank", "4", "--raw-json"])
         XCTAssertEqual(try jsonEnvelope(moveOut)["ok"] as? Bool, true)
         let moved = try XCTUnwrap(try jsonEnvelope(moveOut)["data"] as? [String: Any])
         XCTAssertEqual(moved["status"] as? String, "Proposal")
 
-        try run(["archive", path, "--json"])
+        try run(["archive", path, "--raw-json"])
         // Archived records are hidden by default...
-        let (_, listOut, _) = try run(["list"] + vaultArg + ["--json"])
+        let (_, listOut, _) = try run(["list"] + vaultArg + ["--raw-json"])
         let list = try XCTUnwrap(try jsonEnvelope(listOut)["data"] as? [[String: Any]])
         XCTAssertTrue(list.isEmpty)
         // ...and visible with --all.
-        let (_, allOut, _) = try run(["list"] + vaultArg + ["--all", "--json"])
+        let (_, allOut, _) = try run(["list"] + vaultArg + ["--all", "--raw-json"])
         let all = try XCTUnwrap(try jsonEnvelope(allOut)["data"] as? [[String: Any]])
         XCTAssertEqual(all.count, 1)
         XCTAssertEqual(all.first?["archived"] as? Bool, true)
@@ -138,24 +138,24 @@ final class RetexCLITests: XCTestCase {
 
     func testContentHashSupportsOptionalCompareAndSetMutations() throws {
         let (_, createOut, _) = try run([
-            "create"] + vaultArg + ["--title", "Versioned", "--status", "Inbox", "--json"])
+            "create"] + vaultArg + ["--title", "Versioned", "--status", "Inbox", "--raw-json"])
         let created = try XCTUnwrap(try jsonEnvelope(createOut)["data"] as? [String: Any])
         let path = try XCTUnwrap(created["path"] as? String)
         let originalHash = try XCTUnwrap(created["contentHash"] as? String)
         XCTAssertEqual(originalHash.count, 64)
 
         let (firstStatus, firstOut, _) = try run([
-            "set", path, "status=Proposal", "--if-hash", originalHash, "--json"])
+            "set", path, "status=Proposal", "--if-hash", originalHash, "--raw-json"])
         XCTAssertEqual(firstStatus, 0)
         let first = try XCTUnwrap(try jsonEnvelope(firstOut)["data"] as? [String: Any])
         XCTAssertNotEqual(first["contentHash"] as? String, originalHash)
 
         let (staleStatus, _, staleError) = try run([
-            "set", path, "status=Won", "--if-hash", originalHash, "--json"])
+            "set", path, "status=Won", "--if-hash", originalHash, "--raw-json"])
         XCTAssertEqual(staleStatus, 74)
         XCTAssertTrue(staleError.contains("stale write"))
 
-        let (_, showOut, _) = try run(["show", path, "--json"])
+        let (_, showOut, _) = try run(["show", path, "--raw-json"])
         let shown = try XCTUnwrap(try jsonEnvelope(showOut)["data"] as? [String: Any])
         XCTAssertEqual(shown["status"] as? String, "Proposal")
     }
@@ -177,7 +177,7 @@ final class RetexCLITests: XCTestCase {
         let (status, out, _) = try run([
             "query"] + vaultArg + [
                 "--on-or-before", "review_after=2026-08-28",
-                "--json",
+                "--raw-json",
             ])
         XCTAssertEqual(status, 0)
         let records = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [[String: Any]])
@@ -186,7 +186,7 @@ final class RetexCLITests: XCTestCase {
         let (invalidStatus, _, invalidError) = try run([
             "query"] + vaultArg + [
                 "--on-or-before", "review_after=2026-02-30",
-                "--json",
+                "--raw-json",
             ])
         XCTAssertEqual(invalidStatus, 64)
         XCTAssertTrue(invalidError.contains("valid YYYY-MM-DD"))
@@ -194,7 +194,7 @@ final class RetexCLITests: XCTestCase {
 
     func testSearchFindsBodyText() throws {
         try run(["create"] + vaultArg + ["--title", "Needle Note", "--body", "The zanzibar keyword lives here"])
-        let (_, out, _) = try run(["search", "zanzibar"] + vaultArg + ["--json"])
+        let (_, out, _) = try run(["search", "zanzibar"] + vaultArg + ["--raw-json"])
         XCTAssertEqual(try jsonEnvelope(out)["ok"] as? Bool, true)
         let results = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [[String: Any]])
         XCTAssertEqual(results.count, 1)
@@ -215,7 +215,7 @@ final class RetexCLITests: XCTestCase {
 
         let (status, out, _) = try run([
             "search", "Retex release"] + vaultArg + [
-                "--ranked", "--limit", "1", "--json",
+                "--ranked", "--limit", "1", "--raw-json",
             ])
         XCTAssertEqual(status, 0)
         let results = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [[String: Any]])
@@ -231,7 +231,7 @@ final class RetexCLITests: XCTestCase {
                 "--set", "owner=Sam",
                 "--set", "amount=11500",
                 "--set", "tags=[billing, priority]",
-                "--json",
+                "--raw-json",
             ])
         let created = try XCTUnwrap(try jsonEnvelope(createOut)["data"] as? [String: Any])
         XCTAssertEqual(created["type"] as? String, "note")
@@ -244,12 +244,12 @@ final class RetexCLITests: XCTestCase {
                 "--tag", "priority",
                 "--where", "owner=Sam",
                 "--where", "amount=11500",
-                "--json",
+                "--raw-json",
             ])
         let records = try XCTUnwrap(try jsonEnvelope(queryOut)["data"] as? [[String: Any]])
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(records[0]["type"] as? String, "invoice")
-        let (_, listOut, _) = try run(["list"] + vaultArg + ["--type", "invoice", "--json"])
+        let (_, listOut, _) = try run(["list"] + vaultArg + ["--type", "invoice", "--raw-json"])
         let legacy = try XCTUnwrap(try jsonEnvelope(listOut)["data"] as? [[String: Any]])
         XCTAssertEqual(legacy.first?["type"] as? String, "note")
     }
@@ -269,7 +269,7 @@ final class RetexCLITests: XCTestCase {
 
         let (_, out, _) = try run([
             "recall", "what is the Retex vault upgrade standard"] + vaultArg + [
-                "--limit", "5", "--budget", "1000", "--json",
+                "--limit", "5", "--budget", "1000", "--raw-json",
             ])
         let recalled = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         let records = try XCTUnwrap(recalled["records"] as? [[String: Any]])
@@ -283,7 +283,7 @@ final class RetexCLITests: XCTestCase {
             "create"] + vaultArg + [
                 "--title", "Alpha",
                 "--body", "See [[Beta]] and [[Missing]].",
-                "--json",
+                "--raw-json",
             ])
         let alpha = try XCTUnwrap((try jsonEnvelope(alphaOut)["data"] as? [String: Any])?["path"] as? String)
         try run([
@@ -292,7 +292,7 @@ final class RetexCLITests: XCTestCase {
                 "--body", "Back to [[Alpha#Decision]].",
             ])
 
-        let (_, out, _) = try run(["links", alpha] + vaultArg + ["--json"])
+        let (_, out, _) = try run(["links", alpha] + vaultArg + ["--raw-json"])
         let graph = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         XCTAssertEqual((graph["outgoing"] as? [[String: Any]])?.first?["title"] as? String, "Beta")
         XCTAssertEqual((graph["backlinks"] as? [[String: Any]])?.first?["title"] as? String, "Beta")
@@ -301,7 +301,7 @@ final class RetexCLITests: XCTestCase {
 
     func testBoardGroupsDealsByColumn() throws {
         try run(["create"] + vaultArg + ["--type", "deal", "--title", "Board Card", "--status", "Qualified"])
-        let (_, out, _) = try run(["board"] + vaultArg + ["--json"])
+        let (_, out, _) = try run(["board"] + vaultArg + ["--raw-json"])
         let board = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         let columns = try XCTUnwrap(board["columns"] as? [[String: Any]])
         let qualified = columns.first { ($0["name"] as? String) == "Qualified" }
@@ -314,28 +314,28 @@ final class RetexCLITests: XCTestCase {
 
     func testUndoRestoresPreviousState() throws {
         let (_, createOut, _) = try run([
-            "create"] + vaultArg + ["--type", "task", "--title", "Undo Me", "--json"])
+            "create"] + vaultArg + ["--type", "task", "--title", "Undo Me", "--raw-json"])
         let path = try XCTUnwrap((try jsonEnvelope(createOut)["data"] as? [String: Any])?["path"] as? String)
 
-        try run(["set", path, "status=Doing", "--json"])
+        try run(["set", path, "status=Doing", "--raw-json"])
 
-        let (_, undoOut, _) = try run(["undo", path, "--json"])
+        let (_, undoOut, _) = try run(["undo", path, "--raw-json"])
         XCTAssertEqual(try jsonEnvelope(undoOut)["ok"] as? Bool, true)
         let restored = try XCTUnwrap(try jsonEnvelope(undoOut)["data"] as? [String: Any])
         XCTAssertEqual(restored["status"] as? String, "Unsorted", "undo must restore pre-mutation status")
 
         // Journal entry was consumed.
-        let (_, logOut, _) = try run(["log", path, "--json"])
+        let (_, logOut, _) = try run(["log", path, "--raw-json"])
         let entries = try XCTUnwrap(try jsonEnvelope(logOut)["data"] as? [String: Any])
         XCTAssertEqual((entries["entries"] as? [[String: Any]])?.count, 0)
     }
 
     func testUndoWithoutHistoryFailsWithUsageError() throws {
         let (_, createOut, _) = try run([
-            "create"] + vaultArg + ["--title", "No History", "--json"])
+            "create"] + vaultArg + ["--title", "No History", "--raw-json"])
         let path = try XCTUnwrap((try jsonEnvelope(createOut)["data"] as? [String: Any])?["path"] as? String)
 
-        let (status, _, stderr) = try run(["undo", path, "--json"])
+        let (status, _, stderr) = try run(["undo", path, "--raw-json"])
         XCTAssertEqual(status, 64)
         XCTAssertTrue(stderr.contains("No undo history"))
     }
@@ -349,26 +349,26 @@ final class RetexCLITests: XCTestCase {
          "views":[{"name":"pipeline","type":"deal","status":"Proposal"}]}
         """.write(to: retexDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
 
-        let (_, viewsOut, _) = try run(["views"] + vaultArg + ["--json"])
+        let (_, viewsOut, _) = try run(["views"] + vaultArg + ["--raw-json"])
         let views = try XCTUnwrap(try jsonEnvelope(viewsOut)["data"] as? [String: Any])
         let listed = try XCTUnwrap(views["views"] as? [[String: Any]])
         XCTAssertEqual(listed.count, 1)
         XCTAssertEqual(listed.first?["name"] as? String, "pipeline")
 
-        let (_, boardOut, _) = try run(["board"] + vaultArg + ["--view", "pipeline", "--json"])
+        let (_, boardOut, _) = try run(["board"] + vaultArg + ["--view", "pipeline", "--raw-json"])
         let board = try XCTUnwrap(try jsonEnvelope(boardOut)["data"] as? [String: Any])
         let columns = try XCTUnwrap(board["columns"] as? [[String: Any]])
         XCTAssertEqual(columns.count, 2, "Custom columns replace defaults")
         XCTAssertTrue(columns.contains { ($0["name"] as? String) == "Proposal" })
         XCTAssertFalse(columns.contains { ($0["name"] as? String) == "Won" })
 
-        let unknown = try run(["board"] + vaultArg + ["--view", "ghost", "--json"])
+        let unknown = try run(["board"] + vaultArg + ["--view", "ghost", "--raw-json"])
         XCTAssertEqual(unknown.status, 64)
     }
 
     func testInitCreatesPrivateVaultStateIdempotently() throws {
         for _ in 0..<2 {
-            let (status, out, _) = try run(["init"] + vaultArg + ["--json"])
+            let (status, out, _) = try run(["init"] + vaultArg + ["--raw-json"])
             XCTAssertEqual(status, 0)
             XCTAssertEqual(try jsonEnvelope(out)["ok"] as? Bool, true)
         }
@@ -381,7 +381,7 @@ final class RetexCLITests: XCTestCase {
 
     func testDoctorReportsHealthyVault() throws {
         try run(["create"] + vaultArg + ["--title", "Doctor Note"])
-        let (_, out, _) = try run(["doctor"] + vaultArg + ["--json"])
+        let (_, out, _) = try run(["doctor"] + vaultArg + ["--raw-json"])
         let report = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         XCTAssertEqual(report["notes"] as? Int, 1)
         XCTAssertEqual(report["configOk"] as? Bool, true)
@@ -396,7 +396,7 @@ final class RetexCLITests: XCTestCase {
             .write(to: retexDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
         try run(["create"] + vaultArg + ["--type", "invoice", "--title", "Incomplete", "--set", "client=Acme"])
 
-        let (status, out, _) = try run(["doctor"] + vaultArg + ["--strict", "--json"])
+        let (status, out, _) = try run(["doctor"] + vaultArg + ["--strict", "--raw-json"])
         XCTAssertEqual(status, 2)
         let report = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         XCTAssertTrue((report["issues"] as? [String] ?? []).contains { $0.contains("amount") })
@@ -411,7 +411,7 @@ final class RetexCLITests: XCTestCase {
             encoding: .utf8
         )
 
-        let (status, out, _) = try run(["doctor"] + vaultArg + ["--strict", "--json"])
+        let (status, out, _) = try run(["doctor"] + vaultArg + ["--strict", "--raw-json"])
         XCTAssertNotEqual(status, 0)
         let report = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         XCTAssertEqual(report["journalOk"] as? Bool, false)
@@ -427,7 +427,7 @@ final class RetexCLITests: XCTestCase {
         """.write(to: retexDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
         try run(["create"] + vaultArg + ["--type", "invoice", "--title", "August", "--set", "amount=100"])
 
-        let (_, out, _) = try run(["schema"] + vaultArg + ["--json"])
+        let (_, out, _) = try run(["schema"] + vaultArg + ["--raw-json"])
         let schema = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [String: Any])
         XCTAssertEqual(schema["statuses"] as? [String], ["Sprint"])
         XCTAssertTrue((schema["recordTypes"] as? [String] ?? []).contains("invoice"))
