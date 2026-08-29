@@ -43,8 +43,8 @@ let package = Package(
                     : []),
             linkerSettings: ultraCompactLibExists
                 ? [
-                    // Local engine build link; macOS-only, never on iOS.
-                    .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"], .when(platforms: [.macOS])),
+                    // Local engine build link; desktop/server only, never on iOS.
+                    .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"], .when(platforms: [.macOS, .linux])),
                 ]
                 : []
         ),

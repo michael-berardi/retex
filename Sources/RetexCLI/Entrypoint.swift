@@ -764,7 +764,7 @@ enum RetexCLI {
     /// Encode a value as a UC (UltraCompact) packet via the linked Rust
     /// library. Falls back to compact JSON if encoding fails.
     private static func ucPacket<T: Encodable>(_ value: T) throws -> String {
-        #if canImport(CUltraCompact) && os(macOS)
+        #if canImport(CUltraCompact) && (os(macOS) || os(Linux))
         let response = SuccessResponse(data: value)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

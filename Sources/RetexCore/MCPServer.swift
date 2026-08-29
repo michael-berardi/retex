@@ -1,4 +1,4 @@
-#if os(macOS) && canImport(CUltraCompact)
+#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
 import CUltraCompact
 #endif
 import Foundation
@@ -674,7 +674,7 @@ public struct MCPServer {
     /// UC readable-mode packet for a tool payload. Falls back to pretty JSON
     /// off macOS or if encoding fails. Agents read the packet directly.
     private static func ucPacket(_ value: JSONValue) -> String {
-        #if os(macOS) && canImport(CUltraCompact)
+        #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
         guard let data = try? JSONEncoder().encode(value) else { return encodePretty(value) }
         return String(decoding: data, as: UTF8.self).withCString { inPtr in
             guard let packet = uc_encode_readable_json(inPtr, nil) else { return encodePretty(value) }
