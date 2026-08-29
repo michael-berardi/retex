@@ -152,6 +152,33 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(updated.rank, 7)
     }
 
+    func testExpectedHashRejectsStaleMutationWithoutOverwritingNewerContent() throws {
+        let store = MarkdownStore()
+        let original = try store.createNote(
+            in: Vault(url: vaultDir),
+            folder: "Notes",
+            title: "Concurrent",
+            metadata: ["status": "Inbox"],
+            body: "original"
+        )
+        let expectedHash = original.contentHash
+
+        try store.updateMetadata("status", value: "Proposal", for: original)
+        XCTAssertThrowsError(
+            try store.updateMetadata(
+                "status",
+                value: "Won",
+                for: original,
+                expectedHash: expectedHash
+            )
+        ) { error in
+            guard case StoreError.staleNote = error else {
+                return XCTFail("Expected staleNote, received \(error)")
+            }
+        }
+        XCTAssertEqual(try store.load(original.url).status, "Proposal")
+    }
+
     func testCreateSlugifiesAndDeduplicatesFileNames() throws {
         let store = MarkdownStore()
         let vault = Vault(url: vaultDir)
@@ -320,6 +347,57 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(graph.outgoing.map(\.title), ["Beta"])
         XCTAssertEqual(graph.backlinks.map(\.title), ["Beta"])
         XCTAssertEqual(graph.unresolved, ["Missing"])
+    }
+
+    func testLinksIncludeExplicitFrontmatterRelationships() throws {
+        let alpha = try writeNote(
+            "alpha-metadata.md",
+            "---\ntitle: Alpha Metadata\nsupersedes: \"[[Beta Metadata]]\"\n---\nNo body links."
+        )
+        _ = try writeNote(
+            "beta-metadata.md",
+            "---\ntitle: Beta Metadata\nrelated: \"[[Alpha Metadata]]\"\n---\nNo body links."
+        )
+
+        let graph = try MarkdownStore().links(Vault(url: vaultDir), for: alpha)
+
+        XCTAssertEqual(graph.outgoing.map(\.title), ["Beta Metadata"])
+        XCTAssertEqual(graph.backlinks.map(\.title), ["Beta Metadata"])
+    }
+
+    func testMetadataDateRangesAreInclusiveAndIgnoreMissingDates() throws {
+        let old = try MarkdownStore().load(try writeNote(
+            "old.md",
+            "---\ntitle: Old\nreview_after: 2026-08-01\n---\nReview me."
+        ))
+        let today = try MarkdownStore().load(try writeNote(
+            "today.md",
+            "---\ntitle: Today\nreview_after: 2026-08-28\n---\nReview me."
+        ))
+        let future = try MarkdownStore().load(try writeNote(
+            "future.md",
+            "---\ntitle: Future\nreview_after: 2026-09-01\n---\nReview me later."
+        ))
+        let missing = try MarkdownStore().load(try writeNote(
+            "missing.md",
+            "---\ntitle: Missing\n---\nNo review date."
+        ))
+
+        let due = [old, today, future, missing].filter {
+            MarkdownStore.matches(
+                $0,
+                onOrBefore: ["review_after": "2026-08-28"]
+            )
+        }
+        XCTAssertEqual(due.map(\.title), ["Old", "Today"])
+
+        let upcoming = [old, today, future, missing].filter {
+            MarkdownStore.matches(
+                $0,
+                onOrAfter: ["review_after": "2026-08-28"]
+            )
+        }
+        XCTAssertEqual(upcoming.map(\.title), ["Today", "Future"])
     }
 
     func testSearchRejectsEmptyQueriesAndInvalidLimits() throws {

@@ -136,6 +136,62 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(all.first?["archived"] as? Bool, true)
     }
 
+    func testContentHashSupportsOptionalCompareAndSetMutations() throws {
+        let (_, createOut, _) = try run([
+            "create"] + vaultArg + ["--title", "Versioned", "--status", "Inbox", "--json"])
+        let created = try XCTUnwrap(try jsonEnvelope(createOut)["data"] as? [String: Any])
+        let path = try XCTUnwrap(created["path"] as? String)
+        let originalHash = try XCTUnwrap(created["contentHash"] as? String)
+        XCTAssertEqual(originalHash.count, 64)
+
+        let (firstStatus, firstOut, _) = try run([
+            "set", path, "status=Proposal", "--if-hash", originalHash, "--json"])
+        XCTAssertEqual(firstStatus, 0)
+        let first = try XCTUnwrap(try jsonEnvelope(firstOut)["data"] as? [String: Any])
+        XCTAssertNotEqual(first["contentHash"] as? String, originalHash)
+
+        let (staleStatus, _, staleError) = try run([
+            "set", path, "status=Won", "--if-hash", originalHash, "--json"])
+        XCTAssertEqual(staleStatus, 74)
+        XCTAssertTrue(staleError.contains("stale write"))
+
+        let (_, showOut, _) = try run(["show", path, "--json"])
+        let shown = try XCTUnwrap(try jsonEnvelope(showOut)["data"] as? [String: Any])
+        XCTAssertEqual(shown["status"] as? String, "Proposal")
+    }
+
+    func testQueryFiltersInclusiveISODateMetadata() throws {
+        for (title, reviewAfter) in [
+            ("Old", "2026-08-01"),
+            ("Today", "2026-08-28"),
+            ("Future", "2026-09-01"),
+        ] {
+            try run([
+                "create"] + vaultArg + [
+                    "--title", title,
+                    "--set", "review_after=\(reviewAfter)",
+                ])
+        }
+        try run(["create"] + vaultArg + ["--title", "No Date"])
+
+        let (status, out, _) = try run([
+            "query"] + vaultArg + [
+                "--on-or-before", "review_after=2026-08-28",
+                "--json",
+            ])
+        XCTAssertEqual(status, 0)
+        let records = try XCTUnwrap(try jsonEnvelope(out)["data"] as? [[String: Any]])
+        XCTAssertEqual(Set(records.compactMap { $0["title"] as? String }), ["Old", "Today"])
+
+        let (invalidStatus, _, invalidError) = try run([
+            "query"] + vaultArg + [
+                "--on-or-before", "review_after=2026-02-30",
+                "--json",
+            ])
+        XCTAssertEqual(invalidStatus, 64)
+        XCTAssertTrue(invalidError.contains("valid YYYY-MM-DD"))
+    }
+
     func testSearchFindsBodyText() throws {
         try run(["create"] + vaultArg + ["--title", "Needle Note", "--body", "The zanzibar keyword lives here"])
         let (_, out, _) = try run(["search", "zanzibar"] + vaultArg + ["--json"])

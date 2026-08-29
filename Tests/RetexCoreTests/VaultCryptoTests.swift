@@ -176,4 +176,25 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: executable, encoding: .utf8), "new")
         XCTAssertEqual(try String(contentsOf: previous, encoding: .utf8), "old")
     }
+
+    #if !os(Windows)
+    func testInstallThroughSymlinkUpdatesCanonicalExecutableAndKeepsLink() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-install-link-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("retex")
+        let link = directory.appendingPathComponent("retex-link")
+        let candidate = directory.appendingPathComponent("candidate")
+        try "old".write(to: executable, atomically: true, encoding: .utf8)
+        try "new".write(to: candidate, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: executable)
+
+        let previous = try UpdateChecker.install(candidate: candidate, over: link)
+
+        XCTAssertEqual(try String(contentsOf: executable, encoding: .utf8), "new")
+        XCTAssertEqual(try String(contentsOf: previous, encoding: .utf8), "old")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), executable.path)
+    }
+    #endif
 }

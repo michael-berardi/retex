@@ -25,6 +25,12 @@ private struct ASCIINeedle: Sendable {
     }
 }
 
+private struct RecallCandidate: Sendable {
+    let note: Note
+    let score: Int
+    let matchedTerms: [String]
+}
+
 public struct MarkdownStore {
     private let fileManager = FileManager.default
     let history = UndoHistory()
@@ -143,12 +149,16 @@ public struct MarkdownStore {
         status: String? = nil,
         tag: String? = nil,
         metadata: [String: String] = [:],
+        onOrBefore: [String: String] = [:],
+        onOrAfter: [String: String] = [:],
         includeArchived: Bool = false,
         limit: Int = 20
     ) throws -> [RecallHit] {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
         guard limit > 0 else { throw StoreError.invalidLimit }
+        try Self.validateDateFilters(onOrBefore)
+        try Self.validateDateFilters(onOrAfter)
 
         let terms = Self.recallTerms(normalizedQuery)
         let phrase = Self.foldedForRanking(normalizedQuery)
@@ -168,7 +178,7 @@ public struct MarkdownStore {
         let asciiNeedles: [ASCIINeedle?] = terms.map { term in
             term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
         }
-        var hits = [RecallHit?](repeating: nil, count: files.count)
+        var hits = [RecallCandidate?](repeating: nil, count: files.count)
         hits.withUnsafeMutableBufferPointer { buffer in
             let selfBox = SendableBox(self)
             let hitsBox = SendableBox(buffer)
@@ -196,13 +206,20 @@ public struct MarkdownStore {
                       let source = decoded ?? String(data: data, encoding: .utf8),
                       let note = try? selfBox.value.note(from: source, at: url),
                       (includeArchived || !note.isArchived),
-                      Self.matches(note, type: type, status: status, tag: tag, metadata: metadata)
+                      Self.matches(
+                          note,
+                          type: type,
+                          status: status,
+                          tag: tag,
+                          metadata: metadata,
+                          onOrBefore: onOrBefore,
+                          onOrAfter: onOrAfter
+                      )
                 else { return }
-                hitsBox.value[index] = RecallHit(
+                hitsBox.value[index] = RecallCandidate(
                     note: note,
                     score: Self.recallScore(note, phrase: phrase, terms: terms, matched: matched),
-                    matchedTerms: matched,
-                    excerpt: Self.evidenceExcerpt(note.body, terms: matched)
+                    matchedTerms: matched
                 )
             }
 
@@ -221,7 +238,14 @@ public struct MarkdownStore {
         return hits.compactMap { $0 }.sorted { left, right in
             if left.score != right.score { return left.score > right.score }
             return Self.precedes(left.note, right.note)
-        }.prefix(limit).map { $0 }
+        }.prefix(limit).map { candidate in
+            RecallHit(
+                note: candidate.note,
+                score: candidate.score,
+                matchedTerms: candidate.matchedTerms,
+                excerpt: Self.evidenceExcerpt(candidate.note.body, terms: candidate.matchedTerms)
+            )
+        }
     }
 
     /// Resolves `[[wiki links]]` without depending on an editor or plugin.
@@ -239,7 +263,7 @@ public struct MarkdownStore {
         var outgoing: [Note] = []
         var outgoingIDs: Set<String> = []
         var unresolved: Set<String> = []
-        for rawLink in Self.wikiLinks(in: target.body) {
+        for rawLink in Self.wikiLinks(in: target.source) {
             let candidates = Self.lookupKeys(rawLink).flatMap { index[$0] ?? [] }
             if candidates.isEmpty {
                 unresolved.insert(rawLink)
@@ -251,7 +275,7 @@ public struct MarkdownStore {
 
         let targetKeys = Self.linkKeys(target, root: vault.url)
         let backlinks = notes.filter { note in
-            note.id != target.id && Self.wikiLinks(in: note.body).contains { rawLink in
+            note.id != target.id && Self.wikiLinks(in: note.source).contains { rawLink in
                 !Set(Self.lookupKeys(rawLink)).isDisjoint(with: targetKeys)
             }
         }
@@ -267,16 +291,56 @@ public struct MarkdownStore {
         type: String? = nil,
         status: String? = nil,
         tag: String? = nil,
-        metadata: [String: String] = [:]
+        metadata: [String: String] = [:],
+        onOrBefore: [String: String] = [:],
+        onOrAfter: [String: String] = [:]
     ) -> Bool {
         if let type, note.recordType.caseInsensitiveCompare(type) != .orderedSame { return false }
         if let status, note.status.caseInsensitiveCompare(status) != .orderedSame { return false }
         if let tag, !note.tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
             return false
         }
-        return metadata.allSatisfy { key, expected in
+        guard metadata.allSatisfy({ key, expected in
             note.metadata[key]?.caseInsensitiveCompare(expected) == .orderedSame
+        }) else { return false }
+        guard onOrBefore.allSatisfy({ key, bound in
+            guard let value = note.metadata[key],
+                  let valueDay = isoDay(value),
+                  let boundDay = isoDay(bound)
+            else { return false }
+            return valueDay <= boundDay
+        }) else { return false }
+        return onOrAfter.allSatisfy { key, bound in
+            guard let value = note.metadata[key],
+                  let valueDay = isoDay(value),
+                  let boundDay = isoDay(bound)
+            else { return false }
+            return valueDay >= boundDay
         }
+    }
+
+    public static func validateDateFilters(_ filters: [String: String]) throws {
+        for (key, value) in filters where isoDay(value) == nil {
+            throw StoreError.invalidDateFilter(key, value)
+        }
+    }
+
+    private static func isoDay(_ value: String) -> Int? {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              parts[0].count == 4,
+              parts[1].count == 2,
+              parts[2].count == 2,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]),
+              (1...9999).contains(year),
+              (1...12).contains(month)
+        else { return nil }
+        let leap = year.isMultiple(of: 400) || (year.isMultiple(of: 4) && !year.isMultiple(of: 100))
+        let monthDays = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        guard (1...monthDays[month - 1]).contains(day) else { return nil }
+        return year * 10_000 + month * 100 + day
     }
 
     private static func recallTerms(_ query: String) -> [String] {
@@ -576,67 +640,88 @@ public struct MarkdownStore {
         try source.write(to: url, atomically: true, encoding: .utf8)
         return try load(url)
     }
-    public func saveBody(_ body: String, for note: Note) throws {
-        // Journal first (WAL style); if the file write fails, roll the entry back.
-        try history.record(.init(path: note.url.path, previousSource: note.source))
-        let source = replacingBody(in: note.source, with: body)
-        do {
-            try source.write(to: note.url, atomically: true, encoding: .utf8)
-        } catch {
-            _ = try? history.pop(path: note.url.path)
-            throw error
+    public func saveBody(
+        _ body: String,
+        for note: Note,
+        expectedHash: String? = nil
+    ) throws {
+        try history.performMutation(path: note.url.path) {
+            let current = try currentNote(for: note, expectedHash: expectedHash)
+            return (
+                previousSource: current.source,
+                nextSource: replacingBody(in: current.source, with: body)
+            )
         }
     }
 
-    public func updateMetadata(_ key: String, value: String, for note: Note) throws {
-        try updateMetadata([key: value], for: note)
+    public func updateMetadata(
+        _ key: String,
+        value: String,
+        for note: Note,
+        expectedHash: String? = nil
+    ) throws {
+        try updateMetadata([key: value], for: note, expectedHash: expectedHash)
     }
 
-    public func updateMetadata(_ updates: [String: String], for note: Note) throws {
+    public func updateMetadata(
+        _ updates: [String: String],
+        for note: Note,
+        expectedHash: String? = nil
+    ) throws {
         try validateMetadata(updates)
-        // Journal first (WAL style); if the file write fails, roll the entry back.
-        try history.record(.init(path: note.url.path, previousSource: note.source))
-        var lines = normalizedLines(note.source)
-        guard lines.first == "---", let closingIndex = lines.dropFirst().firstIndex(of: "---") else {
-            let properties = updates.keys.sorted().map {
-                "\($0): \(serializedScalar(updates[$0, default: ""]))"
-            }
-            lines.insert(contentsOf: ["---"] + properties + ["---", ""], at: 0)
-            try writeWithRollback(lines.joined(separator: "\n"), note: note)
-            return
-        }
-
-        var insertionIndex = closingIndex
-        for key in updates.keys.sorted() {
-            let line = "\(key): \(serializedScalar(updates[key, default: ""]))"
-            if let existingIndex = lines[1..<insertionIndex].firstIndex(where: { $0.hasPrefix("\(key):") }) {
-                lines[existingIndex] = line
-                let continuationIndex = existingIndex + 1
-                while continuationIndex < insertionIndex {
-                    let continuation = lines[continuationIndex]
-                    let isNestedValue = continuation.first?.isWhitespace == true
-                        || continuation.trimmingCharacters(in: .whitespaces).hasPrefix("- ")
-                    guard isNestedValue else { break }
-                    lines.remove(at: continuationIndex)
-                    insertionIndex -= 1
+        try history.performMutation(path: note.url.path) {
+            let current = try currentNote(for: note, expectedHash: expectedHash)
+            var lines = normalizedLines(current.source)
+            guard lines.first == "---", let closingIndex = lines.dropFirst().firstIndex(of: "---") else {
+                let properties = updates.keys.sorted().map {
+                    "\($0): \(serializedScalar(updates[$0, default: ""]))"
                 }
-            } else {
-                lines.insert(line, at: insertionIndex)
-                insertionIndex += 1
+                lines.insert(contentsOf: ["---"] + properties + ["---", ""], at: 0)
+                return (
+                    previousSource: current.source,
+                    nextSource: lines.joined(separator: "\n")
+                )
             }
-        }
 
-        try writeWithRollback(lines.joined(separator: "\n"), note: note)
+            var insertionIndex = closingIndex
+            for key in updates.keys.sorted() {
+                let line = "\(key): \(serializedScalar(updates[key, default: ""]))"
+                if let existingIndex = lines[1..<insertionIndex].firstIndex(where: { $0.hasPrefix("\(key):") }) {
+                    lines[existingIndex] = line
+                    let continuationIndex = existingIndex + 1
+                    while continuationIndex < insertionIndex {
+                        let continuation = lines[continuationIndex]
+                        let isNestedValue = continuation.first?.isWhitespace == true
+                            || continuation.trimmingCharacters(in: .whitespaces).hasPrefix("- ")
+                        guard isNestedValue else { break }
+                        lines.remove(at: continuationIndex)
+                        insertionIndex -= 1
+                    }
+                } else {
+                    lines.insert(line, at: insertionIndex)
+                    insertionIndex += 1
+                }
+            }
+
+            return (
+                previousSource: current.source,
+                nextSource: lines.joined(separator: "\n")
+            )
+        }
     }
 
-    private func writeWithRollback(_ source: String, note: Note) throws {
-        do {
-            try source.write(to: note.url, atomically: true, encoding: .utf8)
-        } catch {
-            _ = try? history.pop(path: note.url.path)
-            throw error
+    private func currentNote(for note: Note, expectedHash: String?) throws -> Note {
+        let current = try load(note.url)
+        if let expectedHash, current.contentHash != expectedHash {
+            throw StoreError.staleNote(
+                note.url,
+                expected: expectedHash,
+                actual: current.contentHash
+            )
         }
+        return current
     }
+
 
     private func parseFrontmatter(
         _ lines: [String],
@@ -756,6 +841,8 @@ public enum StoreError: LocalizedError {
     case folderOutsideVault
     case pathOutsideVault(URL)
     case corruptHistory(URL)
+    case staleNote(URL, expected: String, actual: String)
+    case invalidDateFilter(String, String)
     case historyUnwritable(URL)
 
     public var errorDescription: String? {
@@ -768,6 +855,10 @@ public enum StoreError: LocalizedError {
         case .invalidMetadataValue(let key): "Front-matter property \(key) contains an unsupported value."
         case .folderOutsideVault: "A note folder must stay within the vault."
         case .pathOutsideVault(let url): "A Markdown path escapes the vault: \(url.path)."
+        case .staleNote(let url, let expected, let actual):
+            "Retex refused a stale write to \(url.path): expected \(expected), found \(actual)."
+        case .invalidDateFilter(let key, let value):
+            "Front-matter date filter \(key)=\(value) must use a valid YYYY-MM-DD date."
         case .corruptHistory(let url): "Retex found a corrupt undo journal entry at \(url.path)."
         case .historyUnwritable(let url): "Retex could not write the undo journal at \(url.path)."
         }

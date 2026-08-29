@@ -220,6 +220,33 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue((schema["properties"] as? [String] ?? []).contains("amount"))
     }
 
+    func testMCPContentHashGuardsWritesAndDateFiltersQueries() throws {
+        let path = vaultDir.appendingPathComponent("Deals/acme-redesign.md").path
+        _ = try store.updateMetadata(
+            "review_after",
+            value: "2026-08-28",
+            for: store.load(URL(fileURLWithPath: path))
+        )
+        let currentHash = try store.load(URL(fileURLWithPath: path)).contentHash
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"read_note","arguments":{"path":"\#(path)"}}}"#,
+            #"{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"set_property","arguments":{"path":"\#(path)","key":"status","value":"Proposal","expected_hash":"\#(currentHash)"}}}"#,
+            #"{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"set_property","arguments":{"path":"\#(path)","key":"status","value":"Won","expected_hash":"\#(currentHash)"}}}"#,
+            #"{"jsonrpc":"2.0","id":46,"method":"tools/call","params":{"name":"query_records","arguments":{"on_or_before":"review_after=2026-08-28"}}}"#,
+        ])
+
+        let read = try toolPayload(try resultText(responses[0]))
+        XCTAssertEqual(read["contentHash"] as? String, currentHash)
+        XCTAssertEqual((responses[1]["result"] as? [String: Any])?["isError"] as? Bool, false)
+        XCTAssertEqual((responses[2]["result"] as? [String: Any])?["isError"] as? Bool, true)
+        XCTAssertTrue(try resultText(responses[2]).contains("stale write"))
+        XCTAssertEqual(try store.load(URL(fileURLWithPath: path)).status, "Proposal")
+
+        let queried = try toolPayload(try resultText(responses[3]))
+        XCTAssertEqual(queried["count"] as? String, "1")
+    }
+
     func testSearchSupportsRankedAllTermQueriesAndLimits() throws {
         _ = try store.createNote(
             in: Vault(url: vaultDir),

@@ -348,6 +348,7 @@ public struct MCPServer {
                 "metadata": note.metadata.sorted { $0.key < $1.key }
                     .map { "\($0.key): \($0.value)" }.joined(separator: "\n"),
                 "body": note.body,
+                "contentHash": note.contentHash,
             ])
 
         case "create_note":
@@ -383,7 +384,12 @@ public struct MCPServer {
             }
             let url = try confinedURL(path)
             let note = try store.load(url)
-            try store.updateMetadata(key, value: value, for: note)
+            try store.updateMetadata(
+                key,
+                value: value,
+                for: note,
+                expectedHash: arg("expected_hash")
+            )
             return .stringDict(["updated": url.path, "\(key)": value])
 
         case "move_card":
@@ -394,25 +400,38 @@ public struct MCPServer {
             let note = try store.load(url)
             var updates = ["status": status]
             if let rank = arg("rank") { updates["rank"] = rank }
-            try store.updateMetadata(updates, for: note)
+            try store.updateMetadata(
+                updates,
+                for: note,
+                expectedHash: arg("expected_hash")
+            )
             return .stringDict(["moved": note.title, "status": status])
 
         case "archive_note":
             guard let path = arg("path") else { throw ToolError(message: "archive_note requires path") }
             let url = try confinedURL(path)
             let note = try store.load(url)
-            try store.updateMetadata("archived", value: "true", for: note)
+            try store.updateMetadata(
+                "archived",
+                value: "true",
+                for: note,
+                expectedHash: arg("expected_hash")
+            )
             return .stringDict(["archived": url.path])
 
         case "query_records":
             let filters = try propertyFilters(arg("where"))
+            let onOrBefore = try dateFilters(arg("on_or_before"))
+            let onOrAfter = try dateFilters(arg("on_or_after"))
             var notes = try notesInVault().filter {
                 MarkdownStore.matches(
                     $0,
                     type: arg("type"),
                     status: arg("status"),
                     tag: arg("tag"),
-                    metadata: filters
+                    metadata: filters,
+                    onOrBefore: onOrBefore,
+                    onOrAfter: onOrAfter
                 )
             }
             if !((arg("archived") ?? "false").lowercased() == "true") {
@@ -444,6 +463,8 @@ public struct MCPServer {
                 status: arg("status"),
                 tag: arg("tag"),
                 metadata: filters,
+                onOrBefore: try dateFilters(arg("on_or_before")),
+                onOrAfter: try dateFilters(arg("on_or_after")),
                 includeArchived: includeArchived,
                 limit: limit
             ).filter {
@@ -563,6 +584,12 @@ public struct MCPServer {
             }
             result[String(fields[0])] = String(fields[1])
         }
+    }
+
+    private func dateFilters(_ raw: String?) throws -> [String: String] {
+        let filters = try propertyFilters(raw)
+        try MarkdownStore.validateDateFilters(filters)
+        return filters
     }
 
     private static func recordJSON(_ note: Note) -> JSONValue {
@@ -735,6 +762,7 @@ public struct MCPServer {
                         "path": .object(["type": .string("string")]),
                         "key": .object(["type": .string("string")]),
                         "value": .object(["type": .string("string")]),
+                        "expected_hash": .object(["type": .string("string")]),
                     ]),
                     "required": .array([.string("path"), .string("key"), .string("value")]),
                 ])
@@ -748,6 +776,7 @@ public struct MCPServer {
                         "path": .object(["type": .string("string")]),
                         "status": .object(["type": .string("string")]),
                         "rank": .object(["type": .string("string")]),
+                        "expected_hash": .object(["type": .string("string")]),
                     ]),
                     "required": .array([.string("path"), .string("status")]),
                 ])
@@ -757,7 +786,10 @@ public struct MCPServer {
                 description: "Archive a note non-destructively (sets archived: true).",
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object(["path": .object(["type": .string("string")])]),
+                    "properties": .object([
+                        "path": .object(["type": .string("string")]),
+                        "expected_hash": .object(["type": .string("string")]),
+                    ]),
                     "required": .array([.string("path")]),
                 ])
             ),
@@ -771,6 +803,8 @@ public struct MCPServer {
                         "status": .object(["type": .string("string")]),
                         "tag": .object(["type": .string("string")]),
                         "where": .object(["type": .string("string")]),
+                        "on_or_before": .object(["type": .string("string")]),
+                        "on_or_after": .object(["type": .string("string")]),
                         "archived": .object(["type": .string("boolean")]),
                         "limit": .object(["type": .string("integer")]),
                     ]),
@@ -787,6 +821,8 @@ public struct MCPServer {
                         "status": .object(["type": .string("string")]),
                         "tag": .object(["type": .string("string")]),
                         "where": .object(["type": .string("string")]),
+                        "on_or_before": .object(["type": .string("string")]),
+                        "on_or_after": .object(["type": .string("string")]),
                         "archived": .object(["type": .string("boolean")]),
                         "limit": .object(["type": .string("integer")]),
                         "budget": .object(["type": .string("integer")]),

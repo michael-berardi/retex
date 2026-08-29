@@ -92,12 +92,14 @@ or deployment workflow.
 
 ```bash
 retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --json
+retex query --vault ~/Documents/CRM --on-or-before review_after=2026-08-28 --json
 retex search "website rebuild" --vault ~/Documents/CRM --json
 retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --json
 retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --json
 retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --json
 retex create --vault ./CRM --type invoice --title "Acme August" --folder Invoices --set amount=11500 --json
 retex set ./CRM/Invoices/acme-august.md due=2026-09-01 'client=Acme' --json
+retex set ./CRM/Invoices/acme-august.md status=Approved --if-hash <sha256-from-show> --json
 retex board --vault ./CRM --view pipeline --json
 ```
 
@@ -106,8 +108,18 @@ Use `query` for structured records with exact arbitrary types and metadata.
 Use `recall` for natural agent questions: it removes common filler, ranks
 partial matches, returns source paths plus evidence excerpts, and keeps the
 encoded record array within `--budget` bytes. `list`, `query`, `search`,
-`recall`, and `count` accept arbitrary `--type`, `--status`, `--tag`, and
-repeated `--where key=value` filters.
+`recall`, and `count` accept arbitrary `--type`, `--status`, `--tag`, repeated
+`--where key=value`, and inclusive `--on-or-before key=YYYY-MM-DD` /
+`--on-or-after key=YYYY-MM-DD` filters. Date filters match only records with a
+valid ISO date for that property.
+
+`show` returns a SHA-256 `contentHash`. Pass it back as `--if-hash` to `set`,
+`move`, or `archive` to reject stale agent writes without changing the default
+workflow. Retex holds the vault journal lock across the comparison, undo record,
+and atomic file write. Wiki links in front matter are part of the derived graph,
+so optional properties such as `supersedes: "[[Older Decision]]"` and
+`related: "[[Project Brief]]"` appear in `links` and backlinks without a new
+storage format.
 
 Commands: `list`, `query`, `search`, `recall`, `links`, `show`, `create`,
 `set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
@@ -197,12 +209,14 @@ retex mcp --vault ./CRM
 
 The server preserves `list_notes`, `search_notes`, `read_note`, `get_board`,
 and `get_stats`, and adds structured `query_records`, budgeted
-`recall_context`, `get_links`, and `get_schema`. Mutation tools are rejected
-even when invoked directly, and note paths are confined to the selected vault
-after resolving symlinks. A trusted local host can explicitly opt into
-`create_note`, `set_property`, `move_card`, and `archive_note` with
-`--allow-write`; the hosted helper never enables it. Responses use
-newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
+`recall_context`, `get_links`, and `get_schema`. `read_note` returns
+`contentHash`; write tools accept optional `expected_hash`; and query/recall
+accept semicolon-separated `on_or_before` and `on_or_after` date filters.
+Mutation tools are rejected even when invoked directly, and note paths are
+confined to the selected vault after resolving symlinks. A trusted local host
+can explicitly opt into `create_note`, `set_property`, `move_card`, and
+`archive_note` with `--allow-write`; the hosted helper never enables it.
+Responses use newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
 
 Example host configuration (placeholders, no credentials):
 
