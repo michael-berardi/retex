@@ -152,6 +152,22 @@ def tool_text(result: Any) -> str:
     return "\n".join(getattr(item, "text", "") for item in result.content)
 
 
+def parse_tool_json(text: str) -> dict[str, Any]:
+    if text.startswith("@UC1"):
+        text = subprocess.run(
+            [os.environ.get("UC_BIN", "uc"), "unpack"],
+            input=text,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("tool response must be a JSON object")
+    return payload
+
+
 async def verify_service(service: FleetService, token: str) -> dict[str, Any]:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
@@ -179,13 +195,13 @@ async def verify_service(service: FleetService, token: str) -> dict[str, Any]:
             raise RuntimeError(f"{service.name}: unsafe tool surface {sorted(names)}")
 
         listing = await asyncio.wait_for(session.call_tool("list_notes", {"limit": 1}), timeout=30)
-        title = first_note_title(json.loads(tool_text(listing)))
+        title = first_note_title(parse_tool_json(tool_text(listing)))
         search = await asyncio.wait_for(
             session.call_tool("search_notes", {"query": title, "ranked": True, "limit": 5}),
             timeout=30,
         )
         search_text = tool_text(search)
-        search_payload = json.loads(search_text)
+        search_payload = parse_tool_json(search_text)
         if int(search_payload.get("count", 0)) > 5 or title.casefold() not in search_text.casefold():
             raise RuntimeError(f"{service.name}: bounded retrieval probe failed")
 
@@ -194,7 +210,7 @@ async def verify_service(service: FleetService, token: str) -> dict[str, Any]:
             timeout=30,
         )
         recall_text = tool_text(recall)
-        recall_payload = json.loads(recall_text)
+        recall_payload = parse_tool_json(recall_text)
         if int(recall_payload.get("usedBytes", 4001)) > 4000 or title.casefold() not in recall_text.casefold():
             raise RuntimeError(f"{service.name}: bounded recall probe failed")
 
