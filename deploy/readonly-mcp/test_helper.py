@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -400,6 +401,16 @@ class HostedFleetVerifierTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             verify_fleet.first_note_title({"count": "0", "notes": ""})
+
+    def test_parses_plain_and_ultracompact_tool_json(self) -> None:
+        self.assertEqual(verify_fleet.parse_tool_json('{"count": 1}'), {"count": 1})
+        with mock.patch.object(verify_fleet.subprocess, "run") as run:
+            run.return_value.stdout = '{"count": 2}'
+            self.assertEqual(
+                verify_fleet.parse_tool_json("@UC1 c=r\ncount: 2\n"),
+                {"count": 2},
+            )
+            run.assert_called_once()
 
     def test_bundled_docker_default_matches_cli_version(self) -> None:
         repository = Path(__file__).resolve().parents[2]
