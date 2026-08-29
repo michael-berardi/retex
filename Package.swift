@@ -3,10 +3,13 @@
 import PackageDescription
 import Foundation
 
-// Path to the directory containing libultracompact.a (the ultracompact Rust
-// crate's `cargo build --release` output). Override for other checkouts.
-let ultraCompactLib = ProcessInfo.processInfo.environment["ULTRACOMPACT_LIB"]
-    ?? NSString("~/dev/ultracompact/target/release").expandingTildeInPath
+// Optional UltraCompact acceleration: point ULTRACOMPACT_LIB at a directory
+// containing libultracompact.a (the proprietary Rust engine's build output).
+// When absent — the default for public checkouts — Retex builds and runs with
+// canonical JSON output; no proprietary code is required or linked.
+let ultraCompactLib = ProcessInfo.processInfo.environment["ULTRACOMPACT_LIB"] ?? ""
+let ultraCompactLibExists = !ultraCompactLib.isEmpty
+    && FileManager.default.fileExists(atPath: ultraCompactLib + "/libultracompact.a")
 
 let package = Package(
     name: "Retex",
@@ -28,24 +31,22 @@ let package = Package(
             name: "RetexCore",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
-                "CUltraCompact",
-            ],
-            linkerSettings: [
-                // UC dense/readable encoding for MCP output; macOS-only link,
-                // iOS keeps the plain-JSON fallback path.
-                .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"], .when(platforms: [.macOS])),
-            ]
-        ),
-        .target(
-            name: "CUltraCompact",
-            path: "Sources/CUltraCompact"
+            ] + (ultraCompactLibExists ? ["CUltraCompact"] : []),
+            linkerSettings: ultraCompactLibExists
+                ? [
+                    // Proprietary UC engine link; macOS-only, never on iOS.
+                    .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"], .when(platforms: [.macOS])),
+                ]
+                : []
         ),
         .executableTarget(
             name: "RetexCLI",
-            dependencies: ["RetexCore"],
-            linkerSettings: [
-                .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"]),
-            ]
+            dependencies: [
+                "RetexCore",
+            ] + (ultraCompactLibExists ? ["CUltraCompact"] : []),
+            linkerSettings: ultraCompactLibExists
+                ? [.unsafeFlags(["-L", ultraCompactLib, "-lultracompact"])]
+                : []
         ),
         .testTarget(
             name: "RetexCoreTests",

@@ -7,7 +7,9 @@ import WinSDK
 #endif
 import Foundation
 import RetexCore
+#if canImport(CUltraCompact)
 import CUltraCompact
+#endif
 
 private struct SimpleExit: Error {
     let code: Int32
@@ -38,6 +40,8 @@ enum RetexCLI {
                 error.localizedDescription,
                 code: Int(code),
                 json: CommandLine.arguments.contains("--json")
+                    || CommandLine.arguments.contains("--raw-json")
+                    || CommandLine.arguments.contains("--uc")
             )
             terminate(code)
         }
@@ -756,6 +760,7 @@ enum RetexCLI {
     /// Encode a value as a UC (UltraCompact) packet via the linked Rust
     /// library. Falls back to compact JSON if encoding fails.
     private static func ucPacket<T: Encodable>(_ value: T) throws -> String {
+        #if canImport(CUltraCompact) && os(macOS)
         let response = SuccessResponse(data: value)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -767,6 +772,14 @@ enum RetexCLI {
             defer { uc_free_string(packet) }
             return String(cString: packet)
         }
+        #else
+        // Public builds without the proprietary engine: canonical JSON.
+        let response = SuccessResponse(data: value)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return String(decoding: try encoder.encode(response), as: UTF8.self)
+        #endif
     }
 
     private static func output<T: Encodable>(

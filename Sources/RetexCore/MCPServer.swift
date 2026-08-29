@@ -229,7 +229,7 @@ public struct MCPServer {
             ]
             if uc {
                 result["instructions"] = .string(
-                    "Tool results are UC (UltraCompact) readable-mode packets (@UC1): compact model-readable text with @k key aliases, @d string dictionary, @p prefix templates, and @table uniform rows. Read them directly; decode to canonical JSON with `uc decode` only when exact JSON form is required."
+                    "Tool results use UltraCompact, a proprietary token-efficient encoding. Packets are model-readable text; decode to canonical JSON with the uc CLI only when exact JSON form is required."
                 )
             }
             writeResponse(id: id, result: .object(result))
