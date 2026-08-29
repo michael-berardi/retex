@@ -18,6 +18,10 @@ private struct SimpleExit: Error {
 @main
 enum RetexCLI {
     static func main() {
+        // Tag engine telemetry with this consumer (no overwrite of an
+        // explicit operator setting). The engine only reads it when the
+        // opt-in sink is enabled; no content ever leaves the machine.
+        setenv("UC_TELEMETRY_SOURCE", "retex", 0)
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.isEmpty || arguments == ["--help"] {
             print(help)
