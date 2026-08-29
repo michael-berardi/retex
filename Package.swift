@@ -77,8 +77,8 @@ let package = Package(
         // Version + checksum pin; update both on engine releases.
         .binaryTarget(
             name: "UltraCompact",
-            url: "https://software.implosecybernetics.com/api/products/ultracompact/releases/0.1.0/artifacts/macos-universal/installer/UltraCompact.xcframework.zip",
-            checksum: "988f6eee7e45429708d72c79e6dd0e22f26520220417075d0c705048ea458d93"
+            url: "https://software.implosecybernetics.com/api/products/ultracompact/releases/0.1.1/artifacts/macos-universal/installer/UltraCompact.xcframework.zip",
+            checksum: "dc29f1b114be48d8fae6ed7b91eb8c744f3c6e48f8f091429d37f02b3925aa8d"
         ),
     ] : []),
 )
