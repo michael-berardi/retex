@@ -5,7 +5,7 @@ description: >
   update a Retex Markdown vault through the Retex CLI or MCP server. Prefer this
   structured interface over recursive file discovery or editor-specific APIs.
 category: knowledge
-version: 1.4.0
+version: 1.5.0
 author: Retex contributors
 tags: [retex, markdown, vault, knowledge, mcp, cli]
 trigger_keywords: [retex, markdown vault, knowledge vault, agent memory, kanban]
@@ -190,6 +190,25 @@ live vault:
 11. For hosted services, pin the immutable release tag or commit, deploy one
     canary, rerun authentication/path-escape/write-denial tests, then roll out
     the remaining services and verify each live endpoint.
+
+Use the bundled hosted fleet verifier instead of an ad hoc security harness.
+Its private `0600` JSON inventory stores only service URLs and token bindings;
+tokens resolve from environment variables or direct command arguments, stay in
+memory, and never enter source, process arguments, reports, or temporary files:
+
+```bash
+uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+  --config ~/.config/retex/hosted-fleet.json --service canary
+# Deploy the remaining services only after this passes.
+uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+  --config ~/.config/retex/hosted-fleet.json
+```
+
+The rapid trigger remains `update --check` followed by `update --fleet`; the
+second command already owns candidate download, clone compatibility, mutation,
+rollback, installation, and live confirmation. Do not reimplement those gates
+in an external release wrapper. Provider-specific deployment commands and
+tenant inventory stay private; Retex ships the universal verification logic.
 
 Never run an unverified build or first-time write against a live vault. Never
 mass-update services merely because a new version exists.

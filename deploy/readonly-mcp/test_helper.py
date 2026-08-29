@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import gateway
 import refresh_vault
 import validate_vault
+import verify_fleet
 
 
 class TokenTests(unittest.TestCase):
@@ -24,7 +25,7 @@ class TokenTests(unittest.TestCase):
             gateway.load_tokens(
                 {
                     "RETEX_MCP_TOKEN": legacy,
-                    "RETEX_MCP_TOKENS_JSON": '{"felix": "' + named + '"}',
+                    "RETEX_MCP_TOKENS_JSON": '{"agent": "' + named + '"}',
                 }
             ),
             (legacy, named),
@@ -284,6 +285,138 @@ class VaultRefresherTests(unittest.TestCase):
         self.assertEqual(names, [".retex", "c.md"])
 
 
+
+
+class HostedFleetVerifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.config = self.root / "fleet.json"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write_config(self, services: list[dict[str, object]]) -> None:
+        self.config.write_text(
+            json.dumps({"version": 1, "services": services}),
+            encoding="utf-8",
+        )
+        self.config.chmod(0o600)
+
+    def test_loads_private_config_with_environment_and_command_tokens(self) -> None:
+        self.write_config(
+            [
+                {
+                    "name": "alpha",
+                    "url": "https://alpha.example/mcp",
+                    "token_env": "ALPHA_TOKEN",
+                },
+                {
+                    "name": "beta",
+                    "url": "https://beta.example/mcp",
+                    "token_command": ["secret-cli", "read", "beta"],
+                    "token_json_key": "token",
+                },
+            ]
+        )
+
+        services = verify_fleet.load_config(self.config)
+
+        self.assertEqual([service.name for service in services], ["alpha", "beta"])
+        self.assertEqual(services[1].token_command, ("secret-cli", "read", "beta"))
+
+    def test_rejects_literal_tokens_and_insecure_config_permissions(self) -> None:
+        self.write_config(
+            [{"name": "alpha", "url": "https://alpha.example/mcp", "token": "secret"}]
+        )
+        with self.assertRaises(ValueError):
+            verify_fleet.load_config(self.config)
+
+        self.write_config(
+            [{"name": "alpha", "url": "https://user@alpha.example/mcp", "token_env": "TOKEN"}]
+        )
+        with self.assertRaises(ValueError):
+            verify_fleet.load_config(self.config)
+
+        self.write_config(
+            [{"name": "alpha", "url": "https://alpha.example/mcp", "token_env": "TOKEN"}]
+        )
+        if os.name != "nt":
+            self.config.chmod(0o644)
+            with self.assertRaises(ValueError):
+                verify_fleet.load_config(self.config)
+
+    def test_resolves_tokens_without_persisting_or_printing_them(self) -> None:
+        token = "a" * 32
+        self.write_config(
+            [
+                {
+                    "name": "alpha",
+                    "url": "https://alpha.example/mcp",
+                    "token_env": "ALPHA_TOKEN",
+                },
+                {
+                    "name": "beta",
+                    "url": "https://beta.example/mcp",
+                    "token_command": ["secret-cli", "read"],
+                    "token_json_key": "value",
+                },
+            ]
+        )
+        alpha, beta = verify_fleet.load_config(self.config)
+
+        self.assertEqual(
+            verify_fleet.resolve_token(alpha, {"ALPHA_TOKEN": token}, lambda _: ""),
+            token,
+        )
+        self.assertEqual(
+            verify_fleet.resolve_token(beta, {}, lambda _: json.dumps({"value": token})),
+            token,
+        )
+        self.assertNotIn(token, repr(alpha))
+        self.assertNotIn(token, repr(beta))
+
+    def test_discovers_probe_title_and_filters_canary(self) -> None:
+        self.write_config(
+            [
+                {"name": "alpha", "url": "https://alpha.example/mcp", "token_env": "A"},
+                {"name": "beta", "url": "https://beta.example/mcp", "token_env": "B"},
+            ]
+        )
+        services = verify_fleet.load_config(self.config)
+
+        self.assertEqual(
+            verify_fleet.first_note_title(
+                {
+                    "count": "2",
+                    "notes": "First note\t/vault/first.md\nSecond note\t/vault/second.md",
+                }
+            ),
+            "First note",
+        )
+        self.assertEqual(
+            [service.name for service in verify_fleet.select_services(services, ["beta"])],
+            ["beta"],
+        )
+        with self.assertRaises(ValueError):
+            verify_fleet.first_note_title({"count": "0", "notes": ""})
+
+    def test_bundled_docker_default_matches_cli_version(self) -> None:
+        repository = Path(__file__).resolve().parents[2]
+        app_version = re.search(
+            r'static let version = "([^"]+)"',
+            (repository / "Sources/RetexCLI/AppVersion.swift").read_text(
+                encoding="utf-8"
+            ),
+        )
+        docker_version = re.search(
+            r"^ARG RETEX_REF=v(.+)$",
+            (repository / "deploy/readonly-mcp/Dockerfile").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(app_version)
+        self.assertIsNotNone(docker_version)
+        self.assertEqual(app_version.group(1), docker_version.group(1))
 
 
 if __name__ == "__main__":

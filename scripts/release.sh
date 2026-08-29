@@ -37,6 +37,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/.release-build"
 cd "$ROOT"
 
+stage_support() {
+  local destination="$1"
+  mkdir -p "$destination/deploy/readonly-mcp"
+  cp README.md LICENSE "$destination/"
+  cp deploy/readonly-mcp/{Dockerfile,gateway.py,refresh_vault.py,validate_vault.py,verify_fleet.py} \
+    "$destination/deploy/readonly-mcp/"
+}
+
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "FAIL: repository is not clean"; exit 1
 fi
@@ -47,6 +55,9 @@ if ! "$LINUX_SWIFT" --version | grep -q "Swift version $SDK_SWIFT_VERSION"; then
 fi
 if ! grep -q "static let version = \"$VERSION\"" Sources/RetexCLI/AppVersion.swift; then
   echo "FAIL: AppVersion.swift does not declare $VERSION"; exit 1
+fi
+if ! grep -q "^ARG RETEX_REF=v$VERSION$" deploy/readonly-mcp/Dockerfile; then
+  echo "FAIL: hosted Dockerfile does not default to v$VERSION"; exit 1
 fi
 
 swift test >/dev/null
@@ -61,9 +72,9 @@ lipo -create \
 strip -x "$BUILD/bin/retex"
 codesign --force --sign "$IDENTITY" --options runtime --timestamp "$BUILD/bin/retex"
 codesign --verify --strict --verbose=1 "$BUILD/bin/retex"
-cp README.md LICENSE "$BUILD/bin/"
+stage_support "$BUILD/bin"
 MAC_ARCHIVE="$OUT/retex-universal.zip"
-(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE)
+(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
@@ -72,7 +83,7 @@ if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   ditto -x -k "$MAC_ARCHIVE" "$STAGE"
   xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
   rm -f "$MAC_ARCHIVE"
-  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE)
+  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
 fi
 
 for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl"; do
@@ -104,8 +115,8 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   cp "$BINARY" "$STAGE/retex"
   "$LLVM_STRIP" "$STAGE/retex"
   chmod 755 "$STAGE/retex"
-  cp README.md LICENSE "$STAGE/"
-  COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" retex README.md LICENSE
+  stage_support "$STAGE"
+  COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" retex README.md LICENSE deploy
 done
 
 if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
@@ -113,8 +124,8 @@ if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
   STAGE="$BUILD/windows-stage"
   mkdir -p "$STAGE"
   cp "$RETEX_WINDOWS_BINARY" "$STAGE/retex.exe"
-  cp README.md LICENSE "$STAGE/"
-  (cd "$STAGE" && zip -qry "$OUT/retex-windows-x86_64.zip" retex.exe README.md LICENSE)
+  stage_support "$STAGE"
+  (cd "$STAGE" && zip -qry "$OUT/retex-windows-x86_64.zip" retex.exe README.md LICENSE deploy)
 fi
 
 : > "$OUT/SHA256SUMS"
