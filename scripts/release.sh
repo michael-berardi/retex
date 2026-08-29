@@ -7,7 +7,7 @@
 #   RETEX_SIGNING_IDENTITY   macOS codesign identity (default: ad-hoc "-")
 #   NOTARY_PROFILE           notarytool Keychain profile for the macOS archive
 #   RETEX_LINUX_SDK          installed Swift static Linux SDK ID
-#   RETEX_LINUX_SWIFT        Swift executable matching RETEX_LINUX_SDK
+#   RETEX_LINUX_SWIFT        Swift executable matching RETEX_LINUX_SDK (auto-detected on macOS)
 #   RETEX_LLVM_STRIP         LLVM strip executable for Linux ELF binaries
 #
 # The official static SDK currently omits target-named compiler-rt symlinks;
@@ -19,7 +19,16 @@ set -euo pipefail
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:--}"
 LINUX_SDK="${RETEX_LINUX_SDK:-swift-6.3.3-RELEASE_static-linux-0.1.0}"
-LINUX_SWIFT="${RETEX_LINUX_SWIFT:-swift}"
+SDK_SWIFT_VERSION="${LINUX_SDK#swift-}"
+SDK_SWIFT_VERSION="${SDK_SWIFT_VERSION%%-RELEASE*}"
+DEFAULT_LINUX_SWIFT="$HOME/Library/Developer/Toolchains/swift-$SDK_SWIFT_VERSION-RELEASE.xctoolchain/usr/bin/swift"
+if [[ -n "${RETEX_LINUX_SWIFT:-}" ]]; then
+  LINUX_SWIFT="$RETEX_LINUX_SWIFT"
+elif [[ -x "$DEFAULT_LINUX_SWIFT" ]]; then
+  LINUX_SWIFT="$DEFAULT_LINUX_SWIFT"
+else
+  LINUX_SWIFT="swift"
+fi
 LLVM_STRIP="${RETEX_LLVM_STRIP:-llvm-strip}"
 OUT="${RETEX_OUT:-release}"
 mkdir -p "$OUT"
@@ -32,6 +41,10 @@ if [[ -n "$(git status --porcelain)" ]]; then
   echo "FAIL: repository is not clean"; exit 1
 fi
 command -v "$LLVM_STRIP" >/dev/null || { echo "FAIL: RETEX_LLVM_STRIP is unavailable"; exit 1; }
+command -v "$LINUX_SWIFT" >/dev/null || { echo "FAIL: RETEX_LINUX_SWIFT is unavailable"; exit 1; }
+if ! "$LINUX_SWIFT" --version | grep -q "Swift version $SDK_SWIFT_VERSION"; then
+  echo "FAIL: RETEX_LINUX_SWIFT must match SDK Swift $SDK_SWIFT_VERSION"; exit 1
+fi
 if ! grep -q "static let version = \"$VERSION\"" Sources/RetexCLI/AppVersion.swift; then
   echo "FAIL: AppVersion.swift does not declare $VERSION"; exit 1
 fi
