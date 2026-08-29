@@ -1,3 +1,6 @@
+#if os(macOS) && canImport(CUltraCompact)
+import CUltraCompact
+#endif
 import Foundation
 
 /// Minimal MCP (Model Context Protocol) server over stdio, zero dependencies.
@@ -8,18 +11,21 @@ public struct MCPServer {
     private let vault: Vault
     private let store: MarkdownStore
     private let readOnly: Bool
+    private let uc: Bool
     private let input: FileHandle
     private let output: FileHandle
 
     public init(
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
-        readOnly: Bool = true
+        readOnly: Bool = true,
+        uc: Bool = false
     ) {
         self.init(
             vault: vault,
             store: store,
             readOnly: readOnly,
+            uc: uc,
             input: .standardInput,
             output: .standardOutput
         )
@@ -30,12 +36,14 @@ public struct MCPServer {
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
+        uc: Bool = false,
         input: FileHandle,
         output: FileHandle
     ) {
         self.vault = vault
         self.store = store
         self.readOnly = readOnly
+        self.uc = uc
         self.input = input
         self.output = output
     }
@@ -209,7 +217,7 @@ public struct MCPServer {
             let requested = request.params?.protocolVersion ?? ""
             let supported = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
             let negotiated = supported.contains(requested) ? requested : "2024-11-05"
-            writeResponse(id: id, result: .object([
+            var result: [String: JSONValue] = [
                 "protocolVersion": .string(negotiated),
                 "capabilities": .object([
                     "tools": .object([:])
@@ -218,7 +226,13 @@ public struct MCPServer {
                     "name": .string("retex"),
                     "version": .string("1.0.0"),
                 ]),
-            ]))
+            ]
+            if uc {
+                result["instructions"] = .string(
+                    "Tool results are UC (UltraCompact) readable-mode packets (@UC1): compact model-readable text with @k key aliases, @d string dictionary, @p prefix templates, and @table uniform rows. Read them directly; decode to canonical JSON with `uc decode` only when exact JSON form is required."
+                )
+            }
+            writeResponse(id: id, result: .object(result))
         case "ping":
             writeResponse(id: id, result: .object([:]))
         case "tools/list":
@@ -235,7 +249,7 @@ public struct MCPServer {
             }
             do {
                 let payload = try callTool(request.params)
-                writeResponse(id: id, result: toolResult(text: Self.encodePretty(payload), isError: false))
+                writeResponse(id: id, result: toolResult(text: uc ? Self.ucPacket(payload) : Self.encodePretty(payload), isError: false))
             } catch let error as ToolError {
                 // Tool execution failures are results with isError, not protocol errors.
                 writeResponse(id: id, result: toolResult(text: error.message, isError: true))
@@ -655,6 +669,21 @@ public struct MCPServer {
               )
         else { return }
         output.write(Data(data + [UInt8(ascii: "\n")]))
+    }
+
+    /// UC readable-mode packet for a tool payload. Falls back to pretty JSON
+    /// off macOS or if encoding fails. Agents read the packet directly.
+    private static func ucPacket(_ value: JSONValue) -> String {
+        #if os(macOS) && canImport(CUltraCompact)
+        guard let data = try? JSONEncoder().encode(value) else { return encodePretty(value) }
+        return String(decoding: data, as: UTF8.self).withCString { inPtr in
+            guard let packet = uc_encode_readable_json(inPtr, nil) else { return encodePretty(value) }
+            defer { uc_free_string(packet) }
+            return String(cString: packet)
+        }
+        #else
+        return encodePretty(value)
+        #endif
     }
 
     private static func encodePretty(_ value: JSONValue) -> String {

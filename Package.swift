@@ -1,6 +1,12 @@
 // swift-tools-version: 6.0
 
 import PackageDescription
+import Foundation
+
+// Path to the directory containing libultracompact.a (the ultracompact Rust
+// crate's `cargo build --release` output). Override for other checkouts.
+let ultraCompactLib = ProcessInfo.processInfo.environment["ULTRACOMPACT_LIB"]
+    ?? NSString("~/dev/ultracompact/target/release").expandingTildeInPath
 
 let package = Package(
     name: "Retex",
@@ -18,10 +24,28 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
     ],
     targets: [
-        .target(name: "RetexCore", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
+        .target(
+            name: "RetexCore",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+                "CUltraCompact",
+            ],
+            linkerSettings: [
+                // UC dense/readable encoding for MCP output; macOS-only link,
+                // iOS keeps the plain-JSON fallback path.
+                .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"], .when(platforms: [.macOS])),
+            ]
+        ),
+        .target(
+            name: "CUltraCompact",
+            path: "Sources/CUltraCompact"
+        ),
         .executableTarget(
             name: "RetexCLI",
-            dependencies: ["RetexCore"]
+            dependencies: ["RetexCore"],
+            linkerSettings: [
+                .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"]),
+            ]
         ),
         .testTarget(
             name: "RetexCoreTests",
