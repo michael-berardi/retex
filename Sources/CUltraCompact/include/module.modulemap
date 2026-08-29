@@ -1,0 +1,4 @@
+module CUltraCompact {
+    header "uc.h"
+    export *
+}

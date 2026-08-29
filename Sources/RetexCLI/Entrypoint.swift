@@ -7,6 +7,7 @@ import WinSDK
 #endif
 import Foundation
 import RetexCore
+import CUltraCompact
 
 private struct SimpleExit: Error {
     let code: Int32
@@ -310,7 +311,7 @@ enum RetexCLI {
 
         case "mcp":
             let vault = try invocation.vault()
-            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write")).run()
+            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write"), uc: invocation.flag("uc")).run()
 
         case "export":
             let vault = try invocation.vault()
@@ -752,12 +753,31 @@ enum RetexCLI {
         )
     }
 
+    /// Encode a value as a UC (UltraCompact) packet via the linked Rust
+    /// library. Falls back to compact JSON if encoding fails.
+    private static func ucPacket<T: Encodable>(_ value: T) throws -> String {
+        let response = SuccessResponse(data: value)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        let jsonText = String(decoding: try encoder.encode(response), as: UTF8.self)
+        return jsonText.withCString { inPtr in
+            // Readable mode: agents read UC packets directly in model context.
+            guard let packet = uc_encode_readable_json(inPtr, nil) else { return jsonText }
+            defer { uc_free_string(packet) }
+            return String(cString: packet)
+        }
+    }
+
     private static func output<T: Encodable>(
         _ value: T,
         json: Bool,
         human: (T) -> String
     ) throws {
-        if json {
+        // Mirrors writeError's direct CommandLine check: zero call-site churn.
+        if CommandLine.arguments.contains("--uc") {
+            print(try ucPacket(value))
+        } else if json {
             let response = SuccessResponse(data: value)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -916,6 +936,9 @@ enum RetexCLI {
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
       --allow-write     Add MCP mutation tools for a trusted local host
+      --uc              Emit UC (UltraCompact) readable packets instead of
+                        JSON: ~25-40% fewer LLM tokens, lossless, decodable
+                        with `uc decode`. Also enables UC for `mcp` results
       --strict          Exit nonzero when doctor finds any integrity issue
       --auto-update     Opt one registered vault into post-verification init
       --fleet           Clone-verify every registered vault before update
@@ -956,7 +979,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
+            } else if ["json", "uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -971,7 +994,7 @@ private struct Invocation {
         self.flags = flags
     }
 
-    var isJSON: Bool { flag("json") }
+    var isJSON: Bool { flag("json") || flag("uc") }
     var hasVault: Bool { option("vault") != nil }
 
     func flag(_ name: String) -> Bool { flags.contains(name) }
