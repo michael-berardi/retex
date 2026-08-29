@@ -311,7 +311,7 @@ enum RetexCLI {
 
         case "mcp":
             let vault = try invocation.vault()
-            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write"), uc: invocation.flag("uc")).run()
+            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write"), uc: !invocation.flag("no-uc")).run()
 
         case "export":
             let vault = try invocation.vault()
@@ -774,8 +774,11 @@ enum RetexCLI {
         json: Bool,
         human: (T) -> String
     ) throws {
-        // Mirrors writeError's direct CommandLine check: zero call-site churn.
-        if CommandLine.arguments.contains("--uc") {
+        // UC is the default machine-readable output; --raw-json opts out to
+        // canonical pretty JSON for byte-exact parsers. Mirrors writeError's
+        // direct CommandLine check: zero call-site churn.
+        let rawJson = CommandLine.arguments.contains("--raw-json")
+        if json && !rawJson {
             print(try ucPacket(value))
         } else if json {
             let response = SuccessResponse(data: value)
@@ -979,7 +982,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
+            } else if ["json", "uc", "raw-json", "no-uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -994,7 +997,7 @@ private struct Invocation {
         self.flags = flags
     }
 
-    var isJSON: Bool { flag("json") || flag("uc") }
+    var isJSON: Bool { flag("json") || flag("uc") || flag("raw-json") }
     var hasVault: Bool { option("vault") != nil }
 
     func flag(_ name: String) -> Bool { flags.contains(name) }

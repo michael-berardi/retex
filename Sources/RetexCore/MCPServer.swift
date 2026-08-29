@@ -19,7 +19,7 @@ public struct MCPServer {
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
-        uc: Bool = false
+        uc: Bool = true
     ) {
         self.init(
             vault: vault,
@@ -36,7 +36,7 @@ public struct MCPServer {
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
-        uc: Bool = false,
+        uc: Bool = true,
         input: FileHandle,
         output: FileHandle
     ) {
