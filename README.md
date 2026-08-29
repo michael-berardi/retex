@@ -66,6 +66,14 @@ swift build
 
 On Windows, run `.build\debug\retex.exe --help`.
 
+Source builds fetch one prebuilt component on macOS: the UltraCompact engine,
+a proprietary static library from Implose Cybernetics that powers the default
+machine-readable output format. It downloads automatically from the Implose
+release service during `swift build` and is governed by its own license
+(`LICENSE-ULTRACOMPACT`); Retex's MIT license does not cover it. Build
+without it — machine output then stays canonical JSON — with
+`ULTRACOMPACT_DIST=0 swift build`.
+
 Or grab a signed, notarized release from the
 [Releases](https://github.com/michael-berardi/retex/releases) page:
 
