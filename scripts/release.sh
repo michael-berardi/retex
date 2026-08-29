@@ -15,6 +15,11 @@
 #   RETEX_WINDOWS_BINARY     verified Windows retex.exe built on Windows
 #   RETEX_OUT                output directory (default: ./release)
 set -euo pipefail
+# Release artifacts must be reproducible: always link the pinned binary
+# target from the release service, never a developer's local engine build.
+# ~/.zshenv exports ULTRACOMPACT_LIB on this fleet, and zsh re-sources it
+# for this script, which also breaks the x86_64 cross-build (host-only lib).
+unset ULTRACOMPACT_LIB
 
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:--}"
