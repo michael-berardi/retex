@@ -262,6 +262,45 @@ whose values are tokens. Clients send
 `Authorization: Bearer <token>`; tokens are compared in constant time, never
 logged, and every route is denied when authentication is missing or invalid.
 
+`deploy/readonly-mcp/` ships in source and every release archive.
+`verify_fleet.py` provides the matching live fleet gate without storing or
+printing credentials. Keep the private inventory outside the repository with
+mode `0600`; token values come from an environment variable or a command
+executed directly without a shell:
+
+```json
+{
+  "version": 1,
+  "services": [
+    {
+      "name": "canary",
+      "url": "https://retex-canary.example.com/mcp",
+      "token_env": "RETEX_CANARY_TOKEN"
+    },
+    {
+      "name": "tenant-b",
+      "url": "https://retex-tenant-b.example.com/mcp",
+      "token_command": ["secret-cli", "read", "tenant-b"],
+      "token_json_key": "token"
+    }
+  ]
+}
+```
+
+```bash
+chmod 600 ~/.config/retex/hosted-fleet.json
+uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+  --config ~/.config/retex/hosted-fleet.json --service canary
+# Deploy the remaining services only after the canary passes.
+uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+  --config ~/.config/retex/hosted-fleet.json
+```
+
+The verifier discovers a live probe record, checks authentication, the exact
+read-only tool surface, bounded search and recall, path confinement, and write
+denial. Selected services run concurrently. Provider-specific service names,
+URLs, token bindings, and deploy commands remain in the private inventory.
+
 ## Import existing knowledge
 
 Import a Notion **Markdown & CSV** export directly from its ZIP:
@@ -345,6 +384,17 @@ Every release download requires the exact published SHA-256. macOS also
 requires the Retex Developer ID requirement, Gatekeeper notarization, a bounded
 regular file, and an exact reported version. Linux uses static platform
 archives; Windows uses the matching signed release asset when available.
+
+The short release trigger is: check first, run the built-in clone-gated local
+update, deploy one hosted canary, run the bundled verifier for that canary,
+deploy the remaining hosted services, then run the verifier without a service
+filter. Reinstalling the scheduler is idempotent:
+
+```bash
+retex update --check --json
+retex update --fleet --json
+retex fleet install-updater --json
+```
 
 ## Vault format
 
