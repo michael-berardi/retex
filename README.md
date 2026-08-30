@@ -6,7 +6,7 @@
   <a href="#cli">CLI</a> ·
   <a href="#mcp-server">MCP</a> ·
   <a href="#import-existing-knowledge">Import</a> ·
-  <a href="#encrypted-sync">Encrypted sync</a> ·
+  <a href="#encrypted-export">Encrypted export</a> ·
   <a href="#updates">Updates</a>
 </p>
 
@@ -18,8 +18,10 @@ without locking files in a database.
 
 Retex is intentionally headless. There is no bundled reader UI; the vault
 format and the CLI are the product, and any reader consumes the same
-`RetexCore` package. No account system, analytics, remote database, or
-third-party runtime service.
+`RetexCore` package. Retex has no account system, remote database, or network
+telemetry. The optional UltraCompact engine records local usage metrics only
+when an operator explicitly enables its telemetry sink; note content never
+leaves the machine.
 
 ## Features
 
@@ -43,6 +45,8 @@ third-party runtime service.
 - Encrypted, checksummed vault-and-attachment export/import on every platform.
 - Opt-in fleet updates verify disposable clones before changing the binary or
   initializing registered live vaults; rollback remains automatic on failure.
+- Audit agent-facing `memory`, `report`, and `audit` metadata with the bundled,
+  read-only `scripts/contract_scan.py`.
 
 ## Requirements
 
@@ -50,8 +54,8 @@ third-party runtime service.
 - Building from source requires a Swift 6.0+ toolchain. Xcode 16+ supplies it
   on macOS; Swift.org publishes Linux and Windows toolchains.
 - Releases provide a signed universal macOS archive and static Linux archives.
-  Windows uses the same CLI and expects the matching release asset when
-  self-update is enabled; source builds remain supported on every platform.
+  Windows source builds are supported; self-update requires a matching Windows
+  release asset, which is not currently published.
 
 ## Install and run
 
@@ -66,19 +70,19 @@ swift build
 
 On Windows, run `.build\debug\retex.exe --help`.
 
-Source builds fetch one prebuilt component on macOS: the UltraCompact engine,
-a proprietary static library from Implose Cybernetics that powers the default
-machine-readable output format. It downloads automatically from the Implose
-release service during `swift build` and is governed by its own license
-(`LICENSE-ULTRACOMPACT`); Retex's MIT license does not cover it. Build
-without it — machine output then stays canonical JSON — with
-`ULTRACOMPACT_DIST=0 swift build`.
+On macOS, source builds fetch the UltraCompact engine, a proprietary static
+library from Implose Cybernetics. Official macOS binaries and the hosted Linux
+MCP image use it for token-minimized machine output. Standalone Linux builds
+remain canonical JSON unless linked with the engine explicitly; Windows builds
+always use canonical JSON.
+The engine is governed by `LICENSE-ULTRACOMPACT`, not Retex's MIT license. Build
+without it with `ULTRACOMPACT_DIST=0 swift build`.
 
 Or grab a signed, notarized release from the
 [Releases](https://github.com/michael-berardi/retex/releases) page:
 
 ```bash
-shasum -a 256 -c SHA256SUMS      # verify the download
+grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
 unzip retex-universal.zip        # retex binary + docs
 sudo mv retex /usr/local/bin/
 ```
@@ -135,9 +139,9 @@ Commands: `list`, `query`, `search`, `recall`, `links`, `show`, `create`,
 `retex schema --vault ...` to discover built-in, configured, and existing
 record types and properties.
 
-### JSON output
+### Machine-readable output
 
-Successful JSON responses use this envelope (`schema_version` is bumped when
+Successful responses use one logical envelope (`schema_version` is bumped when
 the contract changes):
 
 ```json
@@ -148,11 +152,16 @@ the contract changes):
 }
 ```
 
-With `--json`, invalid arguments exit with code 64 and file or storage
-failures exit with code 74. Failures use the same machine-readable contract
-with the same `schema_version` field. `doctor --strict` emits its normal report
-and exits nonzero when it finds an unreadable note, invalid config, or corrupt
-journal.
+On builds linked with UltraCompact — the official macOS binary and hosted Linux
+MCP image — `--json` emits a token-minimized UC packet when that packet is
+smaller than JSON; small payloads remain JSON. Decode UC with `uc decode`, or
+pass `--raw-json` to force canonical JSON. Engine-free Linux and Windows builds
+and `ULTRACOMPACT_DIST=0` builds always emit JSON.
+
+Invalid machine-readable invocations exit with code 64; file or storage
+failures exit with code 74. Both use the same logical envelope and
+`schema_version`. `doctor --strict` emits its normal report and exits nonzero
+when it finds an unreadable note, invalid config, or corrupt journal.
 
 Exit codes: `0` success, `2` failed strict health gate, `64` invalid usage,
 `74` file or storage failure.
@@ -333,7 +342,7 @@ Imports require a new or empty destination, reject symlinks and path escapes,
 skip hidden editor/VCS state, cap individual files at 64 MiB and total input at
 1 GiB, and initialize private Retex state only after content succeeds.
 
-## Encrypted sync
+## Encrypted export
 
 Vault contents stay plain Markdown on disk; when you need to move a vault
 through a third-party channel (iCloud, Dropbox, git, email), export it
@@ -489,8 +498,9 @@ Implemented:
   archive compatibility
 - Verified self-update, atomic rollback, disposable clone gates, opt-in fleet
   initialization, and native macOS/Linux/Windows schedulers
-- Versioned JSON envelopes and regression coverage for parsing, mutations,
-  CLI/MCP contracts, imports, crypto, updates, and hosted gateway security
+- Versioned machine-readable envelopes and regression coverage for parsing,
+  mutations, CLI/MCP contracts, imports, crypto, updates, and hosted gateway
+  security
 
 Not yet shipped:
 

@@ -956,9 +956,10 @@ enum RetexCLI {
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
       --allow-write     Add MCP mutation tools for a trusted local host
-      --uc              Emit UC (UltraCompact) readable packets instead of
-                        JSON: ~25-40% fewer LLM tokens, lossless, decodable
-                        with `uc decode`. Also enables UC for `mcp` results
+      --uc              Request UC machine output; equivalent to --json when
+                        the engine is linked, canonical JSON otherwise
+      --no-uc           Disable UC for MCP tool results
+      --raw-json        Force canonical JSON for CLI machine output
       --strict          Exit nonzero when doctor finds any integrity issue
       --auto-update     Opt one registered vault into post-verification init
       --fleet           Clone-verify every registered vault before update
@@ -966,7 +967,7 @@ enum RetexCLI {
       --candidate <bin> Verify one candidate against registered vault clones
       --current <bin>   Installed Retex binary for explicit fleet comparison
       --check           Check update availability without installing
-      --json            Stable machine-readable output
+      --json            Stable machine output (UC when linked, JSON otherwise)
       --all             Include archived records
       --help            Show this help
     """
