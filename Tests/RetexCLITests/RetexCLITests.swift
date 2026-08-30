@@ -30,6 +30,9 @@ final class RetexCLITests: XCTestCase {
     private var vaultDir: URL!
 
     override func setUpWithError() throws {
+        // Test encodes must not pollute the opt-in local UC telemetry sink.
+        setenv("UC_TELEMETRY", "0", 1)
+        unsetenv("UC_TELEMETRY_PATH")
         vaultDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("retex-cli-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: vaultDir, withIntermediateDirectories: true)
