@@ -88,6 +88,36 @@ between mutations. A change since the read then fails instead of being
 overwritten. Run `doctor` after a write batch. Use `undo` for the latest
 journaled mutation. Do not replace an entire note to change one property.
 
+## Agent memory record contract
+
+Records that future agents will consume (`memory`, `report`, `audit` types)
+SHOULD carry four optional frontmatter properties. Human-facing prose stays
+unchanged — this contract governs metadata only:
+
+- `as_of: YYYY-MM-DD` — when the claims were true. Undated mutable facts
+  become stale traps.
+- `certainty: observed | inferred | reported` — truth-level. Never write an
+  inference as `observed`; consumers propagate the label you give.
+- `source: <what produced it>` — the referent: command, scrape, log, person.
+- `unknowns: <what was not checked>` — the gap line. Absent means "not
+  recorded", not "nothing unchecked". Write `unknowns: none known` when true.
+
+Supersede, don't overwrite: when a fact changes, create a new dated record
+with `supersedes: "[[Older Record Title]]"` — a frontmatter wiki link, so
+`links` exposes the chain and the old record stays queryable history. Never
+retroactively invent `certainty` or `unknowns` for existing records; those
+require author judgment. Exact backfill is limited to `as_of` copied from an
+unambiguous existing date field, written through `set --if-hash`.
+
+Consumer note: `list` and exact `search` return the legacy compatibility
+`type` (`note` for custom record types); use `query` or MCP `query_records`
+when filtering on `memory`/`report`/`audit` types or contract properties.
+
+Evidence (2026-08-30, disposable-vault A/B, two runs): consumers of freeform
+memory entries scored 0/6 on hazard answers (inference propagated as fact,
+8/12 audit reported as "all pass", unverified scope denied); consumers of
+contract entries scored 6/6. Cost: ~20 tokens per record.
+
 ## Import and encrypted export
 
 Import only into a new or empty destination. Notion should be exported as
