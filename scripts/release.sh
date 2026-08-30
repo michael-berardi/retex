@@ -45,7 +45,7 @@ cd "$ROOT"
 stage_support() {
   local destination="$1"
   mkdir -p "$destination/deploy/readonly-mcp"
-  cp README.md LICENSE "$destination/"
+  cp README.md LICENSE LICENSE-ULTRACOMPACT "$destination/"
   cp deploy/readonly-mcp/{Dockerfile,gateway.py,refresh_vault.py,validate_vault.py,verify_fleet.py} \
     "$destination/deploy/readonly-mcp/"
 }
