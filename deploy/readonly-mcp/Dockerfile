@@ -1,5 +1,5 @@
 FROM swift:6.3.1-noble AS build
-ARG RETEX_REF=v1.1.3
+ARG RETEX_REF=v1.1.4
 # Prebuilt UltraCompact engine (proprietary, Implose Cybernetics) for the
 # hosted Linux MCP; public versioned artifact, checksum-pinned.
 ARG UC_VERSION=0.1.1

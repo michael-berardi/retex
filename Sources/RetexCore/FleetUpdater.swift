@@ -1,3 +1,6 @@
+#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
+import CUltraCompact
+#endif
 import Foundation
 
 public struct FleetVault: Codable, Equatable, Sendable {
@@ -303,7 +306,26 @@ public struct FleetUpgradeVerifier {
             let message = String(decoding: error.prefix(4_096), as: UTF8.self)
             throw VerificationError.commandFailed("\(executable.lastPathComponent) \(arguments.first ?? "") exited \(process.terminationStatus): \(message)")
         }
-        return output
+        return try normalizedMachineOutput(output)
+    }
+
+    private func normalizedMachineOutput(_ output: Data) throws -> Data {
+#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
+        let decoded = String(decoding: output, as: UTF8.self).withCString { input -> String? in
+            guard let json = uc_decode_json(input) else { return nil }
+            defer { uc_free_string(json) }
+            return String(cString: json)
+        }
+        guard let decoded, let data = decoded.data(using: .utf8) else {
+            throw VerificationError.commandFailed("command returned invalid machine output")
+        }
+        return data
+#else
+        guard let object = try? JSONSerialization.jsonObject(with: output) else {
+            throw VerificationError.commandFailed("command returned invalid machine output")
+        }
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+#endif
     }
 
     private func copyRetexScope(from source: URL, to destination: URL) throws {
