@@ -38,7 +38,7 @@ final class FleetUpdaterTests: XCTestCase {
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
         try "# Original".write(to: vault.appendingPathComponent("note.md"), atomically: true, encoding: .utf8)
         let current = try fakeRetex(named: "current", list: "{\"notes\":[\"note.md\"]}\n")
-        let candidate = try fakeRetex(named: "candidate", list: "{\"notes\":[\"note.md\"]}\n")
+        let candidate = try fakeRetex(named: "candidate", list: "{ \"notes\" : [ \"note.md\" ] }\n")
 
         let reports = try FleetUpgradeVerifier().verify(
             vaults: [FleetVault(path: vault.path, autoUpdate: true)],
