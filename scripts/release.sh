@@ -79,7 +79,7 @@ codesign --force --sign "$IDENTITY" --options runtime --timestamp "$BUILD/bin/re
 codesign --verify --strict --verbose=1 "$BUILD/bin/retex"
 stage_support "$BUILD/bin"
 MAC_ARCHIVE="$OUT/retex-universal.zip"
-(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
+(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
@@ -88,7 +88,7 @@ if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   ditto -x -k "$MAC_ARCHIVE" "$STAGE"
   xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
   rm -f "$MAC_ARCHIVE"
-  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
+  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
 fi
 
 for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl"; do
@@ -112,7 +112,7 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
     -Xcc --sysroot -Xcc "$SDK_ROOT" \
     -Xswiftc -sdk -Xswiftc "$SDK_ROOT" \
     -Xswiftc -resource-dir -Xswiftc "$STATIC_ROOT" \
-    --product retex --scratch-path "$SCRATCH" >/dev/null
+    --product retex --scratch-path "$SCRATCH"
   BINARY="$SCRATCH/$TRIPLE/release/retex"
   [[ -f "$BINARY" ]] || { echo "FAIL: missing $TRIPLE release binary"; exit 1; }
   STAGE="$BUILD/linux-$ARCH-stage"
@@ -121,7 +121,8 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   "$LLVM_STRIP" "$STAGE/retex"
   chmod 755 "$STAGE/retex"
   stage_support "$STAGE"
-  COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" retex README.md LICENSE deploy
+  COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" \
+    retex README.md LICENSE LICENSE-ULTRACOMPACT deploy
 done
 
 if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
@@ -130,7 +131,8 @@ if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
   mkdir -p "$STAGE"
   cp "$RETEX_WINDOWS_BINARY" "$STAGE/retex.exe"
   stage_support "$STAGE"
-  (cd "$STAGE" && zip -qry "$OUT/retex-windows-x86_64.zip" retex.exe README.md LICENSE deploy)
+  (cd "$STAGE" && zip -qry "$OUT/retex-windows-x86_64.zip" \
+    retex.exe README.md LICENSE LICENSE-ULTRACOMPACT deploy)
 fi
 
 : > "$OUT/SHA256SUMS"

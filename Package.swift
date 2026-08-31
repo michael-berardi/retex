@@ -37,9 +37,12 @@ let package = Package(
             name: "RetexCore",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
-            ] + (ultraCompactLinked ? ["CUltraCompact"] : [])
+            ] + (ultraCompactLibExists ? ["CUltraCompact"] : [])
                 + (ultraCompactDist
-                    ? [.target(name: "UltraCompact", condition: .when(platforms: [.macOS]))]
+                    ? [
+                        .target(name: "CUltraCompact", condition: .when(platforms: [.macOS])),
+                        .target(name: "UltraCompact", condition: .when(platforms: [.macOS])),
+                    ]
                     : []),
             linkerSettings: ultraCompactLibExists
                 ? [
@@ -52,9 +55,12 @@ let package = Package(
             name: "RetexCLI",
             dependencies: [
                 "RetexCore",
-            ] + (ultraCompactLinked ? ["CUltraCompact"] : [])
+            ] + (ultraCompactLibExists ? ["CUltraCompact"] : [])
                 + (ultraCompactDist
-                    ? [.target(name: "UltraCompact", condition: .when(platforms: [.macOS]))]
+                    ? [
+                        .target(name: "CUltraCompact", condition: .when(platforms: [.macOS])),
+                        .target(name: "UltraCompact", condition: .when(platforms: [.macOS])),
+                    ]
                     : []),
             linkerSettings: ultraCompactLibExists
                 ? [.unsafeFlags(["-L", ultraCompactLib, "-lultracompact"])]
