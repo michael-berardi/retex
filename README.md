@@ -397,10 +397,12 @@ version can still read candidate-initialized clones. Only then is the binary
 swapped atomically. Registered live vaults are initialized and strict-checked;
 any failure restores the previous binary.
 
-Every release download requires the exact published SHA-256. macOS also
-requires the Retex Developer ID requirement, Gatekeeper notarization, a bounded
-regular file, and an exact reported version. Linux uses static platform
-archives; Windows uses the matching signed release asset when available.
+Every release download requires the exact published SHA-256. Before replacement,
+the candidate must also be a bounded regular file and report the expected
+version. Official macOS assets are Developer ID–signed and submitted to Apple
+notarization before publication; the updater verifies checksums and behavior,
+not signing identity. Linux uses static platform archives; Windows uses the
+matching signed release asset when available.
 
 The short release trigger is: check first, run the built-in clone-gated local
 update, deploy one hosted canary, run the bundled verifier for that canary,
@@ -518,8 +520,9 @@ changes.
 ## Security
 
 Report vulnerabilities privately via GitHub Security Advisories rather than
-public issues. macOS release assets are Developer ID–signed and notarized;
-verify `SHA256SUMS` and Gatekeeper acceptance before installing.
+public issues. macOS release assets are Developer ID–signed and submitted to
+Apple notarization before publication. Verify `SHA256SUMS` and run
+`codesign --verify --strict --verbose=2 retex` before installing.
 
 ## License
 
