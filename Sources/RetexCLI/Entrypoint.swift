@@ -92,6 +92,16 @@ enum RetexCLI {
                 $0.map { "\($0.type) \($0.title)\n  \($0.path)" }.joined(separator: "\n")
             }
 
+        case "vocabulary":
+            let vault = try invocation.vault()
+            var notes = try filtered(store.scan(vault), invocation: invocation)
+            if !invocation.flag("all") { notes = notes.filter { !$0.isArchived } }
+            let limit = try invocation.positiveIntOption("limit", maximum: 10_000) ?? 256
+            let vocabulary = VocabularyExtractor.extract(notes: notes, limit: limit)
+            try output(vocabulary, json: invocation.isJSON) { result in
+                result.terms.map { $0.term }.joined(separator: "\n")
+            }
+
         case "search":
             let query = try invocation.positional(0, named: "query")
             let vault = try invocation.vault()
@@ -885,6 +895,7 @@ enum RetexCLI {
       init      Initialize private vault-local Retex state (idempotent)
       list      Legacy-compatible compact record summaries with filters
       query     Structured records with exact arbitrary types and metadata
+      vocabulary Extract bounded local names and custom terms without source text
       search    Exact or all-term ranked search
       recall    Agent recall with filler-word removal, evidence, and byte budget
       links     Resolve outgoing wiki links and backlinks for one record
@@ -911,6 +922,7 @@ enum RetexCLI {
     EXAMPLES
       retex init --vault ~/Documents/CRM --json
       retex query --vault ~/Documents/CRM --type invoice --where owner=Sam --tag priority --limit 100 --json
+      retex vocabulary --vault ~/Documents/CRM --limit 256 --raw-json
       retex search "website release" --vault ~/Documents/CRM --ranked --limit 20 --json
       retex recall "what changed in the release" --vault ~/Documents/CRM --budget 12000 --json
       retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --json
@@ -935,7 +947,7 @@ enum RetexCLI {
     OPTIONS
       --vault <path>    Vault directory (required by most commands)
       --view <name>     Saved view name for board
-      --limit <count>   Bound list/search/recall results (1-10000)
+      --limit <count>   Bound list/search/recall/vocabulary results (1-10000)
       --budget <bytes>  Bound recall record array (256-1000000; default 12000)
       --type <name>     Filter any configured or ad-hoc record type
       --status <name>   Filter workflow state
