@@ -12,7 +12,7 @@
 
 Retex is a local-first Markdown vault architecture: your vault is an ordinary
 folder of Markdown files with YAML front matter, and Retex gives it a fast,
-structured query surface — exact search, agent recall, arbitrary record types,
+structured query surface — exact search, agent recall, privacy-safe vocabulary extraction, arbitrary record types,
 property filters, backlinks, boards, saved views, undo, watching, and MCP —
 without locking files in a database.
 
@@ -105,6 +105,7 @@ or deployment workflow.
 ```bash
 retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --json
 retex query --vault ~/Documents/CRM --on-or-before review_after=2026-08-28 --json
+retex vocabulary --vault ~/Documents/CRM --limit 256 --raw-json
 retex search "website rebuild" --vault ~/Documents/CRM --json
 retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --json
 retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --json
@@ -117,6 +118,7 @@ retex board --vault ./CRM --view pipeline --json
 
 Use `list` and `search` for their stable v0.5-compatible output contracts.
 Use `query` for structured records with exact arbitrary types and metadata.
+Use `vocabulary` for deterministic, read-only extraction of a bounded names-and-terms list. It scans local record text but returns only terms, occurrence/source counts, and the aggregate record count—never note bodies, excerpts, or paths. This is the privacy boundary used by UltraVox Pro.
 Use `recall` for natural agent questions: it removes common filler, ranks
 partial matches, returns source paths plus evidence excerpts, and keeps the
 encoded record array within `--budget` bytes. `list`, `query`, `search`,
@@ -133,7 +135,7 @@ so optional properties such as `supersedes: "[[Older Decision]]"` and
 `related: "[[Project Brief]]"` appear in `links` and backlinks without a new
 storage format.
 
-Commands: `list`, `query`, `search`, `recall`, `links`, `show`, `create`,
+Commands: `list`, `query`, `vocabulary`, `search`, `recall`, `links`, `show`, `create`,
 `set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
 `doctor`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
 `retex schema --vault ...` to discover built-in, configured, and existing
