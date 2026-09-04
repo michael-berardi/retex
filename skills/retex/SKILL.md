@@ -29,17 +29,23 @@ either is unavailable.
 Choose the narrowest command that answers the request:
 
 ```bash
-retex doctor --vault "$RETEX_VAULT" --strict --json
-retex count --vault "$RETEX_VAULT" --type invoice --where owner=alex --json
-retex query --vault "$RETEX_VAULT" --type invoice --status Inbox --tag priority --where owner=alex --limit 100 --json
-retex query --vault "$RETEX_VAULT" --on-or-before review_after=2026-08-28 --limit 100 --json
-retex search "exact terms" --vault "$RETEX_VAULT" --ranked --limit 20 --json
-retex recall "what changed in the release" --vault "$RETEX_VAULT" --budget 12000 --json
-retex links "$RETEX_VAULT/Notes/example.md" --vault "$RETEX_VAULT" --json
-retex show "$RETEX_VAULT/Notes/example.md" --json
-retex schema --vault "$RETEX_VAULT" --json
-retex board --vault "$RETEX_VAULT" --json
+retex doctor --vault "$RETEX_VAULT" --strict --lean
+retex count --vault "$RETEX_VAULT" --type invoice --where owner=alex --lean
+retex query --vault "$RETEX_VAULT" --type invoice --status Inbox --tag priority --where owner=alex --limit 100 --lean
+retex query --vault "$RETEX_VAULT" --on-or-before review_after=2026-08-28 --limit 100 --lean
+retex search "exact terms" --vault "$RETEX_VAULT" --ranked --limit 20 --lean
+retex recall "what changed in the release" --vault "$RETEX_VAULT" --budget 12000 --lean
+retex links "$RETEX_VAULT/Notes/example.md" --vault "$RETEX_VAULT" --lean
+retex show "$RETEX_VAULT/Notes/example.md" --lean
+retex schema --vault "$RETEX_VAULT" --lean
+retex board --vault "$RETEX_VAULT" --lean
 ```
+
+Prefer `--lean` for agent-facing output: it returns the command payload without
+an envelope, using UC when available and compact deterministic JSON otherwise.
+Use `--lean --raw-json` when exact direct JSON parsing is required. Keep
+`--raw-json` without `--lean` for cross-version compatibility gates that verify
+the established enveloped contract.
 
 - Known path: `show`.
 - Total or existence check: `count`.
@@ -72,15 +78,15 @@ Initialize each vault once so future undo records stay in its private
 vault-root state directory:
 
 ```bash
-retex init --vault "$RETEX_VAULT" --json
+retex init --vault "$RETEX_VAULT" --lean
 ```
 
 ```bash
-retex create --vault "$RETEX_VAULT" --type invoice --folder Invoices --title "August" --set client=Acme --set amount=11500 --json
-retex set "$RETEX_VAULT/Invoices/august.md" owner=alex due=2026-09-01 --if-hash "$INVOICE_HASH" --json
-retex move "$RETEX_VAULT/Tasks/follow-up.md" "In Progress" --if-hash "$TASK_HASH" --json
-retex archive "$RETEX_VAULT/Tasks/follow-up.md" --if-hash "$FRESH_TASK_HASH" --json
-retex undo "$RETEX_VAULT/Tasks/follow-up.md" --json
+retex create --vault "$RETEX_VAULT" --type invoice --folder Invoices --title "August" --set client=Acme --set amount=11500 --lean
+retex set "$RETEX_VAULT/Invoices/august.md" owner=alex due=2026-09-01 --if-hash "$INVOICE_HASH" --lean
+retex move "$RETEX_VAULT/Tasks/follow-up.md" "In Progress" --if-hash "$TASK_HASH" --lean
+retex archive "$RETEX_VAULT/Tasks/follow-up.md" --if-hash "$FRESH_TASK_HASH" --lean
+retex undo "$RETEX_VAULT/Tasks/follow-up.md" --lean
 ```
 
 Pass the hash from the immediately preceding read as `--if-hash`; read again
@@ -125,8 +131,8 @@ Markdown & CSV; Obsidian and ordinary Markdown vaults may be imported from
 their directories:
 
 ```bash
-retex import --from notion-export.zip --into ~/Vaults/notion --format notion --json
-retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --json
+retex import --from notion-export.zip --into ~/Vaults/notion --format notion --lean
+retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --lean
 ```
 
 Imports preserve attachments, reject symlinks/path escapes, skip hidden
@@ -180,17 +186,17 @@ maintenance, check without mutating:
 
 ```bash
 retex version
-retex update --check --json
+retex update --check --lean
 ```
 
 Opt-in fleet automation does not weaken the gate. Register the complete fleet,
 then enable auto-update only on vaults whose owner authorized it:
 
 ```bash
-retex fleet register --vault "$RETEX_VAULT" --auto-update --json
-retex fleet status --json
-retex fleet initialize --json
-retex fleet install-updater --json
+retex fleet register --vault "$RETEX_VAULT" --auto-update --lean
+retex fleet status --lean
+retex fleet initialize --lean
+retex fleet install-updater --lean
 ```
 
 Scheduled `update --auto --fleet` must clone-verify every registered scope,
@@ -209,8 +215,10 @@ live vault:
 4. Copy or clone every live vault to a disposable location.
 5. Run the full Retex test suite for the exact candidate binary.
 6. Run `init` and `doctor --strict` on every clone.
-7. Compare exact-mode `list`, `search`, and `board` JSON with the previous
-   release. Ranked search is additive and evaluated separately.
+7. Compare `list`, `search`, and `board` with the previous release using
+   `--raw-json` without `--lean`; this preserves the established envelope for
+   the exact compatibility gate. Ranked search is additive and evaluated
+   separately.
 8. Test representative create/set/move/archive/undo mutations only on clones,
    then confirm the previous release can still read every touched file.
 9. Use `retex update --fleet` for registered scopes; it performs the clone

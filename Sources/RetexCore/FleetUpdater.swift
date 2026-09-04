@@ -191,15 +191,15 @@ public struct FleetUpgradeVerifier {
             defer { try? FileManager.default.removeItem(at: clone) }
             try copyRetexScope(from: URL(fileURLWithPath: vault.path, isDirectory: true), to: clone)
 
-            let baselineList = try run(current, ["list", "--vault", clone.path, "--all", "--json"])
-            let baselineSearch = try run(current, ["search", "retex-fleet-compatibility-probe", "--vault", clone.path, "--json"])
-            let baselineBoard = try run(current, ["board", "--vault", clone.path, "--json"])
+            let baselineList = try run(current, ["list", "--vault", clone.path, "--all", "--raw-json"])
+            let baselineSearch = try run(current, ["search", "retex-fleet-compatibility-probe", "--vault", clone.path, "--raw-json"])
+            let baselineBoard = try run(current, ["board", "--vault", clone.path, "--raw-json"])
             _ = try run(current, ["doctor", "--vault", clone.path, "--strict", "--json"])
             _ = try run(candidate, ["init", "--vault", clone.path, "--json"])
             _ = try run(candidate, ["doctor", "--vault", clone.path, "--strict", "--json"])
-            let candidateList = try run(candidate, ["list", "--vault", clone.path, "--all", "--json"])
-            let candidateSearch = try run(candidate, ["search", "retex-fleet-compatibility-probe", "--vault", clone.path, "--json"])
-            let candidateBoard = try run(candidate, ["board", "--vault", clone.path, "--json"])
+            let candidateList = try run(candidate, ["list", "--vault", clone.path, "--all", "--raw-json"])
+            let candidateSearch = try run(candidate, ["search", "retex-fleet-compatibility-probe", "--vault", clone.path, "--raw-json"])
+            let candidateBoard = try run(candidate, ["board", "--vault", clone.path, "--raw-json"])
             _ = try run(current, ["doctor", "--vault", clone.path, "--strict", "--json"])
 
             let listMatch = baselineList == candidateList

@@ -40,12 +40,15 @@ enum RetexCLI {
                 terminate(simpleExit.code)
             }
             let code: Int32 = error is UsageError ? 64 : 74
+            let lean = CommandLine.arguments.contains("--lean")
             writeError(
                 error.localizedDescription,
                 code: Int(code),
                 json: CommandLine.arguments.contains("--json")
                     || CommandLine.arguments.contains("--raw-json")
                     || CommandLine.arguments.contains("--uc")
+                    || lean,
+                lean: lean
             )
             terminate(code)
         }
@@ -380,7 +383,11 @@ enum RetexCLI {
             try runUpdate(invocation)
 
         case "version":
-            print(RetexCLI.version)
+            if invocation.flag("lean") {
+                try output(RetexCLI.version, json: true) { $0 }
+            } else {
+                print(RetexCLI.version)
+            }
 
         case "count":
             let vault = try invocation.vault()
@@ -796,16 +803,44 @@ enum RetexCLI {
         #endif
     }
 
+    /// Encode the command payload directly for lean machine output. When the
+    /// UC engine is unavailable or declines to encode, compact sorted JSON is
+    /// the deterministic fallback.
+    private static func leanPacket<T: Encodable>(_ value: T) throws -> String {
+        let jsonText = try compactJSON(value)
+        #if canImport(CUltraCompact) && (os(macOS) || os(Linux))
+        return jsonText.withCString { inPtr in
+            guard let packet = uc_encode_readable_json(inPtr, nil) else { return jsonText }
+            defer { uc_free_string(packet) }
+            return String(cString: packet)
+        }
+        #else
+        return jsonText
+        #endif
+    }
+
+    private static func compactJSON<T: Encodable>(_ value: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return String(decoding: try encoder.encode(value), as: UTF8.self)
+    }
+
     private static func output<T: Encodable>(
         _ value: T,
         json: Bool,
         human: (T) -> String
     ) throws {
-        // UC is the default machine-readable output; --raw-json opts out to
-        // canonical pretty JSON for byte-exact parsers. Mirrors writeError's
-        // direct CommandLine check: zero call-site churn.
+        // Existing machine modes retain their envelope and formatting. Lean
+        // is additive: it removes the envelope, while --raw-json still wins
+        // when exact JSON parsing is requested.
         let rawJson = CommandLine.arguments.contains("--raw-json")
-        if json && !rawJson {
+        let lean = CommandLine.arguments.contains("--lean")
+        if json && lean && rawJson {
+            print(try compactJSON(value))
+        } else if json && lean {
+            print(try leanPacket(value))
+        } else if json && !rawJson {
             print(try ucPacket(value))
         } else if json {
             let response = SuccessResponse(data: value)
@@ -872,9 +907,17 @@ enum RetexCLI {
         )
     }
 
-    private static func writeError(_ message: String, code: Int, json: Bool) {
+    private static func writeError(_ message: String, code: Int, json: Bool, lean: Bool) {
         let payload: String
-        if json, let data = try? JSONEncoder().encode(FailureResponse(error: .init(code: code, message: message))) {
+        if json, lean {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            if let data = try? encoder.encode(FailureResponse.Detail(code: code, message: message)) {
+                payload = String(decoding: data, as: UTF8.self) + "\n"
+            } else {
+                payload = "retex: \(message)\n"
+            }
+        } else if json, let data = try? JSONEncoder().encode(FailureResponse(error: .init(code: code, message: message))) {
             payload = String(decoding: data, as: UTF8.self) + "\n"
         } else {
             payload = "retex: \(message)\n"
@@ -920,29 +963,30 @@ enum RetexCLI {
       version   Print the CLI version
 
     EXAMPLES
-      retex init --vault ~/Documents/CRM --json
-      retex query --vault ~/Documents/CRM --type invoice --where owner=Sam --tag priority --limit 100 --json
-      retex vocabulary --vault ~/Documents/CRM --limit 256 --raw-json
-      retex search "website release" --vault ~/Documents/CRM --ranked --limit 20 --json
-      retex recall "what changed in the release" --vault ~/Documents/CRM --budget 12000 --json
-      retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --json
-      retex create --vault ./CRM --type invoice --title "Acme August" --set amount=11500 --json
-      retex set ./CRM/Deals/acme-redesign.md status=Qualified due=2026-08-01 --json
-      retex query --vault ./CRM --on-or-before review_after=2026-08-28 --json
-      retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --json
-      retex board --vault ./CRM --view pipeline --json
-      retex undo ./CRM/Deals/acme-redesign.md --json
-      retex doctor --vault ./CRM --strict --json
-      retex watch --vault ./CRM --json
+      retex init --vault ~/Documents/CRM --lean
+      retex query --vault ~/Documents/CRM --type invoice --where owner=Sam --tag priority --limit 100 --lean
+      retex vocabulary --vault ~/Documents/CRM --limit 256 --lean
+      retex search "website release" --vault ~/Documents/CRM --ranked --limit 20 --lean
+      retex recall "what changed in the release" --vault ~/Documents/CRM --budget 12000 --lean
+      retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --lean
+      retex create --vault ./CRM --type invoice --title "Acme August" --set amount=11500 --lean
+      retex set ./CRM/Deals/acme-redesign.md status=Qualified due=2026-08-01 --lean
+      retex query --vault ./CRM --on-or-before review_after=2026-08-28 --lean
+      retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --lean
+      retex board --vault ./CRM --view pipeline --lean
+      retex undo ./CRM/Deals/acme-redesign.md --lean
+      retex doctor --vault ./CRM --strict --lean
+      retex watch --vault ./CRM --lean
       retex mcp --vault ./CRM
       retex export --vault ./CRM --out backup.retex --passphrase-env VAULT_PASS
       retex import --from backup.retex --into ~/Vaults/restored --passphrase-env VAULT_PASS
-      retex import --from notion-export.zip --into ~/Vaults/notion --format notion --json
-      retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --json
-      retex fleet register --vault ~/Vaults/CRM --auto-update --json
-      retex fleet install-updater --json
-      retex update --auto --fleet --json
-      retex update --check --json
+      retex import --from notion-export.zip --into ~/Vaults/notion --format notion --lean
+      retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --lean
+      retex fleet register --vault ~/Vaults/CRM --auto-update --lean
+      retex fleet install-updater --lean
+      retex update --auto --fleet --lean
+      retex update --check --lean
+      retex list --vault ./CRM --all --raw-json  # compatibility gate
 
     OPTIONS
       --vault <path>    Vault directory (required by most commands)
@@ -970,8 +1014,11 @@ enum RetexCLI {
       --allow-write     Add MCP mutation tools for a trusted local host
       --uc              Request UC machine output; equivalent to --json when
                         the engine is linked, canonical JSON otherwise
+      --lean            Emit the command payload directly (UC when linked,
+                        compact deterministic JSON otherwise)
       --no-uc           Disable UC for MCP tool results
-      --raw-json        Force canonical JSON for CLI machine output
+      --raw-json        Force canonical JSON for CLI machine output; with
+                        --lean, emit compact deterministic direct JSON
       --strict          Exit nonzero when doctor finds any integrity issue
       --auto-update     Opt one registered vault into post-verification init
       --fleet           Clone-verify every registered vault before update
@@ -1012,7 +1059,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "uc", "raw-json", "no-uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
+            } else if ["json", "uc", "lean", "raw-json", "no-uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -1027,7 +1074,7 @@ private struct Invocation {
         self.flags = flags
     }
 
-    var isJSON: Bool { flag("json") || flag("uc") || flag("raw-json") }
+    var isJSON: Bool { flag("json") || flag("uc") || flag("lean") || flag("raw-json") }
     var hasVault: Bool { option("vault") != nil }
 
     func flag(_ name: String) -> Bool { flags.contains(name) }

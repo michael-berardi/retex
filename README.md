@@ -103,17 +103,17 @@ or deployment workflow.
 ## CLI
 
 ```bash
-retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --json
-retex query --vault ~/Documents/CRM --on-or-before review_after=2026-08-28 --json
-retex vocabulary --vault ~/Documents/CRM --limit 256 --raw-json
-retex search "website rebuild" --vault ~/Documents/CRM --json
-retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --json
-retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --json
-retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --json
-retex create --vault ./CRM --type invoice --title "Acme August" --folder Invoices --set amount=11500 --json
-retex set ./CRM/Invoices/acme-august.md due=2026-09-01 'client=Acme' --json
-retex set ./CRM/Invoices/acme-august.md status=Approved --if-hash <sha256-from-show> --json
-retex board --vault ./CRM --view pipeline --json
+retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --lean
+retex query --vault ~/Documents/CRM --on-or-before review_after=2026-08-28 --lean
+retex vocabulary --vault ~/Documents/CRM --limit 256 --lean
+retex search "website rebuild" --vault ~/Documents/CRM --lean
+retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --lean
+retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --lean
+retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --lean
+retex create --vault ./CRM --type invoice --title "Acme August" --folder Invoices --set amount=11500 --lean
+retex set ./CRM/Invoices/acme-august.md due=2026-09-01 'client=Acme' --lean
+retex set ./CRM/Invoices/acme-august.md status=Approved --if-hash <sha256-from-show> --lean
+retex board --vault ./CRM --view pipeline --lean
 ```
 
 Use `list` and `search` for their stable v0.5-compatible output contracts.
@@ -143,8 +143,8 @@ record types and properties.
 
 ### Machine-readable output
 
-Successful responses use one logical envelope (`schema_version` is bumped when
-the contract changes):
+The existing `--json`, `--uc`, and `--raw-json` modes retain their logical
+response envelope (`schema_version` is bumped when that contract changes):
 
 ```json
 {
@@ -154,16 +154,26 @@ the contract changes):
 }
 ```
 
+`--lean` is an additive machine-output modifier for agents. It can be used by
+itself and emits the command payload directly, without `ok`, `data`, or
+`schema_version`. Builds linked with UltraCompact pass the direct payload
+through UC (small payloads may remain JSON); engine-free Linux and Windows
+builds and `ULTRACOMPACT_DIST=0` builds fall back to compact JSON with sorted
+keys. Use `--lean --raw-json` when an agent needs deterministic, compact,
+directly parseable JSON.
+
 On builds linked with UltraCompact — the official macOS binary and hosted Linux
-MCP image — `--json` emits a token-minimized UC packet when that packet is
-smaller than JSON; small payloads remain JSON. Decode UC with `uc decode`, or
-pass `--raw-json` to force canonical JSON. Engine-free Linux and Windows builds
-and `ULTRACOMPACT_DIST=0` builds always emit JSON.
+MCP image — `--json` and `--uc` continue to emit an enveloped, token-minimized
+UC packet when that packet is smaller than JSON; small payloads remain JSON.
+Decode UC with `uc decode`. `--raw-json` without `--lean` continues to force
+canonical enveloped JSON and remains the compatibility-gate mode.
 
 Invalid machine-readable invocations exit with code 64; file or storage
-failures exit with code 74. Both use the same logical envelope and
-`schema_version`. `doctor --strict` emits its normal report and exits nonzero
-when it finds an unreadable note, invalid config, or corrupt journal.
+failures exit with code 74. Existing modes retain the failure envelope and
+`schema_version`; lean failures emit a compact direct `{code,message}` object
+to stderr and rely on the exit status instead of an `ok` field. `doctor
+--strict` emits its normal report and exits nonzero when it finds an unreadable
+note, invalid config, or corrupt journal.
 
 Exit codes: `0` success, `2` failed strict health gate, `64` invalid usage,
 `74` file or storage failure.
@@ -173,7 +183,7 @@ Exit codes: `0` success, `2` failed strict health gate, `64` invalid usage,
 Initialize a vault once before its first mutation:
 
 ```bash
-retex init --vault ~/Documents/CRM --json
+retex init --vault ~/Documents/CRM --lean
 ```
 
 - **Undo** — every mutation records the file's previous content in
@@ -214,7 +224,8 @@ contract.
 ### Watching
 
 `retex watch --vault ./CRM` streams change batches until Ctrl-C. With
-`--json`, each batch is one line: `{"changed":["Notes/foo.md", ...]}`.
+`--lean` (or the existing `--json`), each batch is one line:
+`{"changed":["Notes/foo.md", ...]}`.
 Internal `.retex/` state never appears in the stream.
 
 ## MCP server
@@ -326,7 +337,7 @@ Import a Notion **Markdown & CSV** export directly from its ZIP:
 
 ```bash
 retex import --from ~/Downloads/notion-export.zip \
-  --into ~/Vaults/Notion --format notion --json
+  --into ~/Vaults/Notion --format notion --lean
 ```
 
 Retex strips Notion's opaque page IDs from names, rewrites local Markdown
@@ -337,7 +348,7 @@ Import an Obsidian or generic Markdown vault from an extracted directory:
 
 ```bash
 retex import --from ~/Documents/Obsidian \
-  --into ~/Vaults/Imported --format obsidian --json
+  --into ~/Vaults/Imported --format obsidian --lean
 ```
 
 Imports require a new or empty destination, reject symlinks and path escapes,
@@ -371,7 +382,7 @@ variable, never a process-list-visible argument.
 Check availability without changing the installation:
 
 ```bash
-retex update --check --json
+retex update --check --lean
 ```
 
 For one installation, the verified updater remains:
@@ -384,16 +395,17 @@ For multiple vaults, explicitly register the full fleet and opt individual
 vaults into post-update initialization:
 
 ```bash
-retex fleet register --vault ~/Vaults/CRM --auto-update --json
-retex fleet status --json
-retex fleet initialize --json       # idempotent live init + strict doctor
-retex fleet install-updater --json
+retex fleet register --vault ~/Vaults/CRM --auto-update --lean
+retex fleet status --lean
+retex fleet initialize --lean       # idempotent live init + strict doctor
+retex fleet install-updater --lean
 ```
 
 The optional scheduler runs `retex update --auto --fleet` every six hours.
 Before replacing the binary, Retex copies only Markdown and vault config into
 disposable clones, requires strict doctor success, compares exact `list`,
-`search`, and `board` JSON with the installed version, exercises a complete
+`search`, and `board` output in the existing `--raw-json` compatibility mode
+with the installed version, exercises a complete
 create/set/move/archive/undo round trip, and confirms that the installed
 version can still read candidate-initialized clones. Only then is the binary
 swapped atomically. Registered live vaults are initialized and strict-checked;
@@ -412,9 +424,9 @@ deploy the remaining hosted services, then run the verifier without a service
 filter. Reinstalling the scheduler is idempotent:
 
 ```bash
-retex update --check --json
-retex update --fleet --json
-retex fleet install-updater --json
+retex update --check --lean
+retex update --fleet --lean
+retex fleet install-updater --lean
 ```
 
 ## Vault format
