@@ -3,9 +3,9 @@
 #
 # Required:
 #   RETEX_VERSION            stable semver matching AppVersion.swift
-# Optional:
-#   RETEX_SIGNING_IDENTITY   macOS codesign identity (default: ad-hoc "-")
+#   RETEX_SIGNING_IDENTITY   macOS Developer ID Application identity
 #   NOTARY_PROFILE           notarytool Keychain profile for the macOS archive
+# Optional:
 #   RETEX_LINUX_SDK          installed Swift static Linux SDK ID
 #   RETEX_LINUX_SWIFT        Swift executable matching RETEX_LINUX_SDK (auto-detected on macOS)
 #   RETEX_LLVM_STRIP         LLVM strip executable for Linux ELF binaries
@@ -22,7 +22,8 @@ set -euo pipefail
 unset ULTRACOMPACT_LIB
 
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
-IDENTITY="${RETEX_SIGNING_IDENTITY:--}"
+IDENTITY="${RETEX_SIGNING_IDENTITY:?Set RETEX_SIGNING_IDENTITY to a Developer ID Application identity}"
+NOTARY_PROFILE="${NOTARY_PROFILE:?Set NOTARY_PROFILE to a notarytool Keychain profile}"
 LINUX_SDK="${RETEX_LINUX_SDK:-swift-6.3.3-RELEASE_static-linux-0.1.0}"
 SDK_SWIFT_VERSION="${LINUX_SDK#swift-}"
 SDK_SWIFT_VERSION="${SDK_SWIFT_VERSION%%-RELEASE*}"
@@ -76,20 +77,21 @@ lipo -create \
   -output "$BUILD/bin/retex"
 strip -x "$BUILD/bin/retex"
 codesign --force --sign "$IDENTITY" --options runtime --timestamp "$BUILD/bin/retex"
-codesign --verify --strict --verbose=1 "$BUILD/bin/retex"
+codesign --verify --strict --verbose=1 \
+  -R '=identifier "retex" and anchor apple generic and certificate leaf[subject.OU] = "T63VT9UAY2"' \
+  "$BUILD/bin/retex"
 stage_support "$BUILD/bin"
 MAC_ARCHIVE="$OUT/retex-universal.zip"
 (cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
 
-if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-  xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
-  STAGE="$BUILD/macos-stage"
-  mkdir -p "$STAGE"
-  ditto -x -k "$MAC_ARCHIVE" "$STAGE"
-  xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
-  rm -f "$MAC_ARCHIVE"
-  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
-fi
+xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
+STAGE="$BUILD/macos-stage"
+mkdir -p "$STAGE"
+ditto -x -k "$MAC_ARCHIVE" "$STAGE"
+xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
+spctl -a -t install -vv "$STAGE/retex"
+rm -f "$MAC_ARCHIVE"
+(cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
 
 for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl"; do
   ARCH="${spec%%:*}"
