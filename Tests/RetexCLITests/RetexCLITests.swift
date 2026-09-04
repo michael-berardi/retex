@@ -103,6 +103,63 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(status, 74)
     }
 
+    func testLeanRawJSONEmitsDirectCompactPayload() throws {
+        _ = try run(["create"] + vaultArg + ["--title", "Lean Output", "--type", "note"])
+        let (status, stdout, stderr) = try run(["list"] + vaultArg + ["--lean", "--raw-json"])
+        XCTAssertEqual(status, 0)
+        XCTAssertTrue(stderr.isEmpty)
+        XCTAssertTrue(stdout.hasSuffix("\n"))
+        XCTAssertFalse(stdout.dropLast().contains("\n"), "lean raw JSON must remain compact")
+
+        let value = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [[String: Any]]
+        )
+        XCTAssertEqual(value.count, 1)
+        XCTAssertEqual(value.first?["title"] as? String, "Lean Output")
+        XCTAssertFalse(stdout.contains("schema_version"))
+        XCTAssertFalse(stdout.contains("\"ok\""))
+        XCTAssertFalse(stdout.contains("\"data\""))
+    }
+
+    func testLeanOutputIsMachineReadableWithoutEnvelope() throws {
+        let (status, stdout, stderr) = try run(["count"] + vaultArg + ["--lean"])
+        XCTAssertEqual(status, 0)
+        XCTAssertTrue(stderr.isEmpty)
+        XCTAssertFalse(stdout.contains("schema_version"))
+
+        let count = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(count["notes"] as? Int, 0)
+        XCTAssertNil(count["ok"])
+        XCTAssertNil(count["data"])
+    }
+
+    func testLeanUsageErrorOmitsVersionedEnvelope() throws {
+        let (status, stdout, stderr) = try run(["list", "--lean", "--raw-json"])
+        XCTAssertEqual(status, 64)
+        XCTAssertTrue(stdout.isEmpty)
+
+        let error = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(stderr.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(error["code"] as? Int, 64)
+        XCTAssertNotNil(error["message"] as? String)
+        XCTAssertNil(error["ok"])
+        XCTAssertNil(error["schema_version"])
+        XCTAssertNil(error["error"])
+    }
+
+    func testRawJSONRemainsEnvelopedWhenLeanIsAbsent() throws {
+        let (status, stdout, _) = try run(["count"] + vaultArg + ["--raw-json"])
+        XCTAssertEqual(status, 0)
+        let envelope = try jsonEnvelope(stdout)
+        XCTAssertEqual(envelope["ok"] as? Bool, true)
+        XCTAssertEqual(envelope["schema_version"] as? Int, 1)
+        let count = try XCTUnwrap(envelope["data"] as? [String: Any])
+        XCTAssertEqual(count["notes"] as? Int, 0)
+    }
+
     // MARK: - Record lifecycle
 
     func testCreateShowMoveArchiveLifecycle() throws {
