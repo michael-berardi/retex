@@ -781,49 +781,18 @@ enum RetexCLI {
     /// Encode a value as a UC (UltraCompact) packet via the linked Rust
     /// library. Falls back to compact JSON if encoding fails.
     private static func ucPacket<T: Encodable>(_ value: T) throws -> String {
-        #if canImport(CUltraCompact) && (os(macOS) || os(Linux))
-        let response = SuccessResponse(data: value)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        let jsonText = String(decoding: try encoder.encode(response), as: UTF8.self)
-        return jsonText.withCString { inPtr in
-            // Readable mode: agents read UC packets directly in model context.
-            guard let packet = uc_encode_readable_json(inPtr, nil) else { return jsonText }
-            defer { uc_free_string(packet) }
-            return String(cString: packet)
-        }
-        #else
-        // Public builds without the proprietary engine: canonical JSON.
-        let response = SuccessResponse(data: value)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        return String(decoding: try encoder.encode(response), as: UTF8.self)
-        #endif
+        try AgentOutput.encode(SuccessResponse(data: value))
     }
 
     /// Encode the command payload directly for lean machine output. When the
     /// UC engine is unavailable or declines to encode, compact sorted JSON is
     /// the deterministic fallback.
     private static func leanPacket<T: Encodable>(_ value: T) throws -> String {
-        let jsonText = try compactJSON(value)
-        #if canImport(CUltraCompact) && (os(macOS) || os(Linux))
-        return jsonText.withCString { inPtr in
-            guard let packet = uc_encode_readable_json(inPtr, nil) else { return jsonText }
-            defer { uc_free_string(packet) }
-            return String(cString: packet)
-        }
-        #else
-        return jsonText
-        #endif
+        try AgentOutput.encode(value)
     }
 
     private static func compactJSON<T: Encodable>(_ value: T) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        return String(decoding: try encoder.encode(value), as: UTF8.self)
+        try AgentOutput.compactJSON(value)
     }
 
     private static func output<T: Encodable>(

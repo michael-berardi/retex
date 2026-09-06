@@ -121,7 +121,10 @@ Use `query` for structured records with exact arbitrary types and metadata.
 Use `vocabulary` for deterministic, read-only extraction of a bounded names-and-terms list. It scans local record text but returns only terms, occurrence/source counts, and the aggregate record count—never note bodies, excerpts, or paths. This is the privacy boundary used by UltraVox Pro.
 Use `recall` for natural agent questions: it removes common filler, ranks
 partial matches, returns source paths plus evidence excerpts, and keeps the
-encoded record array within `--budget` bytes. `list`, `query`, `search`,
+encoded record array within `--budget` UTF-8 bytes. This is **not a token or
+whole-response budget**: query/provenance fields, the CLI envelope (unless
+`--lean`), and MCP transport wrappers add overhead. `usedBytes` measures that
+record array only. `list`, `query`, `search`,
 `recall`, and `count` accept arbitrary `--type`, `--status`, `--tag`, repeated
 `--where key=value`, and inclusive `--on-or-before key=YYYY-MM-DD` /
 `--on-or-after key=YYYY-MM-DD` filters. Date filters match only records with a
@@ -165,8 +168,21 @@ directly parseable JSON.
 On builds linked with UltraCompact — the official macOS binary and hosted Linux
 MCP image — `--json` and `--uc` continue to emit an enveloped, token-minimized
 UC packet when that packet is smaller than JSON; small payloads remain JSON.
-Decode UC with `uc decode`. `--raw-json` without `--lean` continues to force
-canonical enveloped JSON and remains the compatibility-gate mode.
+Readable UC uses only model-readable codecs, so a decode call is unnecessary
+for ordinary reading; use `uc decode` when exact JSON parsing is required.
+`--raw-json` without `--lean` continues to force canonical enveloped JSON and
+remains the compatibility-gate mode.
+
+CLI and MCP share deterministic compact-JSON fallback and the same packet
+selection. The linked engine selects readable packets against compact JSON
+using its default **o200k** tokenizer; Retex additionally requires fewer UTF-8
+bytes before emitting a packet. Ties, unavailable engines, and unsuccessful
+encoding pass through as compact JSON. No explanatory text is appended to
+payload string values. This avoids known local representation overhead, but
+does not guarantee savings for every tokenizer or whole model conversation.
+Measure the complete visible text, including host wrappers and any decode
+round trip, rather than comparing only with pretty-printed JSON. See the
+[1.2.2 reproducible output-efficiency checks](docs/AGENT-OUTPUT-EFFICIENCY.md).
 
 Invalid machine-readable invocations exit with code 64; file or storage
 failures exit with code 74. Existing modes retain the failure envelope and

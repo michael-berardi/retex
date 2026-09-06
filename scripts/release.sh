@@ -2,7 +2,7 @@
 # Retex release builder. Environment-driven; no personal defaults.
 #
 # Required:
-#   RETEX_VERSION            stable semver matching AppVersion.swift
+#   RETEX_VERSION            stable semver matching RetexCore/RetexVersion.swift
 #   RETEX_SIGNING_IDENTITY   macOS Developer ID Application identity
 #   NOTARY_PROFILE           notarytool Keychain profile for the macOS archive
 # Optional:
@@ -59,8 +59,8 @@ command -v "$LINUX_SWIFT" >/dev/null || { echo "FAIL: RETEX_LINUX_SWIFT is unava
 if ! "$LINUX_SWIFT" --version | grep -q "Swift version $SDK_SWIFT_VERSION"; then
   echo "FAIL: RETEX_LINUX_SWIFT must match SDK Swift $SDK_SWIFT_VERSION"; exit 1
 fi
-if ! grep -q "static let version = \"$VERSION\"" Sources/RetexCLI/AppVersion.swift; then
-  echo "FAIL: AppVersion.swift does not declare $VERSION"; exit 1
+if ! grep -q "static let version = \"$VERSION\"" Sources/RetexCore/RetexVersion.swift; then
+  echo "FAIL: RetexVersion.swift does not declare $VERSION"; exit 1
 fi
 if ! grep -q "^ARG RETEX_REF=v$VERSION$" deploy/readonly-mcp/Dockerfile; then
   echo "FAIL: hosted Dockerfile does not default to v$VERSION"; exit 1

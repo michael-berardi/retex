@@ -1,5 +1,6 @@
-/// Single source of truth for the CLI version. scripts/release.sh verifies
-/// this matches the RETEX_VERSION being released.
+import RetexCore
+
+/// Compatibility facade; CLI and MCP share RetexCore's product version.
 enum RetexBuild {
-    static let version = "1.2.1"
+    static let version = RetexVersion.version
 }
