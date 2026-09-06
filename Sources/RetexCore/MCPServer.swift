@@ -224,7 +224,7 @@ public struct MCPServer {
                 ]),
                 "serverInfo": .object([
                     "name": .string("retex"),
-                    "version": .string("1.0.0"),
+                    "version": .string(RetexVersion.version),
                 ]),
             ]
             if uc {
@@ -249,7 +249,7 @@ public struct MCPServer {
             }
             do {
                 let payload = try callTool(request.params)
-                writeResponse(id: id, result: toolResult(text: uc ? Self.ucPacket(payload) : Self.encodePretty(payload), isError: false))
+                writeResponse(id: id, result: toolResult(text: uc ? Self.ucPacket(payload) : ((try? AgentOutput.compactJSON(payload)) ?? "{}"), isError: false))
             } catch let error as ToolError {
                 // Tool execution failures are results with isError, not protocol errors.
                 writeResponse(id: id, result: toolResult(text: error.message, isError: true))
@@ -671,28 +671,10 @@ public struct MCPServer {
         output.write(Data(data + [UInt8(ascii: "\n")]))
     }
 
-    /// UC readable-mode packet for a tool payload. Falls back to pretty JSON
+    /// UC readable-mode packet for a tool payload. Falls back to compact JSON
     /// off macOS or if encoding fails. Agents read the packet directly.
     private static func ucPacket(_ value: JSONValue) -> String {
-        #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-        guard let data = try? JSONEncoder().encode(value) else { return encodePretty(value) }
-        return String(decoding: data, as: UTF8.self).withCString { inPtr in
-            guard let packet = uc_encode_readable_json(inPtr, nil) else { return encodePretty(value) }
-            defer { uc_free_string(packet) }
-            return String(cString: packet)
-        }
-        #else
-        return encodePretty(value)
-        #endif
-    }
-
-    private static func encodePretty(_ value: JSONValue) -> String {
-        guard let data = try? JSONEncoder().encode(value),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              JSONSerialization.isValidJSONObject(object),
-              let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        else { return "{}" }
-        return String(decoding: pretty, as: UTF8.self)
+        (try? AgentOutput.encode(value)) ?? "{}"
     }
 
     private static func idJSON(_ id: Id) -> Any {
