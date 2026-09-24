@@ -98,10 +98,14 @@ public struct FleetRegistry {
         }
         let document = try JSONDecoder().decode(FleetRegistryDocument.self, from: Data(contentsOf: url))
         guard document.version == 1 else { throw RegistryError.invalidRegistry }
+        // Validate syntactically only: a vault deleted after registration must
+        // not lock every fleet command. Verification checks each vault on disk.
         var seen: Set<String> = []
         for vault in document.vaults {
-            let canonical = try canonicalVault(vault.path)
-            guard canonical == vault.path, seen.insert(canonical).inserted else {
+            guard (vault.path as NSString).isAbsolutePath,
+                  URL(fileURLWithPath: vault.path).standardizedFileURL.path == vault.path,
+                  seen.insert(vault.path).inserted
+            else {
                 throw RegistryError.invalidRegistry
             }
         }
@@ -124,12 +128,15 @@ public struct FleetRegistry {
 
     @discardableResult
     public func unregister(path: String) throws -> FleetRegistryDocument {
-        let canonical = try canonicalVault(path)
+        // A vault that no longer exists is matched by its stored path string.
+        let lexical = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true)
+            .standardizedFileURL.path
+        let candidates: Set<String> = [lexical, (try? canonicalVault(path)) ?? lexical]
         var document = try load()
-        guard document.vaults.contains(where: { $0.path == canonical }) else {
+        guard document.vaults.contains(where: { candidates.contains($0.path) }) else {
             throw RegistryError.missingVault
         }
-        document.vaults.removeAll { $0.path == canonical }
+        document.vaults.removeAll { candidates.contains($0.path) }
         try save(document)
         return document
     }
@@ -162,6 +169,7 @@ public struct FleetUpgradeVerifier {
         case invalidExecutable(String)
         case commandFailed(String)
         case compatibilityMismatch(String)
+        case missingVault(String)
 
         public var errorDescription: String? {
             switch self {
@@ -169,11 +177,20 @@ public struct FleetUpgradeVerifier {
             case let .invalidExecutable(path): "Retex upgrade executable is invalid: \(path)"
             case let .commandFailed(message): "Retex fleet verification command failed: \(message)"
             case let .compatibilityMismatch(path): "Retex exact output changed on the clone for \(path)."
+            case let .missingVault(path): "Fleet vault no longer exists or is not a real directory: \(path). Run `retex fleet unregister --vault \(path)`."
             }
         }
     }
 
-    public init() {}
+    let temporaryRoot: URL
+
+    public init() {
+        self.init(temporaryRoot: FileManager.default.temporaryDirectory)
+    }
+
+    init(temporaryRoot: URL) {
+        self.temporaryRoot = temporaryRoot
+    }
 
     public func verify(
         vaults: [FleetVault],
@@ -183,10 +200,11 @@ public struct FleetUpgradeVerifier {
         guard !vaults.isEmpty else { throw VerificationError.emptyFleet }
         try validateExecutable(candidate)
         try validateExecutable(current)
+        try vaults.forEach(requireVault)
         var reports: [FleetUpgradeReport] = []
         for vault in vaults {
             let start = Date()
-            let clone = FileManager.default.temporaryDirectory
+            let clone = temporaryRoot
                 .appendingPathComponent("retex-fleet-clone-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: clone) }
             try copyRetexScope(from: URL(fileURLWithPath: vault.path, isDirectory: true), to: clone)
@@ -224,6 +242,7 @@ public struct FleetUpgradeVerifier {
 
     public func confirmLive(vaults: [FleetVault], executable: URL) throws -> [FleetUpgradeReport] {
         try validateExecutable(executable)
+        try vaults.filter(\.autoUpdate).forEach(requireVault)
         var reports: [FleetUpgradeReport] = []
         for vault in vaults where vault.autoUpdate {
             let start = Date()
@@ -244,6 +263,17 @@ public struct FleetUpgradeVerifier {
         return reports
     }
 
+    /// Registered vaults are only checked syntactically on load; confirm each
+    /// is still a real directory at its canonical path before touching it.
+    private func requireVault(_ vault: FleetVault) throws {
+        let url = URL(fileURLWithPath: vault.path, isDirectory: true)
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values?.isDirectory == true,
+              values?.isSymbolicLink != true,
+              url.resolvingSymlinksInPath().path == vault.path
+        else { throw VerificationError.missingVault(vault.path) }
+    }
+
     private func validateExecutable(_ executable: URL) throws {
         let values = try executable.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true,
@@ -259,10 +289,14 @@ public struct FleetUpgradeVerifier {
             "create", "--vault", clone.path, "--folder", "RetexFleetProbe",
             "--type", "note", "--title", title, "--json",
         ])
+        // The candidate may report the clone through its resolved path (for
+        // example when TMPDIR contains a symlink), so accept either spelling.
+        let roots = [clone.standardizedFileURL.path, clone.resolvingSymlinksInPath().path]
         guard let envelope = try JSONSerialization.jsonObject(with: created) as? [String: Any],
               let data = envelope["data"] as? [String: Any],
               let path = data["path"] as? String,
-              path.hasPrefix(clone.path + "/")
+              !path.split(separator: "/").contains(".."),
+              roots.contains(where: { path.hasPrefix($0 + "/") })
         else { throw VerificationError.commandFailed("candidate create returned no confined path") }
         defer { try? FileManager.default.removeItem(atPath: path) }
         _ = try run(candidate, ["set", path, "owner=fleet-verifier", "--json"])
@@ -330,7 +364,7 @@ public struct FleetUpgradeVerifier {
 
     private func copyRetexScope(from source: URL, to destination: URL) throws {
         let fm = FileManager.default
-        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        try VaultImporter.createPrivateDirectory(destination)
         let sourceRoot = source.standardizedFileURL
         guard let enumerator = fm.enumerator(
             at: sourceRoot,
