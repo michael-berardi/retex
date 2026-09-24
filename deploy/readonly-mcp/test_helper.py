@@ -198,7 +198,8 @@ class VaultRefresherTests(unittest.TestCase):
         self.remote = self.root / "remote.git"
         self.work = self.root / "seed-work"
         self.data = self.root / "data"
-        subprocess.run(["git", "init", "--quiet", "--bare", str(self.remote)], check=True)
+        # Explicit branch: the tests must not depend on init.defaultBranch.
+        subprocess.run(["git", "init", "--quiet", "--bare", "--initial-branch=main", str(self.remote)], check=True)
         self._commit_note("# Safe project facts")
         self.env = {
             "RETEX_VAULT_REPO": str(self.remote),
@@ -217,6 +218,7 @@ class VaultRefresherTests(unittest.TestCase):
             subprocess.run(["git", "clone", "--quiet", str(self.remote), str(self.work)], check=True)
             subprocess.run(["git", "-C", str(self.work), "config", "user.email", "t@t"], check=True)
             subprocess.run(["git", "-C", str(self.work), "config", "user.name", "t"], check=True)
+            subprocess.run(["git", "-C", str(self.work), "checkout", "--quiet", "-B", "main"], check=True)
         (self.work / name).write_text(self._note_text(body), encoding="utf-8")
         subprocess.run(["git", "-C", str(self.work), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.work), "commit", "--quiet", "-m", f"note {body}"], check=True)
@@ -416,7 +418,7 @@ class HostedFleetVerifierTests(unittest.TestCase):
         repository = Path(__file__).resolve().parents[2]
         app_version = re.search(
             r'static let version = "([^"]+)"',
-            (repository / "Sources/RetexCLI/AppVersion.swift").read_text(
+            (repository / "Sources/RetexCore/RetexVersion.swift").read_text(
                 encoding="utf-8"
             ),
         )
