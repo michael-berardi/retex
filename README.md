@@ -204,7 +204,9 @@ retex init --vault ~/Documents/CRM --lean
 
 - **Undo** — every mutation records the file's previous content in
   `<vault>/.retex/history.jsonl` (capped at 50 entries per file, so total
-  journal size scales with how many distinct files a vault touches). POSIX
+  journal size scales with how many distinct files a vault touches).
+  Mutations append one line, so their cost does not grow with the journal;
+  the per-file cap is compacted on disk as the journal grows. POSIX
   state is mode `0700` with `0600` files; Windows uses the current user's
   directory ACL. Cross-process locks serialize journal updates. `retex undo
   <file>` restores the prior Markdown; `retex log <file>` lists history.
@@ -385,6 +387,9 @@ retex import --from crm.retex --into ~/Vaults/CRM-restored --passphrase-env RETE
 unset RETEX_PASS
 ```
 
+Restores require a new or empty destination and accept only the paths an
+export can contain: no hidden components and only portable extensions.
+
 The single `RETEXENC1` envelope uses PBKDF2-HMAC-SHA256 (600,000 iterations)
 and AES-GCM authenticated encryption. Its versioned inner manifest preserves
 Markdown plus portable document/media attachments with a SHA-256 per file;
@@ -470,9 +475,13 @@ through `retex schema`.
 Retex reads ordinary Markdown files. YAML front matter may describe any record
 type. Built-ins (`note`, `contact`, `deal`, `task`, `agent-run`) retain their
 convenient defaults; values such as `invoice`, `memory`, `runbook`, or a
-project-specific type are preserved exactly. The parser supports flat
-properties and inline lists; note bodies remain intact, including wiki links
-and Markdown checklists.
+project-specific type are preserved exactly. Properties are the unindented
+`key: value` lines; nested mappings and list items stay with their parent key
+and never become top-level properties. Block scalars (`|`, `>`) read as their
+text. `tags` accepts a flow list (`[a, b]`), a block list, or a scalar
+(`tags: urgent` or `tags: a, b`). Quoted values are unescaped, and values Retex
+writes are quoted and escaped so standard YAML parsers read the same string.
+Note bodies remain intact, including wiki links and Markdown checklists.
 
 ```markdown
 ---
