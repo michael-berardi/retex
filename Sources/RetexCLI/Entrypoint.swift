@@ -340,7 +340,9 @@ enum RetexCLI {
             let vault = try invocation.vault()
             let destination = try invocation.requiredOption("out")
             let passphrase = try Self.passphrase(invocation)
-            let archive = try VaultCrypto.makeArchive(vaultURL: vault.url)
+            let archive = try VaultCrypto.makeArchive(vaultURL: vault.url) { skipped in
+                FileHandle.standardError.write(Data("warning: export skipped symlink \(skipped.path)\n".utf8))
+            }
             let blob = try VaultCrypto().encrypt(archive, passphrase: passphrase)
             try blob.write(
                 to: URL(fileURLWithPath: NSString(string: destination).expandingTildeInPath),

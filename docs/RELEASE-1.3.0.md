@@ -97,6 +97,17 @@ The causes were these:
 - `Package.swift` failed to type-check on Swift 6.0 and 6.1, although both are
   documented as supported.
 
+### macOS release verification
+
+- `update --fleet` parsed the candidate's `create --json` reply as plain JSON,
+  but `--json` emits UltraCompact when the engine is linked. The mutation probe
+  now requests `--raw-json`, and accepts the clone's `realpath` spelling:
+  Foundation drops macOS's `/private` prefix while the CLI reports it.
+- A quoted flow list (`tags: "[work, home]"`) produced the tags `[work` and
+  `home]`; it reads as `work`, `home` again, as in 1.2.2.
+- `retex export` skips symlinks, as documented, and now names each skipped
+  symlink on stderr instead of omitting it silently.
+
 ## Upgrade note for fleet auto-update
 
 `retex update --fleet` refuses an upgrade when `list` or `board` output changes

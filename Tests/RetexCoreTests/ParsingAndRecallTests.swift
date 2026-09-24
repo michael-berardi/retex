@@ -65,6 +65,8 @@ final class ParsingAndRecallTests: XCTestCase {
         XCTAssertEqual(several.tags, ["a", "b c"])
         let empty = try store.load(write("empty.md", "---\ntags:\n---\nbody"))
         XCTAssertEqual(empty.tags, [])
+        let quotedList = try store.load(write("quoted-list.md", "---\ntags: \"[work, home]\"\n---\nbody"))
+        XCTAssertEqual(quotedList.tags, ["work", "home"])
     }
 
     func testCreatedScalarTagIsFoundByTagFilter() throws {
