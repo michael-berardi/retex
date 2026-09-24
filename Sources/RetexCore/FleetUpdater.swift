@@ -1,6 +1,13 @@
 #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
 import CUltraCompact
 #endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 public struct FleetVault: Codable, Equatable, Sendable {
@@ -287,11 +294,17 @@ public struct FleetUpgradeVerifier {
         let title = "Retex Fleet Upgrade Probe \(UUID().uuidString)"
         let created = try run(candidate, [
             "create", "--vault", clone.path, "--folder", "RetexFleetProbe",
-            "--type", "note", "--title", title, "--json",
+            "--type", "note", "--title", title, "--raw-json",
         ])
         // The candidate may report the clone through its resolved path (for
         // example when TMPDIR contains a symlink), so accept either spelling.
-        let roots = [clone.standardizedFileURL.path, clone.resolvingSymlinksInPath().path]
+        // Foundation's resolvingSymlinksInPath drops macOS's /private prefix,
+        // so the kernel's realpath spelling is accepted as well.
+        var roots = [clone.standardizedFileURL.path, clone.resolvingSymlinksInPath().path]
+        if let real = realpath(clone.path, nil) {
+            roots.append(String(cString: real))
+            free(real)
+        }
         guard let envelope = try JSONSerialization.jsonObject(with: created) as? [String: Any],
               let data = envelope["data"] as? [String: Any],
               let path = data["path"] as? String,

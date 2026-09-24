@@ -141,7 +141,10 @@ final class ParsingAndRecallTests: XCTestCase {
         XCTAssertThrowsError(try store.load(url)) { error in
             XCTAssertTrue(error.localizedDescription.contains("UTF-8"), error.localizedDescription)
         }
-        XCTAssertEqual(try store.scanWithDiagnostics(vault).unreadable, [url.path])
+        // macOS reports temporary paths as either /var or /private/var.
+        let unreadable = try store.scanWithDiagnostics(vault).unreadable
+            .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        XCTAssertEqual(unreadable, [url.resolvingSymlinksInPath().path])
     }
 
     // MARK: - Accent-insensitive search and recall
