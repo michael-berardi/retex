@@ -1042,7 +1042,13 @@ public struct MarkdownStore {
             metadata[key] = value
 
             if key == "tags" {
-                let trimmedValue = Self.trimmed(rawValue, in: Self.whitespaceAndNewlineCharacters)
+                var trimmedValue = Self.trimmed(rawValue, in: Self.whitespaceAndNewlineCharacters)
+                // A quoted flow list (`tags: "[a, b]"`) read as a list in 1.2.2;
+                // keep that reading instead of splitting the brackets into tags.
+                if !(trimmedValue.hasPrefix("[") && trimmedValue.hasSuffix("]")),
+                   value.hasPrefix("["), value.hasSuffix("]") {
+                    trimmedValue = value
+                }
                 if trimmedValue.hasPrefix("["), trimmedValue.hasSuffix("]") {
                     tags = trimmedValue.dropFirst().dropLast().split(separator: ",").map {
                         cleanValue(String($0))

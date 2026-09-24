@@ -70,7 +70,9 @@ public struct VaultCrypto {
 
     /// Collects portable, non-hidden vault documents and attachments. Retex
     /// state, source code, VCS/editor state, symlinks, and packages are excluded.
-    public static func makeArchive(vaultURL: URL) throws -> Data {
+    /// `skippedSymlink` receives each symlink left out, so callers can report
+    /// the omission instead of producing a silently incomplete backup.
+    public static func makeArchive(vaultURL: URL, skippedSymlink: ((URL) -> Void)? = nil) throws -> Data {
         let lexicalRoot = vaultURL.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
         guard let enumerator = FileManager.default.enumerator(
@@ -85,7 +87,11 @@ public struct VaultCrypto {
         var totalBytes = 0
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-            guard values.isSymbolicLink != true, values.isRegularFile == true else { continue }
+            if values.isSymbolicLink == true {
+                skippedSymlink?(url)
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
             guard portableVaultExtensions.contains(url.pathExtension.lowercased()) else { continue }
             let size = values.fileSize ?? 0
             totalBytes += size

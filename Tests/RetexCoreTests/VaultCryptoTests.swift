@@ -208,7 +208,9 @@ final class VaultCryptoTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: outside) }
 
-        let archive = try VaultCrypto.makeArchive(vaultURL: vaultDir)
+        var skipped: [String] = []
+        let archive = try VaultCrypto.makeArchive(vaultURL: vaultDir) { skipped.append($0.lastPathComponent) }
+        XCTAssertEqual(skipped.sorted(), ["inside-link.md", "outside.md"])
         XCTAssertFalse(String(decoding: archive, as: UTF8.self).contains("outside.md"))
         XCTAssertFalse(String(decoding: archive, as: UTF8.self).contains("inside-link.md"))
         let out = FileManager.default.temporaryDirectory
