@@ -1,3 +1,6 @@
+#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
+import CUltraCompact
+#endif
 import XCTest
 import RetexCore
 
@@ -59,8 +62,17 @@ final class MCPServerTests: XCTestCase {
         ))
     }
 
+    /// Tool results are readable UC when the engine is linked and UC beats
+    /// compact JSON; decode those packets before inspecting the payload.
     private func toolPayload(_ text: String) throws -> [String: Any] {
-        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        var json = text
+        #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
+        if text.hasPrefix("@UC"), let decoded = text.withCString({ uc_decode_json($0) }) {
+            json = String(cString: decoded)
+            uc_free_string(decoded)
+        }
+        #endif
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
 
     func testInitializeHandshake() throws {
