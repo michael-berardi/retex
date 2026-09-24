@@ -493,9 +493,13 @@ enum RetexCLI {
         return try promptPassphrase()
     }
 
+    /// The canonical binary: a `retex` reached through a PATH symlink (such
+    /// as ~/bin/retex) must verify and schedule the file it points to, since
+    /// the fleet verifier refuses symlinked executables.
     private static func executableURL() -> URL {
-        Bundle.main.executableURL?.standardizedFileURL
-            ?? URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
     }
 
     private static func runFleet(_ invocation: Invocation) throws {
