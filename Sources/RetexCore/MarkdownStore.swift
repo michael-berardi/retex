@@ -1,3 +1,10 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// @unchecked Sendable wrapper: contents are confined to one concurrent
@@ -7,7 +14,7 @@ private final class SendableBox<T>: @unchecked Sendable {
     init(_ value: T) { self.value = value }
 }
 
-private struct ASCIINeedle: Sendable {
+struct ASCIINeedle: Sendable {
     let bytes: [UInt8]
     let shifts: [Int]
 
@@ -22,6 +29,49 @@ private struct ASCIINeedle: Sendable {
             }
         }
         self.shifts = shifts
+    }
+}
+
+/// One candidate file for raw-byte term matching. Terms match the file name
+/// or note text case- and diacritic-insensitively.
+private struct RawNoteText {
+    let data: Data
+    let filename: String
+    let filenameData: Data
+    private var decodedState: String??
+    private var foldableState: Bool?
+
+    init(url: URL, data: Data) {
+        self.data = data
+        filename = url.deletingPathExtension().lastPathComponent
+        filenameData = Data(filename.utf8)
+    }
+
+    /// Strictly decoded note text, computed at most once.
+    var decoded: String? {
+        mutating get {
+            if let decodedState { return decodedState }
+            let value = MarkdownStore.decodeUTF8(data)
+            decodedState = .some(value)
+            return value
+        }
+    }
+
+    mutating func contains(_ term: String, needle: ASCIINeedle?) -> Bool {
+        if let needle {
+            if MarkdownStore.containsASCIIInsensitive(filenameData, needle: needle)
+                || MarkdownStore.containsASCIIInsensitive(data, needle: needle) {
+                return true
+            }
+            // Accented Latin letters fold to ASCII ("café" matches "cafe").
+            // Only text containing such letters pays for Unicode comparison.
+            let filenameFolds = MarkdownStore.mayFoldToASCII(filenameData)
+            if foldableState == nil { foldableState = MarkdownStore.mayFoldToASCII(data) }
+            guard filenameFolds || foldableState == true else { return false }
+        }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        return filename.range(of: term, options: options) != nil
+            || decoded?.range(of: term, options: options) != nil
     }
 }
 
@@ -51,7 +101,7 @@ public struct MarkdownStore {
         ranked: Bool = false,
         limit: Int? = nil
     ) throws -> [Note] {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedQuery = query.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters)
         guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
         if let limit, limit <= 0 { throw StoreError.invalidLimit }
 
@@ -83,29 +133,13 @@ public struct MarkdownStore {
             @Sendable func inspect(_ index: Int) {
                 let url = files[index]
                 guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
-                let filename = url.deletingPathExtension().lastPathComponent
-                let filenameData = Data(filename.utf8)
-                var decoded: String?
-
-                for (termIndex, term) in terms.enumerated() {
-                    let isMatch: Bool
-                    if let needle = asciiNeedles[termIndex] {
-                        isMatch = Self.containsASCIIInsensitive(filenameData, needle: needle)
-                            || Self.containsASCIIInsensitive(data, needle: needle)
-                    } else {
-                        if decoded == nil { decoded = String(data: data, encoding: .utf8) }
-                        isMatch = filename.range(
-                            of: term,
-                            options: [.caseInsensitive, .diacriticInsensitive]
-                        ) != nil || decoded?.range(
-                            of: term,
-                            options: [.caseInsensitive, .diacriticInsensitive]
-                        ) != nil
-                    }
-                    if !isMatch { return }
+                var text = RawNoteText(url: url, data: data)
+                for (termIndex, term) in terms.enumerated()
+                where !text.contains(term, needle: asciiNeedles[termIndex]) {
+                    return
                 }
 
-                guard let source = decoded ?? String(data: data, encoding: .utf8) else { return }
+                guard let source = text.decoded else { return }
                 matchesBox.value[index] = try? selfBox.value.note(from: source, at: url)
             }
 
@@ -154,7 +188,7 @@ public struct MarkdownStore {
         includeArchived: Bool = false,
         limit: Int = 20
     ) throws -> [RecallHit] {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedQuery = query.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters)
         guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
         guard limit > 0 else { throw StoreError.invalidLimit }
         try Self.validateDateFilters(onOrBefore)
@@ -185,25 +219,12 @@ public struct MarkdownStore {
             @Sendable func inspect(_ index: Int) {
                 let url = files[index]
                 guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
-                let filenameData = Data(url.deletingPathExtension().lastPathComponent.utf8)
-                var decoded: String?
-                var matched: [String] = []
-                for (termIndex, term) in terms.enumerated() {
-                    let isMatch: Bool
-                    if let needle = asciiNeedles[termIndex] {
-                        isMatch = Self.containsASCIIInsensitive(filenameData, needle: needle)
-                            || Self.containsASCIIInsensitive(data, needle: needle)
-                    } else {
-                        if decoded == nil { decoded = String(data: data, encoding: .utf8) }
-                        isMatch = decoded?.range(
-                            of: term,
-                            options: [.caseInsensitive, .diacriticInsensitive]
-                        ) != nil
-                    }
-                    if isMatch { matched.append(term) }
-                }
+                var text = RawNoteText(url: url, data: data)
+                let matched = terms.indices.filter { termIndex in
+                    text.contains(terms[termIndex], needle: asciiNeedles[termIndex])
+                }.map { terms[$0] }
                 guard !matched.isEmpty,
-                      let source = decoded ?? String(data: data, encoding: .utf8),
+                      let source = text.decoded,
                       let note = try? selfBox.value.note(from: source, at: url),
                       (includeArchived || !note.isArchived),
                       Self.matches(
@@ -367,15 +388,15 @@ public struct MarkdownStore {
 
         if matched.count == terms.count { score += 2_000 }
         if title == phrase { score += 10_000 }
-        else if title.contains(phrase) { score += 4_000 }
-        if body.contains(phrase) { score += 800 }
+        else if Self.foldedContains(title, phrase) { score += 4_000 }
+        if Self.foldedContains(body, phrase) { score += 800 }
         for term in matched {
-            if title.contains(term) { score += 700 }
-            if filename.contains(term) { score += 400 }
-            if tags.contains(where: { $0.contains(term) }) { score += 300 }
-            if metadata.contains(where: { $0.0.contains(term) || $0.1.contains(term) }) { score += 220 }
-            if path.contains(term) { score += 80 }
-            if body.contains(term) { score += 30 }
+            if Self.foldedContains(title, term) { score += 700 }
+            if Self.foldedContains(filename, term) { score += 400 }
+            if tags.contains(where: { Self.foldedContains($0, term) }) { score += 300 }
+            if metadata.contains(where: { Self.foldedContains($0.0, term) || Self.foldedContains($0.1, term) }) { score += 220 }
+            if Self.foldedContains(path, term) { score += 80 }
+            if Self.foldedContains(body, term) { score += 30 }
         }
         return score
     }
@@ -383,32 +404,56 @@ public struct MarkdownStore {
     private static func evidenceExcerpt(_ body: String, terms: [String]) -> String {
         let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard !lines.isEmpty else { return "" }
-        let best = lines.indices.max { left, right in
-            let leftScore = terms.filter {
-                lines[left].range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-            }.count
-            let rightScore = terms.filter {
-                lines[right].range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-            }.count
-            return leftScore < rightScore
-        } ?? lines.startIndex
+        // First line with the most matched terms; each line is scored once.
+        var best = lines.startIndex
+        var bestScore = -1
+        for index in lines.indices {
+            let score = terms.reduce(into: 0) { count, term in
+                if lines[index].range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                    count += 1
+                }
+            }
+            if score > bestScore {
+                best = index
+                bestScore = score
+                if score == terms.count { break }
+            }
+        }
         let excerpt = lines[max(lines.startIndex, best - 1)...min(lines.index(before: lines.endIndex), best + 1)]
             .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: Self.whitespaceAndNewlineCharacters)
         return String(excerpt.prefix(600))
     }
 
-    private static func wikiLinks(in body: String) -> [String] {
+    /// `[[target]]`, `[[target|alias]]`, and `[[target#heading]]` links. A
+    /// link cannot span lines, and a later `[[` restarts the link, so a stray
+    /// bracket in prose or code cannot swallow the real links that follow.
+    static func wikiLinks(in body: String) -> [String] {
         var links: [String] = []
-        var cursor = body.startIndex
-        while let open = body[cursor...].range(of: "[["),
-              let close = body[open.upperBound...].range(of: "]]") {
-            let value = body[open.upperBound..<close.lowerBound]
-                .split(separator: "|", maxSplits: 1)[0]
-                .split(separator: "#", maxSplits: 1)[0]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty { links.append(value) }
-            cursor = close.upperBound
+        let utf8 = body.utf8
+        var open: String.Index?
+        var index = utf8.startIndex
+        while index != utf8.endIndex {
+            let byte = utf8[index]
+            let next = utf8.index(after: index)
+            if byte == 0x0A {
+                open = nil
+            } else if next != utf8.endIndex, byte == UInt8(ascii: "["), utf8[next] == UInt8(ascii: "[") {
+                open = utf8.index(after: next)
+                index = open!
+                continue
+            } else if let start = open, next != utf8.endIndex,
+                      byte == UInt8(ascii: "]"), utf8[next] == UInt8(ascii: "]") {
+                let value = Substring(utf8[start..<index])
+                    .split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                    .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                let trimmed = Self.trimmed(value, in: Self.whitespaceAndNewlineCharacters)
+                if !trimmed.isEmpty { links.append(trimmed) }
+                open = nil
+                index = utf8.index(after: next)
+                continue
+            }
+            index = next
         }
         return links
     }
@@ -427,12 +472,12 @@ public struct MarkdownStore {
 
     private static func lookupKeys(_ rawLink: String) -> [String] {
         let normalized = normalizedLink(rawLink)
-        let filename = normalizedLink(URL(fileURLWithPath: rawLink).lastPathComponent)
+        let filename = normalizedLink((rawLink as NSString).lastPathComponent)
         return normalized == filename ? [normalized] : [normalized, filename]
     }
 
     private static func normalizedLink(_ value: String) -> String {
-        foldedForRanking(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        foldedForRanking(value.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters))
     }
 
     private static let recallStopwords: Set<String> = [
@@ -442,11 +487,34 @@ public struct MarkdownStore {
         "where", "which", "who", "why", "with",
     ]
 
-    private static func foldASCII(_ byte: UInt8) -> UInt8 {
+    static func foldASCII(_ byte: UInt8) -> UInt8 {
         byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
     }
 
-    private static func containsASCIIInsensitive(_ data: Data, needle: ASCIINeedle) -> Bool {
+    /// Whether UTF-8 bytes contain a character that may fold to ASCII under
+    /// case- and diacritic-insensitive comparison: Latin-1 Supplement and
+    /// Latin Extended letters, combining diacritics, Latin Extended
+    /// Additional, and letterlike symbols such as the Kelvin sign.
+    static func mayFoldToASCII(_ data: Data) -> Bool {
+        data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var index = 0
+            while index < bytes.count {
+                let byte = bytes[index]
+                if byte >= 0xC3 && byte <= 0xC9 || byte == 0xCC || byte == 0xCD { return true }
+                if byte == 0xE1 || byte == 0xE2, index + 1 < bytes.count {
+                    let next = bytes[index + 1]
+                    if byte == 0xE1 && next >= 0xB8 && next <= 0xBB || byte == 0xE2 && next == 0x84 {
+                        return true
+                    }
+                }
+                index += 1
+            }
+            return false
+        }
+    }
+
+    static func containsASCIIInsensitive(_ data: Data, needle: ASCIINeedle) -> Bool {
         let pattern = needle.bytes
         guard !pattern.isEmpty else { return true }
         guard data.count >= pattern.count else { return false }
@@ -467,11 +535,79 @@ public struct MarkdownStore {
     }
 
 
-    private static func foldedForRanking(_ value: String) -> String {
-        value.folding(
-            options: [.caseInsensitive, .diacriticInsensitive],
-            locale: Locale(identifier: "en_US_POSIX")
-        )
+    private static let rankingLocale = Locale(identifier: "en_US_POSIX")
+
+    /// Case- and diacritic-insensitive folding for ranking. ASCII is folded
+    /// natively; only non-ASCII runs go through Foundation (memoized, since
+    /// punctuation and accented letters repeat). Each run is folded together
+    /// with the ASCII character before it, so a combining mark keeps its base
+    /// ("e" + U+0301 folds to "e") and the result equals folding the whole
+    /// string, which on Linux cost more than the rest of recall combined.
+    static func foldedForRanking(_ value: String) -> String {
+        var value = value
+        return value.withUTF8 { bytes -> String in
+            guard bytes.contains(where: { $0 >= 0x41 && ($0 <= 0x5A || $0 >= 0x80) }) else {
+                return String(decoding: bytes, as: UTF8.self)
+            }
+            var output: [UInt8] = []
+            output.reserveCapacity(bytes.count)
+            // Keyed by exact bytes: String equality is canonical equivalence.
+            var foldedRuns: [[UInt8]: String] = [:]
+            var index = 0
+            while index < bytes.count {
+                let byte = bytes[index]
+                if byte < 0x80 {
+                    output.append(foldASCII(byte))
+                    index += 1
+                    continue
+                }
+                var start = index
+                if start > 0 {
+                    output.removeLast()
+                    start -= 1
+                }
+                var end = index + 1
+                while end < bytes.count, bytes[end] >= 0x80 { end += 1 }
+                let key = Array(bytes[start..<end])
+                let folded: String
+                if let cached = foldedRuns[key] {
+                    folded = cached
+                } else {
+                    folded = String(decoding: key, as: UTF8.self)
+                        .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: rankingLocale)
+                    foldedRuns[key] = folded
+                }
+                output.append(contentsOf: folded.utf8)
+                index = end
+            }
+            return String(decoding: output, as: UTF8.self)
+        }
+    }
+
+    /// Substring test for folded ranking text. ASCII needles use a byte
+    /// search (ASCII bytes never occur inside multi-byte UTF-8 sequences);
+    /// other needles keep Foundation's comparison.
+    static func foldedContains(_ haystack: String, _ needle: String) -> Bool {
+        guard !needle.isEmpty else { return false }
+        guard needle.utf8.allSatisfy({ $0 < 0x80 }) else { return haystack.contains(needle) }
+        var haystack = haystack
+        var needle = needle
+        return haystack.withUTF8 { text in
+            needle.withUTF8 { pattern in
+                guard pattern.count <= text.count else { return false }
+                let first = pattern[0]
+                var index = 0
+                let last = text.count - pattern.count
+                while index <= last {
+                    if text[index] == first,
+                       UnsafeBufferPointer(rebasing: text[index..<(index + pattern.count)]).elementsEqual(pattern) {
+                        return true
+                    }
+                    index += 1
+                }
+                return false
+            }
+        }
     }
 
     private static func relevanceScore(_ note: Note, phrase: String, terms: [String]) -> Int {
@@ -484,19 +620,19 @@ public struct MarkdownStore {
         var score = 0
 
         if title == phrase { score += 10_000 }
-        else if title.contains(phrase) { score += 4_000 }
+        else if Self.foldedContains(title, phrase) { score += 4_000 }
         if filename == phrase { score += 3_000 }
-        else if filename.contains(phrase) { score += 1_500 }
+        else if Self.foldedContains(filename, phrase) { score += 1_500 }
         if tags.contains(phrase) { score += 1_000 }
         if metadata.contains(where: { $0.0 == phrase || $0.1 == phrase }) { score += 800 }
 
         for term in terms {
-            if title.contains(term) { score += 300 }
-            if filename.contains(term) { score += 200 }
-            if tags.contains(where: { $0.contains(term) }) { score += 120 }
-            if metadata.contains(where: { $0.0.contains(term) || $0.1.contains(term) }) { score += 80 }
-            if path.contains(term) { score += 40 }
-            if body.contains(term) { score += 10 }
+            if Self.foldedContains(title, term) { score += 300 }
+            if Self.foldedContains(filename, term) { score += 200 }
+            if tags.contains(where: { Self.foldedContains($0, term) }) { score += 120 }
+            if metadata.contains(where: { Self.foldedContains($0.0, term) || Self.foldedContains($0.1, term) }) { score += 80 }
+            if Self.foldedContains(path, term) { score += 40 }
+            if Self.foldedContains(body, term) { score += 10 }
         }
         return score
     }
@@ -514,7 +650,9 @@ public struct MarkdownStore {
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            // No prefetched keys: the parser stats each file itself, and
+            // prefetching doubled enumeration cost on large vaults.
+            includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             throw StoreError.unreadableVault(root)
@@ -586,23 +724,72 @@ public struct MarkdownStore {
 
 
     public func load(_ url: URL) throws -> Note {
-        try note(from: String(contentsOf: url, encoding: .utf8), at: url)
+        let data = try Data(contentsOf: url)
+        guard let source = Self.decodeUTF8(data) else {
+            throw StoreError.invalidEncoding(url)
+        }
+        return try note(from: source, at: url)
+    }
+
+    /// Strict UTF-8 decoding with the same contract as
+    /// `String(contentsOf:encoding: .utf8)`: a leading byte-order mark is
+    /// dropped and malformed input is rejected rather than repaired. The
+    /// Foundation path is several times slower on Linux, where it dominated
+    /// full-vault scans.
+    static func decodeUTF8(_ data: Data) -> String? {
+        data.withUnsafeBytes { raw -> String? in
+            var bytes = raw.bindMemory(to: UInt8.self)
+            if bytes.count >= 3, bytes[0] == 0xEF, bytes[1] == 0xBB, bytes[2] == 0xBF {
+                bytes = UnsafeBufferPointer(rebasing: bytes[3...])
+            }
+            var string = String(decoding: bytes, as: UTF8.self)
+            // Decoding only ever repairs by substituting U+FFFD, so unchanged
+            // bytes prove the input was valid UTF-8.
+            let unchanged = string.withUTF8 { decoded in decoded.elementsEqual(bytes) }
+            return unchanged ? string : nil
+        }
     }
 
     private func note(from source: String, at url: URL) throws -> Note {
-        let lines = normalizedLines(source)
-        let attributes = try url.resourceValues(forKeys: [.contentModificationDateKey])
+        let modifiedAt = try Self.modificationDate(of: url)
         var metadata: [String: String] = [:]
         var tags: [String] = []
-        var bodyStart = 0
+        var bodySource = source[...]
 
-        if lines.first == "---", let closingIndex = lines.dropFirst().firstIndex(of: "---") {
-            parseFrontmatter(Array(lines[1..<closingIndex]), metadata: &metadata, tags: &tags)
-            bodyStart = closingIndex + 1
+        // Only front-matter lines are materialized; the body is sliced from
+        // the source. Semantics match splitting every CRLF-normalized line.
+        var frontmatter: [String] = []
+        var isFirstLine = true
+        var closed = false
+        Self.forEachLine(in: source[...]) { line, rest in
+            if isFirstLine {
+                isFirstLine = false
+                return line == "---"
+            }
+            if line == "---" {
+                closed = true
+                bodySource = rest
+                return false
+            }
+            frontmatter.append(String(line))
+            return true
+        }
+        if closed {
+            parseFrontmatter(frontmatter, metadata: &metadata, tags: &tags)
+        } else {
+            bodySource = source[...]
         }
 
-        let body = lines.dropFirst(bodyStart).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        let heading = lines.dropFirst(bodyStart).first { $0.hasPrefix("# ") }?.dropFirst(2)
+        let normalizedBody = bodySource.utf8.contains(0x0D)
+            ? normalizedLines(String(bodySource)).joined(separator: "\n")
+            : String(bodySource)
+        let body = Self.trimmed(normalizedBody, in: Self.whitespaceAndNewlineCharacters)
+        var heading: Substring?
+        Self.forEachLine(in: bodySource) { line, _ in
+            guard line.hasPrefix("# ") else { return true }
+            heading = line.dropFirst(2)
+            return false
+        }
         let title = metadata["title"] ?? heading.map(String.init) ?? url.deletingPathExtension().lastPathComponent
 
         return Note(
@@ -612,8 +799,74 @@ public struct MarkdownStore {
             body: body,
             metadata: metadata,
             tags: tags,
-            modifiedAt: attributes.contentModificationDate ?? .distantPast
+            modifiedAt: modifiedAt
         )
+    }
+
+    /// Visits LF-delimited lines with a trailing CR removed (CRLF-normalized
+    /// lines) plus the text after each line's newline. Stops when `visit`
+    /// returns false. A final line without a newline is visited with an
+    /// empty remainder.
+    static func forEachLine(
+        in text: Substring,
+        _ visit: (_ line: Substring, _ rest: Substring) -> Bool
+    ) {
+        let utf8 = text.utf8
+        var start = utf8.startIndex
+        var index = start
+        while index != utf8.endIndex {
+            if utf8[index] == 0x0A {
+                var end = index
+                if end != start, utf8[utf8.index(before: end)] == 0x0D {
+                    end = utf8.index(before: end)
+                }
+                let next = utf8.index(after: index)
+                guard visit(Substring(utf8[start..<end]), Substring(utf8[next...])) else { return }
+                start = next
+            }
+            index = utf8.index(after: index)
+        }
+        _ = visit(Substring(utf8[start...]), text[text.endIndex...])
+    }
+
+    /// Modification time of the directory entry itself (symlinks are not
+    /// followed), matching `URLResourceValues.contentModificationDate` at a
+    /// fraction of its per-file cost.
+    static func modificationDate(of url: URL) throws -> Date {
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+        var info = stat()
+        if lstat(url.path, &info) == 0 {
+            #if canImport(Darwin)
+            let time = info.st_mtimespec
+            #else
+            let time = info.st_mtim
+            #endif
+            return Date(timeIntervalSince1970: Double(time.tv_sec) + Double(time.tv_nsec) / 1_000_000_000)
+        }
+        #endif
+        return try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            ?? .distantPast
+    }
+
+    /// Unicode-scalar trim equivalent to `trimmingCharacters(in:)` for the
+    /// whitespace sets Retex uses, without bridging through NSString.
+    static func trimmed(_ value: String, in set: CharacterSet) -> String {
+        trimmed(value[...], in: set)
+    }
+
+    static func trimmed(_ value: Substring, in set: CharacterSet) -> String {
+        let scalars = value.unicodeScalars
+        var lower = scalars.startIndex
+        var upper = scalars.endIndex
+        while lower < upper, set.contains(scalars[lower]) {
+            lower = scalars.index(after: lower)
+        }
+        while upper > lower {
+            let previous = scalars.index(before: upper)
+            guard set.contains(scalars[previous]) else { break }
+            upper = previous
+        }
+        return String(Substring(scalars[lower..<upper]))
     }
 
     public func createNote(
@@ -623,7 +876,7 @@ public struct MarkdownStore {
         metadata: [String: String],
         body: String
     ) throws -> Note {
-        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTitle = title.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters)
         guard !cleanTitle.isEmpty else { throw StoreError.invalidTitle }
 
         let directory = try confinedDirectory(in: vault, folder: folder)
@@ -635,7 +888,7 @@ public struct MarkdownStore {
         let frontmatter = orderedMetadata.keys.sorted().map {
             "\($0): \(serializedScalar(orderedMetadata[$0, default: ""]))"
         }
-        let cleanBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanBody = body.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters)
         let source = (["---"] + frontmatter + ["---", "", cleanBody, ""]).joined(separator: "\n")
         try source.write(to: url, atomically: true, encoding: .utf8)
         return try load(url)
@@ -692,7 +945,7 @@ public struct MarkdownStore {
                     while continuationIndex < insertionIndex {
                         let continuation = lines[continuationIndex]
                         let isNestedValue = continuation.first?.isWhitespace == true
-                            || continuation.trimmingCharacters(in: .whitespaces).hasPrefix("- ")
+                            || continuation.trimmingCharacters(in: Self.whitespaceCharacters).hasPrefix("- ")
                         guard isNestedValue else { break }
                         lines.remove(at: continuationIndex)
                         insertionIndex -= 1
@@ -723,57 +976,185 @@ public struct MarkdownStore {
     }
 
 
+    /// Reads the flat, string-valued subset of YAML that Retex models. Only
+    /// unindented `key: value` lines are properties; nested mappings and
+    /// list items stay with their parent key instead of leaking to the top
+    /// level. `tags` accepts flow lists, block lists, and scalars, and block
+    /// scalars (`|`, `>`) become their text.
     private func parseFrontmatter(
         _ lines: [String],
         metadata: inout [String: String],
         tags: inout [String]
     ) {
         var activeKey: String?
+        var block: (key: String, folded: Bool, lines: [String])?
+
+        func finishBlock() {
+            guard let pending = block else { return }
+            block = nil
+            let indent = pending.lines
+                .filter { !Self.trimmed($0, in: Self.whitespaceCharacters).isEmpty }
+                .map { $0.prefix { $0 == " " || $0 == "\t" }.count }
+                .min() ?? 0
+            let content = pending.lines.map { String($0.dropFirst(indent)) }
+            let text: String
+            if pending.folded {
+                text = content.reduce(into: "") { result, line in
+                    if line.isEmpty {
+                        result += "\n"
+                    } else {
+                        if !result.isEmpty, !result.hasSuffix("\n") { result += " " }
+                        result += line
+                    }
+                }
+            } else {
+                text = content.joined(separator: "\n")
+            }
+            metadata[pending.key] = Self.trimmed(text, in: Self.whitespaceAndNewlineCharacters)
+        }
 
         for rawLine in lines {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("- "), activeKey == "tags" {
-                tags.append(cleanValue(String(line.dropFirst(2))))
+            let isIndented = rawLine.first == " " || rawLine.first == "\t"
+            let line = Self.trimmed(rawLine, in: Self.whitespaceCharacters)
+            if block != nil {
+                if isIndented || line.isEmpty {
+                    block?.lines.append(rawLine)
+                    continue
+                }
+                finishBlock()
+            }
+            if line.hasPrefix("- ") {
+                if activeKey == "tags" {
+                    tags.append(cleanValue(String(line.dropFirst(2))))
+                }
                 continue
             }
-
-            guard let separator = line.firstIndex(of: ":") else { continue }
-            let key = String(line[..<separator]).trimmingCharacters(in: .whitespaces)
-            let value = cleanValue(String(line[line.index(after: separator)...]))
+            guard !isIndented, let separator = line.firstIndex(of: ":") else { continue }
+            let key = Self.trimmed(line[..<separator], in: Self.whitespaceCharacters)
+            let rawValue = String(line[line.index(after: separator)...])
             activeKey = key
+            if let indicator = Self.blockScalarIndicator(rawValue) {
+                metadata[key] = ""
+                block = (key, indicator == ">", [])
+                continue
+            }
+            let value = cleanValue(rawValue)
             metadata[key] = value
 
-            if key == "tags", value.hasPrefix("["), value.hasSuffix("]") {
-                tags = value.dropFirst().dropLast().split(separator: ",").map {
-                    cleanValue(String($0))
+            if key == "tags" {
+                let trimmedValue = Self.trimmed(rawValue, in: Self.whitespaceAndNewlineCharacters)
+                if trimmedValue.hasPrefix("["), trimmedValue.hasSuffix("]") {
+                    tags = trimmedValue.dropFirst().dropLast().split(separator: ",").map {
+                        cleanValue(String($0))
+                    }.filter { !$0.isEmpty }
+                } else if !value.isEmpty {
+                    tags = value.split(separator: ",").map { cleanValue(String($0)) }.filter { !$0.isEmpty }
                 }
             }
         }
+        finishBlock()
+    }
+
+    /// `|` or `>` with optional chomping and indentation indicators.
+    private static func blockScalarIndicator(_ rawValue: String) -> Character? {
+        let value = trimmed(rawValue, in: whitespaceCharacters)
+        guard let first = value.first, first == "|" || first == ">",
+              value.dropFirst().allSatisfy({ $0 == "+" || $0 == "-" || ("1"..."9").contains($0) }),
+              value.count <= 3
+        else { return nil }
+        return first
     }
 
     private func replacingBody(in source: String, with body: String) -> String {
         let lines = normalizedLines(source)
         guard lines.first == "---", let closingIndex = lines.dropFirst().firstIndex(of: "---") else {
-            return body.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+            return body.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters) + "\n"
         }
 
         let frontmatter = lines[...closingIndex].joined(separator: "\n")
-        return frontmatter + "\n\n" + body.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+        return frontmatter + "\n\n" + body.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters) + "\n"
     }
 
+    /// Splits on LF and drops the CR of each CRLF pair, identical to
+    /// replacing CRLF with LF and splitting on LF. Lone CRs are preserved.
     private func normalizedLines(_ source: String) -> [String] {
-        source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        let utf8 = source.utf8
+        var lines: [String] = []
+        var start = utf8.startIndex
+        var index = start
+        while index != utf8.endIndex {
+            if utf8[index] == 0x0A {
+                var end = index
+                if end != start, utf8[utf8.index(before: end)] == 0x0D {
+                    end = utf8.index(before: end)
+                }
+                lines.append(String(Substring(utf8[start..<end])))
+                start = utf8.index(after: index)
+            }
+            index = utf8.index(after: index)
+        }
+        lines.append(String(Substring(utf8[start..<utf8.endIndex])))
+        return lines
     }
 
+    /// Scalar value with YAML quoting removed: double-quoted values are
+    /// unescaped and single-quoted values collapse doubled quotes.
     private func cleanValue(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        let value = Self.trimmed(value, in: Self.whitespaceAndNewlineCharacters)
+        guard value.utf8.count >= 2, let first = value.first, first == value.last else { return value }
+        let inner = value.dropFirst().dropLast()
+        switch first {
+        case "\"": return Self.unescapedDoubleQuoted(inner)
+        case "'": return inner.replacingOccurrences(of: "''", with: "'")
+        default: return value
+        }
     }
 
+    private static func unescapedDoubleQuoted(_ value: Substring) -> String {
+        guard value.contains("\\") else { return String(value) }
+        var result = ""
+        var iterator = value.makeIterator()
+        while let character = iterator.next() {
+            guard character == "\\" else {
+                result.append(character)
+                continue
+            }
+            guard let escaped = iterator.next() else {
+                result.append(character)
+                break
+            }
+            switch escaped {
+            case "\\": result.append("\\")
+            case "\"": result.append("\"")
+            case "/": result.append("/")
+            default:
+                // Other escapes stay verbatim: earlier Retex versions wrote
+                // backslashes unescaped, so "C:\temp" must keep reading as
+                // a path, not a tab.
+                result.append(character)
+                result.append(escaped)
+            }
+        }
+        return result
+    }
+
+    // Cached: Foundation rebuilds these sets on every access on Linux.
+    static let whitespaceCharacters = CharacterSet.whitespaces
+    static let whitespaceAndNewlineCharacters = CharacterSet.whitespacesAndNewlines
+
+    /// Plain YAML when unambiguous; otherwise a double-quoted scalar that
+    /// Retex and standard YAML parsers both read back to the same string.
+    /// `[a, b]` values pass through as flow lists (used for tags).
     private func serializedScalar(_ value: String) -> String {
         if value.hasPrefix("["), value.hasSuffix("]") { return value }
-        guard value.contains(where: { ":#{}[]\n".contains($0) }) else { return value }
-        return "\"\(value.replacingOccurrences(of: "\"", with: "\\\""))\""
+        let needsQuotes = value.contains(where: { ":#{}[]\n\t\"".contains($0) })
+            || value.first.map { "-?,'&*!|>%@`".contains($0) || $0.isWhitespace } == true
+            || value.last?.isWhitespace == true
+        guard needsQuotes else { return value }
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     private func confinedDirectory(in vault: Vault, folder: String) throws -> URL {
@@ -844,6 +1225,7 @@ public enum StoreError: LocalizedError {
     case staleNote(URL, expected: String, actual: String)
     case invalidDateFilter(String, String)
     case historyUnwritable(URL)
+    case invalidEncoding(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -861,6 +1243,7 @@ public enum StoreError: LocalizedError {
             "Front-matter date filter \(key)=\(value) must use a valid YYYY-MM-DD date."
         case .corruptHistory(let url): "Retex found a corrupt undo journal entry at \(url.path)."
         case .historyUnwritable(let url): "Retex could not write the undo journal at \(url.path)."
+        case .invalidEncoding(let url): "Retex could not read \(url.path) as UTF-8 text."
         }
     }
 }

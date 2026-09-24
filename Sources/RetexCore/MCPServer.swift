@@ -1,6 +1,13 @@
 #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
 import CUltraCompact
 #endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// Minimal MCP (Model Context Protocol) server over stdio, zero dependencies.
@@ -79,20 +86,24 @@ public struct MCPServer {
     /// JSON-RPC messages to stdout; diagnostics belong on stderr.
     public func run() throws {
         var buffer = Data()
+        // After an oversized request is rejected, its remaining bytes up to
+        // the next newline are dropped instead of parsed as a new request.
+        var discardingOversizedLine = false
         while true {
             let chunk = input.availableData
             guard !chunk.isEmpty else { break }
             buffer.append(chunk)
 
-            while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                let lineData = buffer[buffer.startIndex..<newline]
-                buffer.removeSubrange(buffer.startIndex...newline)
+            var lineStart = buffer.startIndex
+            while let newline = buffer[lineStart...].firstIndex(of: UInt8(ascii: "\n")) {
+                let lineData = buffer[lineStart..<newline]
+                lineStart = buffer.index(after: newline)
+                if discardingOversizedLine {
+                    discardingOversizedLine = false
+                    continue
+                }
                 guard lineData.count <= 1_048_576 else {
-                    writeLine([
-                        "jsonrpc": "2.0",
-                        "id": NSNull(),
-                        "error": ["code": -32700, "message": "Request exceeds 1048576 bytes"],
-                    ])
+                    writeOversizedRequestError()
                     continue
                 }
                 let raw = String(data: Data(lineData), encoding: .utf8)?
@@ -110,15 +121,22 @@ public struct MCPServer {
                 }
                 handle(request)
             }
+            // Consumed lines are dropped once per chunk, not once per line.
+            buffer.removeSubrange(buffer.startIndex..<lineStart)
             if buffer.count > 1_048_576 {
-                writeLine([
-                    "jsonrpc": "2.0",
-                    "id": NSNull(),
-                    "error": ["code": -32700, "message": "Request exceeds 1048576 bytes"],
-                ])
+                if !discardingOversizedLine { writeOversizedRequestError() }
+                discardingOversizedLine = true
                 buffer.removeAll(keepingCapacity: false)
             }
         }
+    }
+
+    private func writeOversizedRequestError() {
+        writeLine([
+            "jsonrpc": "2.0",
+            "id": NSNull(),
+            "error": ["code": -32700, "message": "Request exceeds 1048576 bytes"],
+        ])
     }
 
     // MARK: - Wire types
@@ -309,9 +327,23 @@ public struct MCPServer {
     }
 
     private func notesInVault() throws -> [Note] {
-        try store.scan(vault).filter { note in
-            (try? confinedURL(note.url.path)) != nil
+        try store.scan(vault).filter(isConfined)
+    }
+
+    /// Scanned notes sit lexically under the vault and the scanner never
+    /// descends symlinked directories, so only a symlinked note file can point
+    /// outside; everything else skips the two `realpath` calls per note.
+    private func isConfined(_ note: Note) -> Bool {
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+        var info = stat()
+        if lstat(note.url.path, &info) == 0,
+           (info.st_mode & S_IFMT) != S_IFLNK,
+           note.url.pathExtension.lowercased() == "md",
+           isWithinVault(note.url, root: vault.url) {
+            return true
         }
+        #endif
+        return (try? confinedURL(note.url.path)) != nil
     }
 
     private func dispatchTool(
@@ -339,9 +371,7 @@ public struct MCPServer {
                 vault,
                 query: query,
                 ranked: (arg("ranked") ?? "false").lowercased() == "true"
-            ).filter { note in
-                (try? confinedURL(note.url.path)) != nil
-            }
+            ).filter(isConfined)
             if let requestedLimit {
                 notes = Array(notes.prefix(requestedLimit))
             }
@@ -481,19 +511,20 @@ public struct MCPServer {
                 onOrAfter: try dateFilters(arg("on_or_after")),
                 includeArchived: includeArchived,
                 limit: limit
-            ).filter {
-                (try? confinedURL($0.note.url.path)) != nil
-            }
+            ).filter { isConfined($0.note) }
             let encoder = JSONEncoder()
             var records: [JSONValue] = []
+            // A compact JSON array is "[", its elements joined by ",", and
+            // "]", so each record is encoded once, not the growing array.
+            var usedBytes = 2
             for hit in hits {
-                let candidate = records + [Self.recallJSON(hit)]
-                guard let bytes = try? encoder.encode(candidate).count, bytes <= budget else {
-                    continue
-                }
-                records = candidate
+                let record = Self.recallJSON(hit)
+                guard let recordBytes = try? encoder.encode(record).count else { continue }
+                let candidateBytes = usedBytes + recordBytes + (records.isEmpty ? 0 : 1)
+                guard candidateBytes <= budget else { continue }
+                records.append(record)
+                usedBytes = candidateBytes
             }
-            let usedBytes = (try? encoder.encode(records).count) ?? 0
             return .object([
                 "query": .string(query),
                 "budgetBytes": .string(String(budget)),
@@ -506,8 +537,8 @@ public struct MCPServer {
             guard let path = arg("path") else { throw ToolError(message: "get_links requires path") }
             let limit = try positiveLimit(arg("limit")) ?? 100
             let graph = try store.links(vault, for: confinedURL(path))
-            let allOutgoing = graph.outgoing.filter { (try? confinedURL($0.url.path)) != nil }
-            let allBacklinks = graph.backlinks.filter { (try? confinedURL($0.url.path)) != nil }
+            let allOutgoing = graph.outgoing.filter(isConfined)
+            let allBacklinks = graph.backlinks.filter(isConfined)
             let outgoing = Array(allOutgoing.prefix(limit))
             let backlinks = Array(allBacklinks.prefix(limit))
             return .object([

@@ -2,6 +2,8 @@
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #elseif canImport(WinSDK)
 import WinSDK
 #endif
@@ -358,7 +360,17 @@ enum RetexCLI {
             if sourceURL.pathExtension.lowercased() == "retex", invocation.option("format") == nil {
                 let passphrase = try Self.passphrase(invocation)
                 let blob = try Data(contentsOf: sourceURL)
-                let archive = try VaultCrypto().decrypt(blob, passphrase: passphrase)
+                let archive: Data
+                do {
+                    archive = try VaultCrypto().decrypt(blob, passphrase: passphrase)
+                } catch VaultCrypto.CryptoError.wrongPassphrase
+                    where passphrase.trimmingCharacters(in: .whitespaces) != passphrase {
+                    // Earlier prompts trimmed surrounding spaces before export.
+                    archive = try VaultCrypto().decrypt(
+                        blob,
+                        passphrase: passphrase.trimmingCharacters(in: .whitespaces)
+                    )
+                }
                 let files = try VaultCrypto.restoreArchive(archive, into: destinationURL)
                 _ = try UndoHistory.prepare(for: Vault(url: destinationURL))
                 let notes = try store.scan(Vault(url: destinationURL)).count
@@ -443,10 +455,29 @@ enum RetexCLI {
 
     private static func promptPassphrase() throws -> String {
         FileHandle.standardError.write(Data("Passphrase: ".utf8))
-        guard let line = String(data: FileHandle.standardInput.availableData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+        // Do not echo the passphrase on an interactive terminal.
+        var original = termios()
+        let isTerminal = isatty(STDIN_FILENO) == 1 && tcgetattr(STDIN_FILENO, &original) == 0
+        if isTerminal {
+            var silent = original
+            silent.c_lflag &= ~tcflag_t(ECHO)
+            _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &silent)
+        }
+        defer {
+            if isTerminal {
+                _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &original)
+                FileHandle.standardError.write(Data("\n".utf8))
+            }
+        }
+        #endif
+        guard var line = readLine(strippingNewline: true) else {
             throw UsageError("A non-empty passphrase is required")
         }
+        // Only the line terminator is removed, matching --passphrase-env:
+        // spaces are part of the passphrase.
+        if line.hasSuffix("\r") { line.removeLast() }
+        guard !line.isEmpty else { throw UsageError("A non-empty passphrase is required") }
         return line
     }
 
@@ -476,10 +507,11 @@ enum RetexCLI {
                 "Registered \(vault.url.path) (\(result.vaults.count) fleet vaults; auto-update \(invocation.flag("auto-update") ? "on" : "off"))"
             }
         case "unregister":
-            let vault = try invocation.vault()
-            let document = try registry.unregister(path: vault.url.path)
+            // Accept a vault that no longer exists so a deleted vault can be removed.
+            let path = try invocation.requiredOption("vault")
+            let document = try registry.unregister(path: path)
             try output(document, json: invocation.isJSON) { result in
-                "Unregistered \(vault.url.path) (\(result.vaults.count) fleet vaults remain)"
+                "Unregistered \(path) (\(result.vaults.count) fleet vaults remain)"
             }
         case "status":
             let document = try registry.load()
@@ -694,6 +726,11 @@ enum RetexCLI {
             } else {
                 for path in markdown { print("changed \(path)") }
             }
+            // Events must reach pipes and log files as they happen, not when
+            // a block buffer fills or is lost at termination.
+            #if !os(Windows)
+            fflush(nil)
+            #endif
         }
         try watcher.start()
         dispatchMain()
@@ -728,15 +765,17 @@ enum RetexCLI {
         var journalOk = true
         if FileManager.default.fileExists(atPath: journalURL.path) {
             do {
-                let raw = try String(contentsOf: journalURL, encoding: .utf8)
-                for line in raw.split(separator: "\n", omittingEmptySubsequences: false) where !line.isEmpty {
-                    guard let data = String(line).data(using: .utf8),
-                          (try? JSONDecoder().decode(UndoHistory.Entry.self, from: data)) != nil
-                    else {
-                        journalOk = false
-                        issues.append("Corrupt history entry at \(journalURL.path)")
-                        break
-                    }
+                let raw = try Data(contentsOf: journalURL)
+                let lines = raw.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+                let decoder = JSONDecoder()
+                for (index, line) in lines.enumerated()
+                where (try? decoder.decode(UndoHistory.Entry.self, from: line)) == nil {
+                    // An unterminated final line is a torn append that the
+                    // next write repairs; the journal reader skips it too.
+                    if index == lines.count - 1, raw.last != UInt8(ascii: "\n") { break }
+                    journalOk = false
+                    issues.append("Corrupt history entry at \(journalURL.path)")
+                    break
                 }
             } catch {
                 journalOk = false
@@ -859,14 +898,17 @@ enum RetexCLI {
     ) -> RecallOutput {
         let encoder = JSONEncoder()
         var records: [RecallRecord] = []
+        // A compact JSON array is "[", its elements joined by ",", and "]",
+        // so each record is encoded once instead of re-encoding the array.
+        var usedBytes = 2
         for hit in hits {
-            let candidate = records + [RecallRecord(hit)]
-            guard let bytes = try? encoder.encode(candidate).count, bytes <= budget else {
-                continue
-            }
-            records = candidate
+            let record = RecallRecord(hit)
+            guard let recordBytes = try? encoder.encode(record).count else { continue }
+            let candidateBytes = usedBytes + recordBytes + (records.isEmpty ? 0 : 1)
+            guard candidateBytes <= budget else { continue }
+            records.append(record)
+            usedBytes = candidateBytes
         }
-        let usedBytes = (try? encoder.encode(records).count) ?? 0
         return RecallOutput(
             query: query,
             budgetBytes: budget,
@@ -878,15 +920,16 @@ enum RetexCLI {
 
     private static func writeError(_ message: String, code: Int, json: Bool, lean: Bool) {
         let payload: String
+        // Sorted keys keep error output byte-stable across runs.
+        let sortedEncoder = JSONEncoder()
+        sortedEncoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         if json, lean {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-            if let data = try? encoder.encode(FailureResponse.Detail(code: code, message: message)) {
+            if let data = try? sortedEncoder.encode(FailureResponse.Detail(code: code, message: message)) {
                 payload = String(decoding: data, as: UTF8.self) + "\n"
             } else {
                 payload = "retex: \(message)\n"
             }
-        } else if json, let data = try? JSONEncoder().encode(FailureResponse(error: .init(code: code, message: message))) {
+        } else if json, let data = try? sortedEncoder.encode(FailureResponse(error: .init(code: code, message: message))) {
             payload = String(decoding: data, as: UTF8.self) + "\n"
         } else {
             payload = "retex: \(message)\n"
