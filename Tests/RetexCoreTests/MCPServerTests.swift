@@ -357,4 +357,51 @@ final class MCPServerTests: XCTestCase {
         let error = try XCTUnwrap(responses[0]["error"] as? [String: Any])
         XCTAssertEqual(error["code"] as? Int, -32601)
     }
+    func testOversizedRequestYieldsOneErrorAndLaterRequestsStillWork() throws {
+        let oversized = #"{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":""# + String(repeating: "x", count: 3_000_000) + #""}}"#
+        let responses = try call([
+            oversized,
+            #"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+        ])
+        XCTAssertEqual(responses.count, 2)
+        XCTAssertNotNil(responses[0]["error"])
+        XCTAssertEqual(responses[1]["id"] as? Int, 2)
+        XCTAssertNotNil(responses[1]["result"])
+    }
+
+    func testGetLinksSurvivesEmptyWikiLinks() throws {
+        try "# Broken\n\nempty [[]] and [[|x]] then [[Acme redesign]]\n"
+            .write(to: vaultDir.appendingPathComponent("broken.md"), atomically: true, encoding: .utf8)
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_links","arguments":{"path":"broken.md"}}}"#,
+            #"{"jsonrpc":"2.0","id":4,"method":"ping"}"#,
+        ], readOnly: true)
+        XCTAssertEqual(responses.count, 2)
+        let payload = try toolPayload(try resultText(responses[0]))
+        let outgoing = try XCTUnwrap(payload["outgoing"] as? [[String: Any]])
+        XCTAssertEqual(outgoing.map { $0["title"] as? String }, ["Acme redesign"])
+    }
+
+    func testListKeepsSymlinksInsideTheVaultAndDropsEscapes() throws {
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-outside-\(UUID().uuidString).md")
+        try "# Outside".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(
+            at: vaultDir.appendingPathComponent("escape.md"),
+            withDestinationURL: outside
+        )
+        try FileManager.default.createSymbolicLink(
+            at: vaultDir.appendingPathComponent("alias.md"),
+            withDestinationURL: vaultDir.appendingPathComponent("Deals/acme-redesign.md")
+        )
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_notes","arguments":{}}}"#,
+        ], readOnly: true)
+        let notes = try XCTUnwrap(try toolPayload(try resultText(responses[0]))["notes"] as? String)
+        XCTAssertTrue(notes.contains("alias.md"))
+        XCTAssertTrue(notes.contains("acme-redesign.md"))
+        XCTAssertFalse(notes.contains("escape.md"))
+        XCTAssertFalse(notes.contains("Outside"))
+    }
 }

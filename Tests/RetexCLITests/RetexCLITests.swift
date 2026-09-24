@@ -519,4 +519,132 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(writable.status, 0)
         XCTAssertTrue(try toolNames(writable.stdout).contains("create_note"))
     }
+    // MARK: - Hardening regressions
+
+    func testErrorJSONKeysAreSortedAndStable() throws {
+        let (status, _, stderr) = try run(["list", "--raw-json"])
+        XCTAssertEqual(status, 64)
+        XCTAssertTrue(stderr.hasPrefix(#"{"error":{"code":64,"message":"#), stderr)
+        XCTAssertTrue(stderr.contains(#""ok":false,"schema_version":1}"#), stderr)
+    }
+
+    func testCreatedScalarTagIsQueryableByTag() throws {
+        _ = try run(["create"] + vaultArg + ["--title", "Urgent thing", "--set", "tags=urgent"])
+        let (status, stdout, _) = try run(["query"] + vaultArg + ["--tag", "urgent", "--lean", "--raw-json"])
+        XCTAssertEqual(status, 0)
+        let records = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [[String: Any]])
+        XCTAssertEqual(records.map { $0["title"] as? String }, ["Urgent thing"])
+    }
+
+    func testRecallBudgetAccountsForExactRecordBytes() throws {
+        for index in 0..<30 {
+            _ = try run(["create"] + vaultArg + [
+                "--title", "Release note \(index)",
+                "--body", String(repeating: "release detail \(index) ", count: 20),
+            ])
+        }
+        let (status, stdout, _) = try run(["recall", "release"] + vaultArg + ["--budget", "4000", "--limit", "30", "--lean", "--raw-json"])
+        XCTAssertEqual(status, 0)
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any])
+        let used = try XCTUnwrap(result["usedBytes"] as? Int)
+        XCTAssertLessThanOrEqual(used, 4000)
+        XCTAssertEqual(result["truncated"] as? Bool, true)
+        let records = try XCTUnwrap(result["records"] as? [Any])
+        XCTAssertFalse(records.isEmpty)
+    }
+
+    func testFleetUnregisterRemovesAVaultThatNoLongerExists() throws {
+        let registry = vaultDir.appendingPathComponent("fleet.json")
+        let doomed = vaultDir.appendingPathComponent("doomed", isDirectory: true)
+        let kept = vaultDir.appendingPathComponent("kept", isDirectory: true)
+        try FileManager.default.createDirectory(at: doomed, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: kept, withIntermediateDirectories: true)
+        setenv("RETEX_FLEET_REGISTRY", registry.path, 1)
+        defer { unsetenv("RETEX_FLEET_REGISTRY") }
+
+        XCTAssertEqual(try run(["fleet", "register", "--vault", doomed.path, "--raw-json"]).status, 0)
+        XCTAssertEqual(try run(["fleet", "register", "--vault", kept.path, "--raw-json"]).status, 0)
+        try FileManager.default.removeItem(at: doomed)
+
+        XCTAssertEqual(try run(["fleet", "status", "--raw-json"]).status, 0)
+        let (status, stdout, stderr) = try run(["fleet", "unregister", "--vault", doomed.path, "--lean", "--raw-json"])
+        XCTAssertEqual(status, 0, stderr)
+        XCTAssertFalse(stdout.contains("doomed"))
+        XCTAssertTrue(stdout.contains("kept"))
+    }
+
+    func testWatchStreamsEventsToAPipeImmediately() throws {
+        let process = Process()
+        let stdout = Pipe()
+        process.executableURL = Self.binPath.appendingPathComponent("retex")
+        process.arguments = ["watch"] + vaultArg + ["--json"]
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        try process.run()
+        defer { process.terminate(); process.waitUntilExit() }
+
+        Thread.sleep(forTimeInterval: 1.0)
+        try "# Watched\n".write(to: vaultDir.appendingPathComponent("watched.md"), atomically: true, encoding: .utf8)
+        let received = LineReader(stdout.fileHandleForReading)
+        let line = received.firstLine(timeout: 10)
+        XCTAssertEqual(line.flatMap { $0.contains("watched.md") }, true, "watch output was buffered: \(line ?? "nil")")
+    }
+
+    func testImportRefusesToOverwriteANonEmptyVault() throws {
+        _ = try run(["create"] + vaultArg + ["--title", "Source note"])
+        let archive = vaultDir.appendingPathComponent("backup.retex").path
+        setenv("RETEX_TEST_PASS", "correct horse battery", 1)
+        defer { unsetenv("RETEX_TEST_PASS") }
+        XCTAssertEqual(try run(["export"] + vaultArg + ["--out", archive, "--passphrase-env", "RETEX_TEST_PASS"]).status, 0)
+
+        let target = vaultDir.appendingPathComponent("target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let precious = target.appendingPathComponent("precious.md")
+        try "IMPORTANT UNSAVED WORK".write(to: precious, atomically: true, encoding: .utf8)
+        let (status, _, stderr) = try run(["import", "--from", archive, "--into", target.path, "--passphrase-env", "RETEX_TEST_PASS"])
+        XCTAssertNotEqual(status, 0)
+        XCTAssertTrue(stderr.contains("new or empty"), stderr)
+        XCTAssertEqual(try String(contentsOf: precious, encoding: .utf8), "IMPORTANT UNSAVED WORK")
+    }
+
+    func testPromptedPassphraseKeepsSpacesLikeTheEnvironmentVariable() throws {
+        _ = try run(["create"] + vaultArg + ["--title", "Spaced"])
+        let archive = vaultDir.appendingPathComponent("spaced.retex").path
+        setenv("RETEX_TEST_PASS", " correct horse battery ", 1)
+        defer { unsetenv("RETEX_TEST_PASS") }
+        XCTAssertEqual(try run(["export"] + vaultArg + ["--out", archive, "--passphrase-env", "RETEX_TEST_PASS"]).status, 0)
+        let target = vaultDir.appendingPathComponent("restored", isDirectory: true).path
+        let (status, _, stderr) = try run(["import", "--from", archive, "--into", target], stdin: " correct horse battery \n")
+        XCTAssertEqual(status, 0, stderr)
+    }
+}
+
+/// Reads the first newline-terminated line from a pipe with a deadline.
+private final class LineReader: @unchecked Sendable {
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    init(_ handle: FileHandle) { self.handle = handle }
+
+    func firstLine(timeout: TimeInterval) -> String? {
+        let done = DispatchSemaphore(value: 0)
+        Thread {
+            while true {
+                let chunk = self.handle.availableData
+                if chunk.isEmpty { break }
+                self.lock.lock()
+                self.buffer.append(chunk)
+                let hasLine = self.buffer.contains(UInt8(ascii: "\n"))
+                self.lock.unlock()
+                if hasLine { break }
+            }
+            done.signal()
+        }.start()
+        _ = done.wait(timeout: .now() + timeout)
+        lock.lock()
+        defer { lock.unlock() }
+        guard let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) else { return nil }
+        return String(decoding: buffer[..<newline], as: UTF8.self)
+    }
 }

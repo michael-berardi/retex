@@ -28,6 +28,11 @@ public struct VocabularyResult: Codable, Equatable, Sendable {
     }
 }
 
+private struct UnsafeSendableBuffer<Element>: @unchecked Sendable {
+    let buffer: UnsafeMutableBufferPointer<Element>
+    init(_ buffer: UnsafeMutableBufferPointer<Element>) { self.buffer = buffer }
+}
+
 /// Extracts likely names, organizations, brands, applications, and technical
 /// terms without returning source content. The implementation is deterministic
 /// and uses no network service or learned model.
@@ -37,6 +42,15 @@ public enum VocabularyExtractor {
         var occurrences: Int
         var sources: Set<String>
         var priority: Int
+
+        mutating func merge(_ local: (display: String, count: Int, priority: Int), source: String) {
+            if prefersDisplay(local.display, over: display) {
+                display = local.display
+            }
+            occurrences += local.count
+            sources.insert(source)
+            priority = max(priority, local.priority)
+        }
     }
 
     private static let metadataKeys: Set<String> = [
@@ -67,6 +81,13 @@ public enum VocabularyExtractor {
         "token", "tokens", "total", "totals", "transaction", "transactions",
     ]
 
+    // Cached: Foundation rebuilds these sets on every access on Linux, which
+    // dominated extraction time inside the per-token loops.
+    private static let trimmedCharacters = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+    private static let nonBaseCharacters = CharacterSet.nonBaseCharacters
+    private static let decimalDigits = CharacterSet.decimalDigits
+    private static let alphanumerics = CharacterSet.alphanumerics
+
     private static let maximumCandidateBytes = 96
     private static let maximumWordBytes = 64
     private static let longIdentifierLength = 16
@@ -76,32 +97,17 @@ public enum VocabularyExtractor {
         let boundedLimit = min(max(limit, 1), 10_000)
         var candidates: [String: Candidate] = [:]
 
-        for note in notes {
-            var termsInSource: [String: (display: String, count: Int, priority: Int)] = [:]
-            collectText(note.title, title: true, into: &termsInSource)
-            collectText(note.body, title: false, into: &termsInSource)
-            for (key, value) in note.metadata where metadataKeys.contains(normalizeMetadataKey(key)) {
-                for part in value.split(separator: ",") {
-                    add(String(part), count: 1, priority: 3, into: &termsInSource)
-                }
-            }
-
-            for (key, local) in termsInSource {
-                var candidate = candidates[key] ?? Candidate(
-                    display: local.display,
-                    occurrences: 0,
-                    sources: [],
-                    priority: local.priority
-                )
-                if prefersDisplay(local.display, over: candidate.display) {
-                    candidate.display = local.display
-                }
-                candidate.occurrences += local.count
-                candidate.sources.insert(note.id)
-                candidate.priority = max(candidate.priority, local.priority)
-                candidates[key] = candidate
+        // Per-note collection is pure, so batches run concurrently; merging
+        // stays serial and in note order, so results are unchanged.
+        let batchSize = 256
+        for batchStart in stride(from: 0, to: notes.count, by: batchSize) {
+            let batch = Array(notes[batchStart..<min(batchStart + batchSize, notes.count)])
+            let collected = collectConcurrently(batch)
+            for (note, termsInSource) in zip(batch, collected) {
+                merge(termsInSource, source: note.id, into: &candidates)
             }
         }
+
 
         let eligible = candidates.values.filter { $0.priority >= 3 || $0.sources.count >= 2 }
         func ranked(_ values: [Candidate]) -> [Candidate] {
@@ -157,12 +163,55 @@ public enum VocabularyExtractor {
         return VocabularyResult(recordsScanned: notes.count, terms: selected)
     }
 
+    private typealias LocalTerms = [String: (display: String, count: Int, priority: Int)]
+
+    private static func collect(_ note: Note) -> LocalTerms {
+        var termsInSource: LocalTerms = [:]
+        collectText(note.title, title: true, into: &termsInSource)
+        collectText(note.body, title: false, into: &termsInSource)
+        for (key, value) in note.metadata where metadataKeys.contains(normalizeMetadataKey(key)) {
+            for part in value.split(separator: ",") {
+                add(String(part), count: 1, priority: 3, into: &termsInSource)
+            }
+        }
+        return termsInSource
+    }
+
+    private static func collectConcurrently(_ notes: [Note]) -> [LocalTerms] {
+        var results = [LocalTerms](repeating: [:], count: notes.count)
+        results.withUnsafeMutableBufferPointer { buffer in
+            let slots = UnsafeSendableBuffer(buffer)
+            DispatchQueue.concurrentPerform(iterations: notes.count) { index in
+                // Distinct indices never alias.
+                slots.buffer[index] = collect(notes[index])
+            }
+        }
+        return results
+    }
+
+    private static func merge(_ termsInSource: LocalTerms, source: String, into candidates: inout [String: Candidate]) {
+        for (key, local) in termsInSource {
+            // Mutate in place: copying a candidate out and back copied its
+            // source set on every update, quadratic for common terms.
+            candidates[key, default: Candidate(
+                display: local.display,
+                occurrences: 0,
+                sources: [],
+                priority: local.priority
+            )].merge(local, source: source)
+        }
+    }
+
     private static func collectText(
         _ text: String,
         title: Bool,
         into local: inout [String: (display: String, count: Int, priority: Int)]
     ) {
-        let words = tokenize(text)
+        // Newlines separate both tokens and phrases, so working line by line
+        // is equivalent and keeps ASCII lines on the byte-level fast path
+        // even when another line has non-ASCII text.
+        let lines = text.utf8.split(separator: 0x0A).map { String(Substring($0)) }
+        let words = lines.flatMap(tokenize)
         var distinctiveWords: Set<String> = []
         for word in words {
             if let priority = distinctivePriority(word) {
@@ -175,14 +224,16 @@ public enum VocabularyExtractor {
         // delimiters, or sentence boundaries. Body/title phrases require
         // recurrence in independent records; only explicit allowlisted
         // metadata can make a one-off phrase eligible.
-        let phraseSegments = text.split {
-            if $0.isNewline { return true }
-            if $0.isLetter || $0.isNumber || $0.isWhitespace { return false }
-            // Preserve only punctuation that can be intrinsic to a name or
-            // technical term. Commas, equals signs, typographic dashes, and
-            // other structural punctuation always terminate a phrase.
-            return !"-'&+#".contains($0)
-        }.map { tokenize(String($0)) }
+        let phraseSegments = lines.flatMap { line in
+            asciiSplit(line, isSeparator: isASCIIPhraseSeparator) ?? line.split {
+                if $0.isNewline { return true }
+                if $0.isLetter || $0.isNumber || $0.isWhitespace { return false }
+                // Preserve only punctuation that can be intrinsic to a name or
+                // technical term. Commas, equals signs, typographic dashes, and
+                // other structural punctuation always terminate a phrase.
+                return !"-'&+#".contains($0)
+            }.map(String.init)
+        }.map(tokenize)
         for segment in phraseSegments {
             var index = 0
             while index < segment.count {
@@ -225,9 +276,7 @@ public enum VocabularyExtractor {
         priority: Int,
         into local: inout [String: (display: String, count: Int, priority: Int)]
     ) {
-        let candidate = raw
-            .precomposedStringWithCanonicalMapping
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        let candidate = MarkdownStore.trimmed(precomposed(raw), in: trimmedCharacters)
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
         guard isSafeCandidate(candidate) else { return }
@@ -254,20 +303,56 @@ public enum VocabularyExtractor {
     }
 
     private static func tokenize(_ text: String) -> [String] {
-        text.precomposedStringWithCanonicalMapping.split { character in
+        let words = asciiSplit(text) { !isASCIITokenByte($0) } ?? precomposed(text).split { character in
             !(character.isLetter || character.isNumber || character == "+" || character == "#" || character == "-")
-        }.lazy.map(String.init).map { $0.utf8.count <= maximumWordBytes ? $0 : "" }
+        }.map(String.init)
+        return words.map { $0.utf8.count <= maximumWordBytes ? $0 : "" }
+    }
+
+    /// Byte-level `split` for ASCII text, where Character letter, number,
+    /// whitespace, and newline classes reduce exactly to byte ranges. Returns
+    /// nil for non-ASCII text so callers keep full Unicode semantics.
+    private static func asciiSplit(_ text: String, isSeparator: (UInt8) -> Bool) -> [String]? {
+        var text = text
+        return text.withUTF8 { bytes -> [String]? in
+            guard !bytes.contains(where: { $0 >= 0x80 }) else { return nil }
+            var parts: [String] = []
+            var start = 0
+            for index in 0...bytes.count where index == bytes.count || isSeparator(bytes[index]) {
+                if index > start {
+                    parts.append(String(decoding: UnsafeBufferPointer(rebasing: bytes[start..<index]), as: UTF8.self))
+                }
+                start = index + 1
+            }
+            return parts
+        }
+    }
+
+    private static func isASCIITokenByte(_ byte: UInt8) -> Bool {
+        isASCIIAlphanumeric(byte) || byte == UInt8(ascii: "+") || byte == UInt8(ascii: "#")
+            || byte == UInt8(ascii: "-")
+    }
+
+    private static func isASCIIPhraseSeparator(_ byte: UInt8) -> Bool {
+        // Newlines (LF, VT, FF, CR) end a phrase; other whitespace does not.
+        if byte >= 0x0A && byte <= 0x0D { return true }
+        if isASCIIAlphanumeric(byte) || byte == 0x09 || byte == 0x20 { return false }
+        return !"-'&+#".utf8.contains(byte)
+    }
+
+    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte | 0x20 >= 0x61 && byte | 0x20 <= 0x7A)
     }
 
     private static func distinctivePriority(_ word: String) -> Int? {
-        let letters = word.filter { $0.isLetter || $0.isNumber }
-        guard letters.count >= 2,
-              word.utf8.count <= maximumWordBytes,
-              word.contains(where: { $0.isUppercase }),
-              isSafeCandidate(word)
+        // Cheapest rejections first: most words have no uppercase letter.
+        guard word.utf8.count <= maximumWordBytes,
+              word.contains(where: { $0.isUppercase })
         else {
             return nil
         }
+        let letters = word.filter { $0.isLetter || $0.isNumber }
+        guard letters.count >= 2, isSafeCandidate(word) else { return nil }
         let isAllCaps = letters.allSatisfy { !$0.isLetter || $0.isUppercase }
         let hasInternalUppercase = !isAllCaps && word.dropFirst().contains(where: { $0.isUppercase })
         let isAcronym = letters.count <= 10 && isAllCaps
@@ -304,7 +389,8 @@ public enum VocabularyExtractor {
         else {
             return false
         }
-        guard !value.contains("@"), !value.contains("/"), !value.contains("\\") else { return false }
+        guard !value.utf8.contains(where: { $0 == UInt8(ascii: "@") || $0 == UInt8(ascii: "/") || $0 == UInt8(ascii: "\\") })
+        else { return false }
         guard value.allSatisfy({
             $0.isLetter || $0.isNumber || $0.isWhitespace || "-+#&.'()".contains($0)
         }) else { return false }
@@ -312,15 +398,15 @@ public enum VocabularyExtractor {
         // Canonical composition in `add` and `tokenize` preserves ordinary
         // accented names. Any combining scalar left afterward is malformed or
         // an attempt to hide unbounded bytes in a visually short term.
-        guard !value.unicodeScalars.contains(where: CharacterSet.nonBaseCharacters.contains) else {
+        guard !value.unicodeScalars.contains(where: nonBaseCharacters.contains) else {
             return false
         }
 
-        let digitCount = value.unicodeScalars.filter(CharacterSet.decimalDigits.contains).count
+        let digitCount = value.unicodeScalars.filter(decimalDigits.contains).count
         guard digitCount < 6 else { return false }
 
         let components = value.unicodeScalars.split {
-            !CharacterSet.alphanumerics.contains($0)
+            !alphanumerics.contains($0)
         }.map(String.init)
         guard !components.contains(where: { rejectedWords.contains($0.lowercased()) }) else {
             return false
@@ -342,7 +428,12 @@ public enum VocabularyExtractor {
     }
 
     private static func normalizedKey(_ value: String) -> String {
-        value.precomposedStringWithCanonicalMapping.lowercased()
+        precomposed(value).lowercased()
+    }
+
+    /// NFC; ASCII text is already canonical, so it skips the Foundation call.
+    private static func precomposed(_ value: String) -> String {
+        value.utf8.allSatisfy { $0 < 0x80 } ? value : value.precomposedStringWithCanonicalMapping
     }
 
     private static func lexicallyPrecedes(_ lhs: String, _ rhs: String) -> Bool {

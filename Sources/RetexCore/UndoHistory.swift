@@ -2,6 +2,8 @@
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 import Foundation
 
@@ -11,6 +13,11 @@ import Foundation
 /// size. Cross-process safety: every read-modify-write holds an advisory lock
 /// so an MCP server and CLI runs against the same vault never interleave
 /// journal writes.
+///
+/// Mutations append one line instead of rewriting the journal, so their cost
+/// no longer grows with journal size. The per-file cap applies to every read
+/// immediately and is enforced on disk by compaction whenever the journal
+/// crosses a power-of-two size (amortized), and by `pop`.
 public struct UndoHistory: Sendable {
     public struct Entry: Sendable, Equatable, Codable {
         public let path: String
@@ -135,12 +142,16 @@ public struct UndoHistory: Sendable {
             throw StoreError.historyUnwritable(url)
         }
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        let raw = try String(contentsOf: url, encoding: .utf8)
+        let raw = try Data(contentsOf: url)
+        let lines = raw.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+        let decoder = JSONDecoder()
         var entries: [Entry] = []
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = line.data(using: .utf8),
-                  let entry = try? JSONDecoder().decode(Entry.self, from: data)
-            else {
+        entries.reserveCapacity(lines.count)
+        for (index, line) in lines.enumerated() {
+            guard let entry = try? decoder.decode(Entry.self, from: line) else {
+                // An append interrupted by a crash leaves an unterminated
+                // final line; that torn write is the only line skipped.
+                if index == lines.count - 1, raw.last != UInt8(ascii: "\n") { break }
                 // A corrupt line must not silently truncate the rest of the journal.
                 throw StoreError.corruptHistory(url)
             }
@@ -178,8 +189,8 @@ public struct UndoHistory: Sendable {
         defer { lock.unlock() }
         let url = journalURL(forPath: entry.path)
         try withJournalLock(journalURL: url) {
-            let entries = try readEntries(from: url)
-            try writeEntries(appending(entry, to: entries), to: url)
+            let append = try appendEntry(entry, to: url)
+            compactIfNeeded(url, previousSize: append.previousSize, newSize: append.newSize)
         }
     }
 
@@ -194,10 +205,9 @@ public struct UndoHistory: Sendable {
         defer { lock.unlock() }
         let journalURL = journalURL(forPath: path)
         try withJournalLock(journalURL: journalURL) {
-            let entries = try readEntries(from: journalURL)
             let change = try prepare()
             let entry = Entry(path: path, previousSource: change.previousSource)
-            try writeEntries(appending(entry, to: entries), to: journalURL)
+            let append = try appendEntry(entry, to: journalURL)
             do {
                 try change.nextSource.write(
                     to: URL(fileURLWithPath: path),
@@ -205,25 +215,117 @@ public struct UndoHistory: Sendable {
                     encoding: .utf8
                 )
             } catch {
-                try? writeEntries(entries, to: journalURL)
+                try? truncateJournal(journalURL, to: append.previousSize)
                 throw error
             }
+            compactIfNeeded(journalURL, previousSize: append.previousSize, newSize: append.newSize)
         }
     }
 
-    private func appending(_ entry: Entry, to entries: [Entry]) -> [Entry] {
-        var entries = entries
-        entries.append(entry)
+    /// Appends one JSON line with private permissions. A torn final line from
+    /// an interrupted earlier append is truncated first: its note write never
+    /// happened, and keeping it would corrupt the middle of the journal.
+    private func appendEntry(_ entry: Entry, to url: URL) throws -> (previousSize: UInt64, newSize: UInt64) {
+        guard var line = try? JSONEncoder().encode(entry) else {
+            throw StoreError.historyUnwritable(url)
+        }
+        line.append(UInt8(ascii: "\n"))
+        #if os(Windows)
+        if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw StoreError.historyUnwritable(url)
+        }
+        do {
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+            }
+            let handle = try FileHandle(forUpdating: url)
+            defer { try? handle.close() }
+            var previousSize = try handle.seekToEnd()
+            // Find the end of the last complete line.
+            while previousSize > 0 {
+                try handle.seek(toOffset: previousSize - 1)
+                if try handle.read(upToCount: 1) == Data([UInt8(ascii: "\n")]) { break }
+                previousSize -= 1
+            }
+            try handle.truncate(atOffset: previousSize)
+            try handle.seek(toOffset: previousSize)
+            try handle.write(contentsOf: line)
+            return (previousSize, previousSize + UInt64(line.count))
+        } catch {
+            throw StoreError.historyUnwritable(url)
+        }
+        #else
+        let fd = open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw StoreError.historyUnwritable(url) }
+        defer { close(fd) }
+        var end = lseek(fd, 0, SEEK_END)
+        guard end >= 0, fchmod(fd, 0o600) == 0 else { throw StoreError.historyUnwritable(url) }
+        // Find the end of the last complete line, scanning back in blocks.
+        var block = [UInt8](repeating: 0, count: 4096)
+        var complete = end
+        scan: while complete > 0 {
+            let start = max(0, complete - off_t(block.count))
+            let count = Int(complete - start)
+            guard pread(fd, &block, count, start) == count else { throw StoreError.historyUnwritable(url) }
+            for index in stride(from: count - 1, through: 0, by: -1) {
+                if block[index] == UInt8(ascii: "\n") { break scan }
+                complete -= 1
+            }
+        }
+        if complete != end {
+            guard ftruncate(fd, complete) == 0 else { throw StoreError.historyUnwritable(url) }
+            end = complete
+        }
+        let written = line.withUnsafeBytes { bytes -> Int in
+            var offset = 0
+            while offset < bytes.count {
+                let count = pwrite(fd, bytes.baseAddress! + offset, bytes.count - offset, end + off_t(offset))
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return -1
+                }
+                offset += count
+            }
+            return offset
+        }
+        guard written == line.count else {
+            _ = ftruncate(fd, end)
+            throw StoreError.historyUnwritable(url)
+        }
+        return (UInt64(end), UInt64(end) + UInt64(line.count))
+        #endif
+    }
 
-        // Keep only the newest `capacityPerFile` entries for this exact path.
+    private func truncateJournal(_ url: URL, to size: UInt64) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: size)
+    }
+
+    /// Rewrites the journal with per-file caps applied once it crosses a
+    /// power-of-two size of at least 1 MiB, bounding amortized cost. A journal
+    /// that cannot be read is left untouched for `retex doctor` to report.
+    private func compactIfNeeded(_ url: URL, previousSize: UInt64, newSize: UInt64) {
+        guard newSize >= Self.compactionFloor,
+              previousSize.leadingZeroBitCount != newSize.leadingZeroBitCount,
+              let entries = try? readEntries(from: url)
+        else { return }
+        let capped = Self.capped(entries)
+        if capped.count < entries.count {
+            try? writeEntries(capped, to: url)
+        }
+    }
+
+    private static let compactionFloor: UInt64 = 1 << 20
+
+    /// Keeps only the newest `capacityPerFile` entries for each path.
+    private static func capped(_ entries: [Entry]) -> [Entry] {
         var survivors: [Entry] = []
         survivors.reserveCapacity(entries.count)
-        var countForPath = 0
+        var counts: [String: Int] = [:]
         for existing in entries.reversed() {
-            if existing.path == entry.path {
-                countForPath += 1
-                if countForPath > Self.capacityPerFile { continue }
-            }
+            counts[existing.path, default: 0] += 1
+            if counts[existing.path]! > capacityPerFile { continue }
             survivors.append(existing)
         }
         survivors.reverse()
@@ -237,7 +339,7 @@ public struct UndoHistory: Sendable {
         defer { lock.unlock() }
         let url = journalURL(forPath: path)
         return try withJournalLock(journalURL: url) {
-            var entries = try readEntries(from: url)
+            var entries = Self.capped(try readEntries(from: url))
             guard let index = entries.lastIndex(where: { $0.path == path }) else { return nil }
             let restored = entries.remove(at: index)
             try writeEntries(entries, to: url)
@@ -251,7 +353,7 @@ public struct UndoHistory: Sendable {
         defer { lock.unlock() }
         let url = journalURL(forPath: path)
         return try withJournalLock(journalURL: url) {
-            try readEntries(from: url).filter { $0.path == path }
+            Self.capped(try readEntries(from: url)).filter { $0.path == path }
         }
     }
 }
