@@ -98,8 +98,85 @@ final class VaultCryptoTests: XCTestCase {
             VaultCrypto.ArchivedFile(path: "linked/escape.md", content: "pwn"),
         ])
 
-        XCTAssertThrowsError(try VaultCrypto.restoreArchive(malicious, into: out))
+        // The public entry point refuses a non-empty destination outright.
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(malicious, into: out)) { error in
+            XCTAssertEqual(error as? VaultCrypto.CryptoError, .destinationNotEmpty)
+        }
+        // The symlink confinement still holds on its own.
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(malicious, into: out, requireEmptyDestination: false))
         XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("escape.md").path))
+    }
+
+    func testRestoreDoesNotCreateDirectoriesThroughSymlinkedParent() throws {
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-symlink-mkdir-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-symlink-mkdir-outside-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: out)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: out.appendingPathComponent("linked"), withDestinationURL: outside)
+        let malicious = try JSONEncoder().encode([
+            VaultCrypto.ArchivedFile(path: "linked/created/deeper/escape.md", content: "pwn"),
+        ])
+
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(malicious, into: out, requireEmptyDestination: false))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("created").path))
+    }
+
+    func testRestoreRefusesHiddenNonPortableAndAliasedPaths() throws {
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-hidden-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: out) }
+
+        for paths in [
+            [".git/config.json"],
+            [".retex/state.json"],
+            ["notes/.hidden.md"],
+            ["hooks/post-checkout"],
+            ["script.sh"],
+            ["a/./b.md", "a//b.md"],
+        ] {
+            XCTAssertThrowsError(try VaultCrypto.restoreArchive(try archive(paths: paths), into: out), "\(paths)") { error in
+                XCTAssertEqual(error as? VaultCrypto.CryptoError, .invalidArchive, "\(paths)")
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: out.appendingPathComponent(".git").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: out.appendingPathComponent(".retex").path))
+        }
+        XCTAssertEqual(try VaultCrypto.restoreArchive(try archive(paths: ["a/./b.md", "c.json"]), into: out), 2)
+        XCTAssertEqual(try String(contentsOf: out.appendingPathComponent("a/b.md"), encoding: .utf8), "content 0")
+    }
+
+    func testRestoreRequiresNewOrEmptyDestination() throws {
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-nonempty-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: out) }
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let data = try archive(paths: ["note.md"])
+
+        XCTAssertEqual(try VaultCrypto.restoreArchive(data, into: out), 1)
+        XCTAssertThrowsError(try VaultCrypto.restoreArchive(data, into: out)) { error in
+            XCTAssertEqual(error as? VaultCrypto.CryptoError, .destinationNotEmpty)
+        }
+    }
+
+    /// Builds a genuine version 2 archive, then rewrites its entry paths.
+    private func archive(paths: [String]) throws -> Data {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-crafted-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: source) }
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        for index in paths.indices {
+            try "content \(index)".write(to: source.appendingPathComponent("f\(index).md"), atomically: true, encoding: .utf8)
+        }
+        var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: VaultCrypto.makeArchive(vaultURL: source)) as? [String: Any])
+        var files = try XCTUnwrap(envelope["files"] as? [[String: Any]])
+        for index in files.indices { files[index]["path"] = paths[index] }
+        envelope["files"] = files
+        return try JSONSerialization.data(withJSONObject: envelope)
     }
 
     func testRestoreRefusesNonMarkdownAndDuplicateEntries() throws {
@@ -119,15 +196,25 @@ final class VaultCryptoTests: XCTestCase {
         XCTAssertThrowsError(try VaultCrypto.restoreArchive(duplicate, into: out))
     }
 
-    func testArchiveRefusesSymlinksOutsideVault() throws {
+    func testArchiveSkipsSymlinksAsDocumented() throws {
         let outside = FileManager.default.temporaryDirectory
             .appendingPathComponent("retex-export-outside-\(UUID().uuidString).md")
         let link = vaultDir.appendingPathComponent("outside.md")
         try "protected".write(to: outside, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(
+            at: vaultDir.appendingPathComponent("inside-link.md"),
+            withDestinationURL: vaultDir.appendingPathComponent("deep/sub/note.md")
+        )
         defer { try? FileManager.default.removeItem(at: outside) }
 
-        XCTAssertThrowsError(try VaultCrypto.makeArchive(vaultURL: vaultDir))
+        let archive = try VaultCrypto.makeArchive(vaultURL: vaultDir)
+        XCTAssertFalse(String(decoding: archive, as: UTF8.self).contains("outside.md"))
+        XCTAssertFalse(String(decoding: archive, as: UTF8.self).contains("inside-link.md"))
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-symlink-export-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertEqual(try VaultCrypto.restoreArchive(archive, into: out), 3)
     }
 }
 

@@ -27,6 +27,7 @@ public struct VaultCrypto {
         case keyDerivationFailed
         case invalidArchive
         case weakPassphrase
+        case destinationNotEmpty
 
         public var errorDescription: String? {
             switch self {
@@ -35,6 +36,7 @@ public struct VaultCrypto {
             case .keyDerivationFailed: "Passphrase key derivation failed."
             case .invalidArchive: "Retex archive manifest, checksum, path, or size validation failed."
             case .weakPassphrase: "Export passphrase must contain at least 12 characters."
+            case .destinationNotEmpty: "Restore destination must be new or empty."
             }
         }
     }
@@ -83,8 +85,7 @@ public struct VaultCrypto {
         var totalBytes = 0
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-            guard values.isSymbolicLink != true else { throw StoreError.pathOutsideVault(url) }
-            guard values.isRegularFile == true else { continue }
+            guard values.isSymbolicLink != true, values.isRegularFile == true else { continue }
             guard portableVaultExtensions.contains(url.pathExtension.lowercased()) else { continue }
             let size = values.fileSize ?? 0
             totalBytes += size
@@ -105,38 +106,57 @@ public struct VaultCrypto {
         return try JSONEncoder().encode(ArchiveEnvelope(version: 2, files: files))
     }
 
-    /// Restores a versioned vault archive. Version 1 Markdown-only exports
-    /// remain readable; version 2 also preserves attachments and other
-    /// non-hidden vault files with per-file SHA-256 validation.
+    /// Restores a versioned vault archive into a new or empty directory.
+    /// Version 1 Markdown-only exports remain readable; version 2 also
+    /// preserves attachments and other non-hidden vault files with per-file
+    /// SHA-256 validation. Only paths `makeArchive` could have produced are
+    /// accepted: no hidden components and only portable extensions.
     @discardableResult
     public static func restoreArchive(_ data: Data, into dir: URL) throws -> Int {
+        try restoreArchive(data, into: dir, requireEmptyDestination: true)
+    }
+
+    static func restoreArchive(_ data: Data, into dir: URL, requireEmptyDestination: Bool) throws -> Int {
+        let entries: [ArchiveEntry]
         if let envelope = try? JSONDecoder().decode(ArchiveEnvelope.self, from: data) {
             guard envelope.version == 2 else { throw CryptoError.invalidArchive }
-            return try restoreEntries(envelope.files, into: dir)
+            entries = envelope.files
+        } else {
+            let legacy = try JSONDecoder().decode([ArchivedFile].self, from: data)
+            guard legacy.allSatisfy({ URL(fileURLWithPath: $0.path).pathExtension.lowercased() == "md" }) else {
+                throw CryptoError.invalidArchive
+            }
+            entries = legacy.map {
+                let bytes = Data($0.content.utf8)
+                return ArchiveEntry(path: $0.path, data: bytes, sha256: sha256(bytes))
+            }
         }
-        let legacy = try JSONDecoder().decode([ArchivedFile].self, from: data)
-        guard legacy.allSatisfy({ URL(fileURLWithPath: $0.path).pathExtension.lowercased() == "md" }) else {
-            throw CryptoError.invalidArchive
+        if requireEmptyDestination {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDirectory) {
+                guard isDirectory.boolValue,
+                      (try FileManager.default.contentsOfDirectory(atPath: dir.path)).isEmpty
+                else { throw CryptoError.destinationNotEmpty }
+            }
         }
-        return try restoreEntries(legacy.map {
-            let bytes = Data($0.content.utf8)
-            return ArchiveEntry(path: $0.path, data: bytes, sha256: sha256(bytes))
-        }, into: dir)
+        return try restoreEntries(entries, into: dir)
     }
 
     private static func restoreEntries(_ files: [ArchiveEntry], into dir: URL) throws -> Int {
         let fm = FileManager.default
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let lexicalRoot = dir.standardizedFileURL
-        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
+        // Validate the whole archive before writing anything.
         var seen: Set<String> = []
         var totalBytes = 0
-
+        var relativePaths: [String] = []
         for file in files {
-            let relative = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            let components = trimmed.split(separator: "/").filter { $0 != "." }
+            let relative = components.joined(separator: "/")
             totalBytes += file.data.count
             guard !relative.isEmpty,
-                  !(relative as NSString).isAbsolutePath,
+                  !(trimmed as NSString).isAbsolutePath,
+                  !components.contains(where: { $0.hasPrefix(".") }),
+                  portableVaultExtensions.contains((relative as NSString).pathExtension.lowercased()),
                   seen.insert(relative).inserted,
                   file.data.count <= maximumFileBytes,
                   totalBytes <= maximumArchiveBytes,
@@ -144,12 +164,29 @@ public struct VaultCrypto {
             else {
                 throw CryptoError.invalidArchive
             }
+            relativePaths.append(relative)
+        }
 
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let lexicalRoot = dir.standardizedFileURL
+        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
+        for (file, relative) in zip(files, relativePaths) {
             let target = lexicalRoot.appendingPathComponent(relative).standardizedFileURL
             guard isWithinVault(target, root: lexicalRoot) else {
                 throw StoreError.pathOutsideVault(target)
             }
             let parent = target.deletingLastPathComponent()
+            // Check the deepest existing ancestor before creating anything, so
+            // a symlinked intermediate directory cannot make us mkdir outside.
+            var ancestor = parent
+            while (try? fm.attributesOfItem(atPath: ancestor.path)) == nil,
+                  ancestor.pathComponents.count > lexicalRoot.pathComponents.count {
+                ancestor = ancestor.deletingLastPathComponent()
+            }
+            let resolvedAncestor = ancestor.resolvingSymlinksInPath()
+            guard fm.fileExists(atPath: resolvedAncestor.path), isWithinVault(resolvedAncestor, root: resolvedRoot) else {
+                throw StoreError.pathOutsideVault(target)
+            }
             try fm.createDirectory(at: parent, withIntermediateDirectories: true)
             let resolvedParent = parent.resolvingSymlinksInPath()
             guard isWithinVault(resolvedParent, root: resolvedRoot) else {
