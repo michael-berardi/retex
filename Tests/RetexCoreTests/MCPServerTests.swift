@@ -114,6 +114,7 @@ final class MCPServerTests: XCTestCase {
             "list_notes", "search_notes", "read_note", "query_records",
             "recall_context", "get_links", "get_schema", "create_note",
             "set_property", "move_card", "archive_note", "get_board", "get_stats",
+            "memory_context", "memory_recall", "memory_review", "memory_propose",
         ])
     }
 
@@ -129,6 +130,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }), [
             "list_notes", "search_notes", "read_note", "query_records",
             "recall_context", "get_links", "get_schema", "get_board", "get_stats",
+            "memory_context", "memory_recall", "memory_review",
         ])
         let error = try XCTUnwrap(responses[1]["error"] as? [String: Any])
         XCTAssertEqual(error["code"] as? Int, -32602)

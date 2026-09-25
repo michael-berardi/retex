@@ -1,0 +1,11 @@
+# Default gitleaks rules, plus one narrow allowlist: agent-memory record keys
+# passed as `key: "global/<slug>"` in the memory tests match the generic API
+# key rule but are record identifiers, not credentials.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Agent-memory record keys in tests"
+paths = ['''^Tests/RetexCoreTests/AgentMemoryTests\.swift$''']
+regexTarget = "line"
+regexes = ['''key: "(global|project-[a-z0-9-]+)/[a-z0-9-]+"''']

@@ -119,6 +119,33 @@ Consumer note: `list` and exact `search` return the legacy compatibility
 `type` (`note` for custom record types); use `query` or MCP `query_records`
 when filtering on `memory`/`report`/`audit` types or contract properties.
 
+## Agent memory vault
+
+Agent memory lives in its own private Retex vault (default
+`~/.local/share/agent-memory`, override `$AGENT_MEMORY_VAULT`), created once
+with `retex memory init`. Other commands never create it. Every harness reads
+it the same way and writes it the same way:
+
+```bash
+retex memory context --project "$PROJECT" --budget 6000 --lean   # session pack, ≤ 6,000 chars
+retex memory recall "how do we deploy" --budget 4000 --lean      # on-demand, provenance
+cite what you use:  retex memory cite global/deploy-lds --lean   # [mem: scope/slug]
+retex memory propose --op add --json-file record.json --evidence pi:2026-09-25-s3#12 --lean
+retex memory propose --op upvote --key global/deploy-lds --evidence operator:2026-09-26 --lean
+retex memory review --lean
+retex memory doctor --lean
+```
+
+Records are `type: memory` Markdown with strict limits (key `scope/slug`,
+title ≤ 120, body ≤ 600, evidence ≥ 1 locator, no secrets, no speculation
+words — rejections carry stable reason codes). Agents and dreams may only
+**propose** (`add`/`upvote`/`edit`/`retire`); `promote`, `reject`, `retire`,
+and `stale` are operator actions and require `--operator-approved`. Only
+`active` records reach the session pack. Every mutation is journaled:
+`retex undo <path>` restores byte-exact content; counter bumps are telemetry
+and never create undo entries. Full schema, scoring, and budgets:
+`docs/AGENT-MEMORY.md`.
+
 Evidence (2026-08-30, disposable-vault A/B, two runs): consumers of freeform
 memory entries scored 0/6 on hazard answers (inference propagated as fact,
 8/12 audit reported as "all pass", unverified scope denied); consumers of
