@@ -477,9 +477,15 @@ public struct AgentMemory {
         func numberOrString(_ field: String) throws -> String? {
             guard let raw = dictionary[field] else { return nil }
             if let value = raw as? String { return value }
-            if let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
-                return number.stringValue
+            // JSON booleans are never numbers here. Darwin decodes them as
+            // __NSCFBoolean and swift-corelibs-foundation as Bool; the type
+            // name check works on both without Core Foundation.
+            if String(describing: type(of: raw)).contains("Bool") {
+                throw MemoryError.invalidRecordJSON("field \(field) must be a number")
             }
+            if let number = raw as? NSNumber { return number.stringValue }
+            if let number = raw as? Double { return String(number) }
+            if let number = raw as? Int { return String(number) }
             throw MemoryError.invalidRecordJSON("field \(field) must be a number")
         }
         var evidence: [String] = []
