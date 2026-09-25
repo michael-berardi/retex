@@ -39,6 +39,9 @@ leaves the machine.
 - Watch vaults for external changes with native FSEvents on macOS and a
   lightweight polling fallback on Linux and Windows.
 - Custom board columns and named saved views per vault.
+- Give AI agents a shared, reviewable memory (`retex memory`): budgeted packs
+  at session start, recall on demand, validated proposals, operator-approved
+  promotion, and byte-exact undo.
 - Drive a vault directly from any MCP host with the built-in MCP server.
 - Import Notion Markdown/CSV ZIP exports, Obsidian vaults, and ordinary
   Markdown directories while preserving attachments and rejecting symlinks.
@@ -140,7 +143,7 @@ storage format.
 
 Commands: `list`, `query`, `vocabulary`, `search`, `recall`, `links`, `show`, `create`,
 `set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
-`doctor`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
+`doctor`, `memory`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
 `retex schema --vault ...` to discover built-in, configured, and existing
 record types and properties.
 
@@ -246,6 +249,25 @@ contract.
 `{"changed":["Notes/foo.md", ...]}`.
 Internal `.retex/` state never appears in the stream.
 
+### Agent memory
+
+`retex memory` keeps typed memory records (corrections, gotchas, decisions,
+procedures, preferences) in a private vault that several agents share:
+
+```bash
+retex memory init --vault ~/agent-memory
+retex memory propose --op add --json-file record.json --vault ~/agent-memory --lean
+retex memory review --vault ~/agent-memory --lean
+retex memory promote global/deploy-with-npm --operator-approved --vault ~/agent-memory --lean
+retex memory context --project my-app --budget 6000 --heading "Team memory" --vault ~/agent-memory
+```
+
+`context` prints a deterministic pack of *active* records that never exceeds the
+budget (default 6,000 bytes, max 8,000); proposals are never included.
+Agents may propose; promotion, rejection and retirement need
+`--operator-approved`. Every change is journaled for `retex undo`. Schema,
+reason codes and protocol: [docs/AGENT-MEMORY.md](docs/AGENT-MEMORY.md).
+
 ## MCP server
 
 Retex ships a zero-dependency MCP (Model Context Protocol) server so any MCP
@@ -257,7 +279,9 @@ retex mcp --vault ./CRM
 
 The server preserves `list_notes`, `search_notes`, `read_note`, `get_board`,
 and `get_stats`, and adds structured `query_records`, budgeted
-`recall_context`, `get_links`, and `get_schema`. `read_note` returns
+`recall_context`, `get_links`, and `get_schema`, plus read-only
+`memory_context`, `memory_recall` and `memory_review` (`memory_propose` only
+with `--allow-write`). `read_note` returns
 `contentHash`; write tools accept optional `expected_hash`; and query/recall
 accept semicolon-separated `on_or_before` and `on_or_after` date filters.
 Mutation tools are rejected even when invoked directly, and note paths are
@@ -531,6 +555,8 @@ Implemented:
 - Undo history with cross-process journal locking
 - Native FSEvents watching on macOS and lightweight polling on Linux/Windows
 - Vault health checks (`retex doctor`)
+- Agent memory: budgeted context packs, validated proposals, operator-approved
+  promotion and supersession, usage counters, and memory MCP tools
 - Backwards-compatible MCP tools plus structured query, recall, link, and
   schema interfaces
 - Notion ZIP, Obsidian, and generic Markdown-vault imports with attachment
