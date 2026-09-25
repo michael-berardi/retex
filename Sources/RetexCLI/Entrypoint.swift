@@ -32,7 +32,7 @@ enum RetexCLI {
 
         do {
             let invocation = try Invocation(arguments)
-            if invocation.flag("help") {
+            if invocation.flag("help"), invocation.command != "memory" {
                 print(help)
                 return
             }
@@ -509,6 +509,10 @@ enum RetexCLI {
 
     private static func runMemory(_ invocation: Invocation, store: MarkdownStore) throws {
         let memory = AgentMemory(store: store)
+        if invocation.flag("help") || invocation.positionals.isEmpty {
+            print(memoryHelp)
+            return
+        }
         let subcommand = try invocation.positional(0, named: "memory subcommand")
         switch subcommand {
         case "init":
@@ -1114,6 +1118,35 @@ enum RetexCLI {
 
     static let schemaVersion = 1
     static let version = RetexBuild.version
+
+    private static let memoryHelp = """
+    retex memory: shared agent memory (proposals need operator approval to go live).
+
+    Agents may run:
+      recall "<topic>" [--budget N]          Search approved memory (--include-proposed for pending)
+      context [--heading H]                  Print the active memory pack
+      propose --op add --json '<record>'     Propose a new lesson (lands as proposed)
+      propose --op upvote --key K --evidence LOC
+                                             Reinforce an existing record
+      review                                 List pending proposals
+      cite K                                 Record that a memory was used
+    Operator only (require --operator-approved):
+      promote K | reject K | stale K | retire K
+    Maintenance: init, doctor
+
+    Record JSON (add):
+      {"key":"global/<slug>" or "project-<name>/<slug>",
+       "kind":"correction|gotcha|decision|procedure|preference",
+       "title":"one-line rule", "body":"why and how to apply",
+       "evidence":["operator:YYYY-MM-DD"], "confidence":0.8,
+       "certainty":"observed|inferred|reported", "source_harness":"claude-code"}
+
+    Example:
+      retex memory propose --op add --vault ~/.ultraterm/memory --lean --json \
+        '{"key":"global/yaml-two-space-indent","kind":"correction","title":"Indent YAML with two spaces, never tabs","body":"Operator correction.","evidence":["operator:2026-09-25"],"confidence":0.9,"certainty":"observed","source_harness":"claude-code"}'
+
+    Common options: --vault PATH, --lean (compact JSON), --if-hash H
+    """
 
     private static let help = """
     Retex CLI. Read and write a Markdown workspace without opening the app.
