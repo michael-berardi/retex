@@ -513,6 +513,7 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(try toolNames(safe.stdout), [
             "list_notes", "search_notes", "read_note", "query_records",
             "recall_context", "get_links", "get_schema", "get_board", "get_stats",
+            "memory_context", "memory_recall", "memory_review",
         ])
 
         let writable = try run(["mcp"] + vaultArg + ["--allow-write"], stdin: request)

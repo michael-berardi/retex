@@ -391,6 +391,9 @@ enum RetexCLI {
                 }
             }
 
+        case "memory":
+            try runMemory(invocation, store: store)
+
         case "fleet":
             try runFleet(invocation)
         case "update":
@@ -500,6 +503,172 @@ enum RetexCLI {
         (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
             .standardizedFileURL
             .resolvingSymlinksInPath()
+    }
+
+    // MARK: - Agent memory (design: agent-memory-and-dream.md §3–§5)
+
+    private static func runMemory(_ invocation: Invocation, store: MarkdownStore) throws {
+        let memory = AgentMemory(store: store)
+        let subcommand = try invocation.positional(0, named: "memory subcommand")
+        switch subcommand {
+        case "init":
+            let url = AgentMemory.resolveVaultURL(
+                explicit: invocation.option("vault"),
+                environment: ProcessInfo.processInfo.environment,
+                homeDirectory: NSHomeDirectory()
+            )
+            let result = try memory.initialize(at: url)
+            let output = MemoryInitOutput(
+                vault: result.vault.url.path,
+                memoryDirectory: result.memoryDirectory.path
+            )
+            try self.output(output, json: invocation.isJSON) { _ in
+                "Initialized agent memory vault at \(url.path)"
+            }
+
+        case "context":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            if let scope = invocation.option("scope"), scope != "global" {
+                throw UsageError("--scope must be global")
+            }
+            let budget = try invocation.positiveIntOption("budget", maximum: AgentMemory.maxBudget)
+                ?? AgentMemory.defaultBudget
+            let result = try memory.context(
+                vault: vault,
+                scope: invocation.option("scope") ?? "global",
+                project: invocation.option("project"),
+                budget: budget,
+                harness: invocation.option("harness"),
+                heading: invocation.option("heading")
+            )
+            try output(result, json: invocation.isJSON) { $0.pack }
+
+        case "recall":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let query = try invocation.positional(1, named: "query")
+            let budget = try invocation.positiveIntOption("budget", maximum: 1_000_000)
+                ?? AgentMemory.defaultRecallBudget
+            let result = try memory.recall(
+                vault: vault,
+                query: query,
+                budget: budget,
+                includeProposed: invocation.flag("include-proposed")
+            )
+            try output(result, json: invocation.isJSON) { result in
+                result.records.map {
+                    "\($0.title) [score \($0.score)]\n  \($0.path)\n\($0.excerpt)"
+                }.joined(separator: "\n\n")
+            }
+
+        case "propose":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let op = try invocation.requiredOption("op")
+            let result = try memory.propose(
+                vault: vault,
+                op: op,
+                key: invocation.option("key"),
+                recordJSON: try recordJSONData(invocation),
+                evidence: invocation.evidenceOptions("evidence"),
+                reason: invocation.option("reason"),
+                sourceHarness: invocation.option("source-harness"),
+                ifHash: invocation.option("if-hash")
+            )
+            try output(result, json: invocation.isJSON) { result in
+                "\(result.op) \(result.key) -> \(result.status)\n  \(result.path)"
+            }
+
+        case "promote", "reject", "stale":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let key = try invocation.positional(1, named: "key")
+            let result: AgentMemory.MutationResult
+            switch subcommand {
+            case "promote":
+                result = try memory.promote(
+                    vault: vault, key: key,
+                    operatorApproved: invocation.flag("operator-approved"),
+                    ifHash: invocation.option("if-hash")
+                )
+            case "reject":
+                result = try memory.reject(
+                    vault: vault, key: key,
+                    operatorApproved: invocation.flag("operator-approved"),
+                    ifHash: invocation.option("if-hash")
+                )
+            default:
+                result = try memory.stale(
+                    vault: vault, key: key,
+                    operatorApproved: invocation.flag("operator-approved"),
+                    ifHash: invocation.option("if-hash")
+                )
+            }
+            try output(result, json: invocation.isJSON) { result in
+                "\(result.op) \(result.key) -> \(result.status)\n  \(result.path)"
+            }
+
+        case "retire":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let key = try invocation.positional(1, named: "key")
+            let result = try memory.retire(
+                vault: vault, key: key,
+                reason: invocation.option("reason"),
+                operatorApproved: invocation.flag("operator-approved"),
+                ifHash: invocation.option("if-hash")
+            )
+            try output(result, json: invocation.isJSON) { result in
+                "\(result.op) \(result.key) -> \(result.status)\n  \(result.path)"
+            }
+
+        case "review":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let items = try memory.review(vault: vault)
+            try output(items, json: invocation.isJSON) { items in
+                items.isEmpty ? "No proposed memories." : items.map { item in
+                    let ready = item.promoteReady ? " [promote-ready]" : ""
+                    return "\(item.key) — \(item.title) (support \(item.support), \(item.kind))\(ready)"
+                }.joined(separator: "\n")
+            }
+
+        case "cite":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let key = try invocation.positional(1, named: "key")
+            let result = try memory.cite(vault: vault, key: key)
+            try output(result, json: invocation.isJSON) { result in
+                "Cited \(result.key) (counters updated: \(result.countersUpdated == true))"
+            }
+
+        case "doctor":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let report = try memory.doctor(vault: vault)
+            try output(report, json: invocation.isJSON) { report in
+                var lines = ["Agent memory records: \(report.records)"]
+                if report.issues.isEmpty {
+                    lines.append("No issues found.")
+                } else {
+                    lines.append("Issues:")
+                    lines.append(contentsOf: report.issues.map { "  - \($0)" })
+                }
+                return lines.joined(separator: "\n")
+            }
+            if !report.ok { throw SimpleExit(code: 1) }
+
+        default:
+            throw UsageError(
+                "Unknown memory subcommand: \(subcommand) (use init, context, recall, propose, promote, reject, retire, stale, review, cite, or doctor)"
+            )
+        }
+    }
+
+    /// `--json <record>` (inline), `--json=<record>`, or `--json-file <path>`.
+    /// A bare `--json` stays the machine-output flag, so an inline record
+    /// passed after a space-separated `--json` arrives as a positional.
+    private static func recordJSONData(_ invocation: Invocation) throws -> Data? {
+        if let path = invocation.option("json-file") {
+            let url = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+            return try Data(contentsOf: url)
+        }
+        if let inline = invocation.option("json") { return Data(inline.utf8) }
+        if invocation.positionals.count > 1 { return Data(invocation.positionals[1].utf8) }
+        return nil
     }
 
     private static func runFleet(_ invocation: Invocation) throws {
@@ -972,6 +1141,8 @@ enum RetexCLI {
       undo      Restore a record to its state before the last mutation
       log       List undo history entries for a record
       doctor    Validate vault structure, config, and journal (--strict gates)
+      memory    Agent memory vault: init, context, recall, propose, promote,
+                reject, retire, stale, review, cite, doctor
       watch     Stream file-change events for a vault (Ctrl-C to stop)
       mcp       Run the read-only MCP server (--allow-write is explicit opt-in)
       export    Encrypt the vault and attachments into a portable file
@@ -993,6 +1164,14 @@ enum RetexCLI {
       retex move ./CRM/Deals/acme-redesign.md Proposal --rank 3 --lean
       retex board --vault ./CRM --view pipeline --lean
       retex undo ./CRM/Deals/acme-redesign.md --lean
+      retex memory init --lean
+      retex memory context --project lds --budget 6000 --lean
+      retex memory recall "how do we deploy" --budget 4000 --lean
+      retex memory propose --op add --json-file record.json --evidence pi:2026-09-25-s3#12 --lean
+      retex memory review --lean
+      retex memory promote global/deploy-lds --operator-approved --lean
+      retex memory cite global/deploy-lds --lean
+      retex memory doctor --lean
       retex doctor --vault ./CRM --strict --lean
       retex watch --vault ./CRM --lean
       retex mcp --vault ./CRM
@@ -1077,7 +1256,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "uc", "lean", "raw-json", "no-uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update"].contains(raw) {
+            } else if ["json", "uc", "lean", "raw-json", "no-uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update", "operator-approved", "include-proposed"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -1097,6 +1276,10 @@ private struct Invocation {
 
     func flag(_ name: String) -> Bool { flags.contains(name) }
     func option(_ name: String) -> String? { options[name]?.last }
+
+    /// All repeatable option values in the order given (used by
+    /// `retex memory propose --evidence`).
+    func evidenceOptions(_ name: String) -> [String] { options[name] ?? [] }
 
     func requiredOption(_ name: String) throws -> String {
         guard let value = option(name) else { throw UsageError("--\(name) is required") }
@@ -1416,6 +1599,11 @@ private struct CountOutput: Encodable {
 private struct TypeCount: Encodable {
     let type: String
     let count: Int
+}
+
+private struct MemoryInitOutput: Encodable {
+    let vault: String
+    let memoryDirectory: String
 }
 
 private struct UsageError: LocalizedError {

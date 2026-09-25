@@ -21,18 +21,23 @@ public struct MCPServer {
     private let uc: Bool
     private let input: FileHandle
     private let output: FileHandle
+    /// Dedicated agent-memory vault. nil resolves `$AGENT_MEMORY_VAULT` or
+    /// `~/.local/share/agent-memory` at call time.
+    private let memoryVault: Vault?
 
     public init(
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
-        uc: Bool = true
+        uc: Bool = true,
+        memoryVault: Vault? = nil
     ) {
         self.init(
             vault: vault,
             store: store,
             readOnly: readOnly,
             uc: uc,
+            memoryVault: memoryVault,
             input: .standardInput,
             output: .standardOutput
         )
@@ -44,6 +49,7 @@ public struct MCPServer {
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
         uc: Bool = true,
+        memoryVault: Vault? = nil,
         input: FileHandle,
         output: FileHandle
     ) {
@@ -51,6 +57,7 @@ public struct MCPServer {
         self.store = store
         self.readOnly = readOnly
         self.uc = uc
+        self.memoryVault = memoryVault
         self.input = input
         self.output = output
     }
@@ -595,6 +602,104 @@ public struct MCPServer {
             }
             return .stringDict(["board": columns.joined(separator: "\n\n")])
 
+        // Agent memory (read-only; promotion is never exposed over MCP).
+        case "memory_context":
+            let agentMemory = AgentMemory(store: store)
+            if let scope = arg("scope"), scope != "global" {
+                throw ToolError(message: "scope must be global")
+            }
+            let budget = try positiveInteger(arg("budget"), name: "budget", maximum: AgentMemory.maxBudget)
+                ?? AgentMemory.defaultBudget
+            let result = try agentMemory.context(
+                vault: try memoryVaultOrThrow(),
+                scope: arg("scope") ?? "global",
+                project: arg("project"),
+                budget: budget,
+                harness: arg("harness")
+            )
+            return .object([
+                "pack": .string(result.pack),
+                "budget": .string(String(result.budget)),
+                "usedBytes": .string(String(result.usedBytes)),
+                "emitted": .string(String(result.emitted)),
+                "totalActive": .string(String(result.totalActive)),
+                "countersUpdated": .string(result.countersUpdated ? "true" : "false"),
+            ])
+
+        case "memory_recall":
+            guard let query = arg("query") else { throw ToolError(message: "memory_recall requires query") }
+            let budget = try positiveInteger(arg("budget"), name: "budget", maximum: 1_000_000)
+                ?? AgentMemory.defaultRecallBudget
+            let result = try AgentMemory(store: store).recall(
+                vault: try memoryVaultOrThrow(),
+                query: query,
+                budget: budget,
+                includeProposed: (arg("include_proposed") ?? "false").lowercased() == "true"
+            )
+            return .object([
+                "query": .string(result.query),
+                "budgetBytes": .string(String(result.budgetBytes)),
+                "usedBytes": .string(String(result.usedBytes)),
+                "truncated": .string(result.truncated ? "true" : "false"),
+                "records": .array(result.records.map { item in
+                    .object([
+                        "key": .string(item.key),
+                        "title": .string(item.title),
+                        "path": .string(item.path),
+                        "status": .string(item.status),
+                        "score": .string(String(item.score)),
+                        "excerpt": .string(item.excerpt),
+                    ])
+                }),
+            ])
+
+        case "memory_review":
+            let items = try AgentMemory(store: store).review(vault: try memoryVaultOrThrow())
+            return .object([
+                "count": .string(String(items.count)),
+                "proposals": .array(items.map { item in
+                    .object([
+                        "key": .string(item.key),
+                        "title": .string(item.title),
+                        "kind": .string(item.kind),
+                        "support": .string(String(item.support)),
+                        "distinctSessions": .string(String(item.distinctSessions)),
+                        "promoteReady": .string(item.promoteReady ? "true" : "false"),
+                    ])
+                }),
+            ])
+
+        case "memory_propose":
+            // Write tool: only exposed when the server runs with --allow-write.
+            guard !readOnly else {
+                throw ToolError(message: "memory_propose requires --allow-write")
+            }
+            guard let op = arg("op") else { throw ToolError(message: "memory_propose requires op") }
+            var recordData: Data?
+            if let record = arg("record") { recordData = Data(record.utf8) }
+            let evidence = (arg("evidence") ?? "")
+                .split(separator: ";")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            let result = try AgentMemory(store: store).propose(
+                vault: try memoryVaultOrThrow(),
+                op: op,
+                key: arg("key"),
+                recordJSON: recordData,
+                evidence: evidence,
+                reason: arg("reason"),
+                sourceHarness: arg("source_harness"),
+                ifHash: arg("if_hash")
+            )
+            return .stringDict([
+                "ok": "true",
+                "op": result.op,
+                "key": result.key,
+                "path": result.path,
+                "status": result.status,
+                "contentHash": result.contentHash,
+            ])
+
         default:
             throw ToolError(message: "Unknown tool: \(name)")
         }
@@ -606,6 +711,22 @@ public struct MCPServer {
             throw ToolError(message: "limit must be an integer from 1 through 1000")
         }
         return limit
+    }
+
+    /// The agent-memory vault: injected (tests, embedding hosts) or resolved
+    /// from the environment. A missing vault is a tool error — memory tools
+    /// never create the vault implicitly.
+    private func memoryVaultOrThrow() throws -> Vault {
+        if let memoryVault { return memoryVault }
+        let url = AgentMemory.resolveVaultURL(
+            explicit: nil,
+            environment: ProcessInfo.processInfo.environment,
+            homeDirectory: NSHomeDirectory()
+        )
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw ToolError(message: "agent memory vault not initialized")
+        }
+        return Vault(url: url)
     }
 
     private func positiveInteger(
@@ -737,6 +858,7 @@ public struct MCPServer {
     private static let readOnlyTools: Set<String> = [
         "list_notes", "search_notes", "read_note", "query_records",
         "recall_context", "get_links", "get_schema", "get_board", "get_stats",
+        "memory_context", "memory_recall", "memory_review",
     ]
 
     private var knownTools: Set<String> {
@@ -909,7 +1031,73 @@ public struct MCPServer {
                 ])
             ),
         ]
-        return readOnly ? definitions.filter { Self.readOnlyTools.contains($0.name) } : definitions
+        let memoryDefinitions = memoryToolDefinitions
+        return readOnly
+            ? definitions.filter { Self.readOnlyTools.contains($0.name) } + memoryDefinitions
+            : definitions + memoryDefinitions
+    }
+
+    /// Agent-memory tools. The three read tools are always available;
+    /// `memory_propose` only when the server runs with --allow-write.
+    /// Promotion, rejection, retirement, and staleness are operator actions
+    /// and are never exposed over MCP.
+    private var memoryToolDefinitions: [ToolDefinition] {
+        var definitions = [
+            ToolDefinition(
+                name: "memory_context",
+                description: "Budgeted session pack of active agent memories (scope global plus an optional project). Default budget 6000, hard max 8000.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "scope": .object(["type": .string("string")]),
+                        "project": .object(["type": .string("string")]),
+                        "budget": .object(["type": .string("integer")]),
+                        "harness": .object(["type": .string("string")]),
+                    ]),
+                ])
+            ),
+            ToolDefinition(
+                name: "memory_recall",
+                description: "On-demand ranked recall over active agent memories (proposals with include_proposed=true, labelled). Default budget 4000 bytes.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "query": .object(["type": .string("string")]),
+                        "budget": .object(["type": .string("integer")]),
+                        "include_proposed": .object(["type": .string("string")]),
+                    ]),
+                    "required": .array([.string("query")]),
+                ])
+            ),
+            ToolDefinition(
+                name: "memory_review",
+                description: "List proposed agent memories by support, with the promote-ready flag.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
+                ])
+            ),
+        ]
+        if !readOnly {
+            definitions.append(ToolDefinition(
+                name: "memory_propose",
+                description: "Propose an agent-memory change: op=add|upvote|edit|retire. Args: op (required), record (JSON object as a string), key, evidence (semicolon-separated locators), reason, source_harness, if_hash.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "op": .object(["type": .string("string")]),
+                        "key": .object(["type": .string("string")]),
+                        "record": .object(["type": .string("string")]),
+                        "evidence": .object(["type": .string("string")]),
+                        "reason": .object(["type": .string("string")]),
+                        "source_harness": .object(["type": .string("string")]),
+                        "if_hash": .object(["type": .string("string")]),
+                    ]),
+                    "required": .array([.string("op")]),
+                ])
+            ))
+        }
+        return definitions
     }
 
     private struct ToolError: Error {

@@ -197,8 +197,12 @@ public struct UndoHistory: Sendable {
     /// Serializes a note mutation with its undo journal across Retex processes.
     /// `prepare` runs after the lock is acquired so expected-hash checks and
     /// writes form one compare-and-set operation for cooperating clients.
+    /// `fileMode` (used by the agent-memory layer, which keeps records at
+    /// 0600) re-applies the POSIX mode right after the atomic write, inside
+    /// the same lock.
     func performMutation(
         path: String,
+        fileMode: Int? = nil,
         prepare: () throws -> (previousSource: String, nextSource: String)
     ) throws {
         lock.lock()
@@ -214,6 +218,14 @@ public struct UndoHistory: Sendable {
                     atomically: true,
                     encoding: .utf8
                 )
+                #if !os(Windows)
+                if let fileMode {
+                    try? FileManager.default.setAttributes(
+                        [.posixPermissions: fileMode],
+                        ofItemAtPath: path
+                    )
+                }
+                #endif
             } catch {
                 try? truncateJournal(journalURL, to: append.previousSize)
                 throw error
