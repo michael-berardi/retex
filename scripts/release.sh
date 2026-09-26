@@ -20,6 +20,8 @@ set -euo pipefail
 # ~/.zshenv exports ULTRACOMPACT_LIB on this fleet, and zsh re-sources it
 # for this script, which also breaks the x86_64 cross-build (host-only lib).
 unset ULTRACOMPACT_LIB
+# Official macOS binaries link the prebuilt engine; source builds default to off.
+export ULTRACOMPACT_DIST=1
 
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:?Set RETEX_SIGNING_IDENTITY to a Developer ID Application identity}"
