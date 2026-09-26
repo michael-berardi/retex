@@ -62,16 +62,40 @@ leaves the machine.
 
 ## Install and run
 
-Build from source with Swift Package Manager:
+Download the latest release from the
+[Releases](https://github.com/michael-berardi/retex/releases/latest) page and
+verify it against `SHA256SUMS`.
+
+macOS (universal, Developer ID signed and notarized):
+
+```bash
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
+grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
+unzip retex-universal.zip        # retex binary + docs
+sudo mv retex /usr/local/bin/
+retex --help
+```
+
+Linux (static, `x86_64` or `aarch64`):
+
+```bash
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-linux-x86_64.tar.gz
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
+grep ' retex-linux-x86_64.tar.gz$' SHA256SUMS | sha256sum -c -
+tar -xzf retex-linux-x86_64.tar.gz
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/michael-berardi/retex.git
 cd retex
-swift build
-.build/debug/retex --help
+swift build -c release
+.build/release/retex --help
 ```
 
-On Windows, run `.build\debug\retex.exe --help`.
+On Windows, run `.build\release\retex.exe --help`.
 
 On macOS, source builds fetch the UltraCompact engine, a proprietary static
 library from Implose Cybernetics. Official macOS binaries and the hosted Linux
@@ -80,15 +104,6 @@ remain canonical JSON unless linked with the engine explicitly; Windows builds
 always use canonical JSON.
 The engine is governed by `LICENSE-ULTRACOMPACT`, not Retex's MIT license. Build
 without it with `ULTRACOMPACT_DIST=0 swift build`.
-
-Or grab a signed, notarized release from the
-[Releases](https://github.com/michael-berardi/retex/releases) page:
-
-```bash
-grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
-unzip retex-universal.zip        # retex binary + docs
-sudo mv retex /usr/local/bin/
-```
 
 ### Agent skill
 
@@ -576,16 +591,14 @@ Not yet shipped:
 
 ## Contributing
 
-Bug reports and focused pull requests are welcome on
-[GitHub](https://github.com/michael-berardi/retex). Keep Markdown as the
-source of truth, avoid committing private vault data or credentials, and
-include documentation updates when a user-facing command or record property
-changes.
+Bug reports and focused pull requests are welcome; see
+[CONTRIBUTING.md](CONTRIBUTING.md). Keep Markdown as the source of truth, avoid
+committing private vault data or credentials, and include documentation
+updates when a user-facing command or record property changes.
 
 ## Security
 
-Report vulnerabilities privately via GitHub Security Advisories rather than
-public issues. macOS release assets are Developer ID–signed and submitted to
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). macOS release assets are Developer ID–signed and submitted to
 Apple notarization before publication. Verify `SHA256SUMS` and run
 `codesign --verify --strict --verbose=2 retex` before installing.
 
