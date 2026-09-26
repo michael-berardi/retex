@@ -10,9 +10,15 @@
   <a href="#updates">Updates</a>
 </p>
 
-Retex is a local-first Markdown vault architecture: your vault is an ordinary
-folder of Markdown files with YAML front matter, and Retex gives it a fast,
-structured query surface — exact search, agent recall, privacy-safe vocabulary extraction, arbitrary record types,
+<p align="center">
+  <a href="https://github.com/michael-berardi/retex/releases/latest"><img src="https://img.shields.io/github/v/release/michael-berardi/retex?label=release" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/michael-berardi/retex" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="macOS, Linux and Windows" />
+  <img src="https://img.shields.io/badge/MCP-server-8A2BE2" alt="MCP server" />
+</p>
+
+Your notes, CRM, tasks and agent memory can all live in one ordinary folder of
+Markdown files. Retex gives that folder a fast, structured query surface — exact search, agent recall, privacy-safe vocabulary extraction, arbitrary record types,
 property filters, backlinks, boards, saved views, undo, watching, and MCP —
 without locking files in a database.
 
@@ -22,6 +28,20 @@ format and the CLI are the product, and any reader consumes the same
 telemetry. The optional UltraCompact engine records local usage metrics only
 when an operator explicitly enables its telemetry sink; note content never
 leaves the machine.
+
+## Quick look
+
+```bash
+retex init --vault ~/Documents/CRM --lean
+retex create --vault ~/Documents/CRM --type invoice --title "Acme August" --set amount=11500 --set owner=Sam --lean
+retex query --vault ~/Documents/CRM --type invoice --where owner=Sam --lean
+retex recall "what changed in the release" --vault ~/Documents/CRM --budget 12000 --lean
+retex mcp --vault ~/Documents/CRM        # read-only MCP server for any agent
+```
+
+`--lean` prints a compact, token-efficient format for agents and `--raw-json`
+prints plain JSON; either way the notes stay ordinary Markdown you can open in
+any editor.
 
 ## Features
 
