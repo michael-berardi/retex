@@ -21,7 +21,6 @@ Bug reports, focused fixes and documentation improvements are welcome.
 ```sh
 swift build
 swift test
-python3 scripts/contract_scan.py --help   # agent-contract scanner
 ```
 
 Markdown stays the source of truth: a change must never require a database or
