@@ -8,3 +8,4 @@ release/
 .bench-*/
 __pycache__/
 .ruff_cache/
+.build-*/

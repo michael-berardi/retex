@@ -4,17 +4,17 @@ import PackageDescription
 import Foundation
 
 // UltraCompact engine (proprietary, Implose Cybernetics — see
-// LICENSE-ULTRACOMPACT). Default public builds fetch the prebuilt universal
-// macOS xcframework from the Implose release service and link it on macOS.
-// Overrides:
+// LICENSE-ULTRACOMPACT). Source builds are engine-free by default: nothing
+// proprietary is fetched or linked, and machine output is canonical JSON.
+// Official releases opt in explicitly:
+//   ULTRACOMPACT_DIST=1     fetch the prebuilt universal macOS xcframework
+//                           from the Implose release service and link it
 //   ULTRACOMPACT_LIB=<dir>  link a local engine build (libultracompact.a)
-//   ULTRACOMPACT_DIST=0     build without the engine; machine output is
-//                           canonical JSON, no proprietary code fetched/linked
 let ultraCompactLib = ProcessInfo.processInfo.environment["ULTRACOMPACT_LIB"] ?? ""
 let ultraCompactLibExists = !ultraCompactLib.isEmpty
     && FileManager.default.fileExists(atPath: ultraCompactLib + "/libultracompact.a")
 let ultraCompactDist = !ultraCompactLibExists
-    && (ProcessInfo.processInfo.environment["ULTRACOMPACT_DIST"] ?? "1") != "0"
+    && ProcessInfo.processInfo.environment["ULTRACOMPACT_DIST"] == "1"
 let ultraCompactLinked = ultraCompactLibExists || ultraCompactDist
 
 // Built from explicitly typed pieces: one nested conditional expression

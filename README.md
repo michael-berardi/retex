@@ -117,13 +117,12 @@ swift build -c release
 
 On Windows, run `.build\release\retex.exe --help`.
 
-On macOS, source builds fetch the UltraCompact engine, a proprietary static
-library from Implose Cybernetics. Official macOS binaries and the hosted Linux
-MCP image use it for token-minimized machine output. Standalone Linux builds
-remain canonical JSON unless linked with the engine explicitly; Windows builds
-always use canonical JSON.
-The engine is governed by `LICENSE-ULTRACOMPACT`, not Retex's MIT license. Build
-without it with `ULTRACOMPACT_DIST=0 swift build`.
+Source builds are pure MIT: nothing proprietary is fetched or linked, and
+machine output is canonical JSON. Official macOS binaries and the hosted Linux
+MCP image additionally link UltraCompact, a proprietary engine from Implose
+Cybernetics, for token-minimized output. It is governed by
+`LICENSE-ULTRACOMPACT`, not Retex's MIT license, and is only fetched when you
+opt in with `ULTRACOMPACT_DIST=1 swift build` on macOS.
 
 ### Agent skill
 
@@ -198,8 +197,8 @@ response envelope (`schema_version` is bumped when that contract changes):
 `--lean` is an additive machine-output modifier for agents. It can be used by
 itself and emits the command payload directly, without `ok`, `data`, or
 `schema_version`. Builds linked with UltraCompact pass the direct payload
-through UC (small payloads may remain JSON); engine-free Linux and Windows
-builds and `ULTRACOMPACT_DIST=0` builds fall back to compact JSON with sorted
+through UC (small payloads may remain JSON); engine-free builds (the source
+default, Linux and Windows) fall back to compact JSON with sorted
 keys. Use `--lean --raw-json` when an agent needs deterministic, compact,
 directly parseable JSON.
 
