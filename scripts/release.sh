@@ -17,11 +17,6 @@
 set -euo pipefail
 # Release artifacts must be reproducible: always link the pinned binary
 # target from the release service, never a developer's local engine build.
-# ~/.zshenv exports ULTRACOMPACT_LIB on this fleet, and zsh re-sources it
-# for this script, which also breaks the x86_64 cross-build (host-only lib).
-unset ULTRACOMPACT_LIB
-# Official macOS binaries link the prebuilt engine; source builds default to off.
-export ULTRACOMPACT_DIST=1
 
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
 IDENTITY="${RETEX_SIGNING_IDENTITY:?Set RETEX_SIGNING_IDENTITY to a Developer ID Application identity}"
@@ -48,7 +43,7 @@ cd "$ROOT"
 stage_support() {
   local destination="$1"
   mkdir -p "$destination/deploy/readonly-mcp"
-  cp README.md LICENSE LICENSE-ULTRACOMPACT "$destination/"
+  cp README.md LICENSE "$destination/"
   cp deploy/readonly-mcp/{Dockerfile,gateway.py,refresh_vault.py,validate_vault.py,verify_fleet.py} \
     "$destination/deploy/readonly-mcp/"
 }
@@ -84,7 +79,7 @@ codesign --verify --strict --verbose=1 \
   "$BUILD/bin/retex"
 stage_support "$BUILD/bin"
 MAC_ARCHIVE="$OUT/retex-universal.zip"
-(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
+(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
 
 xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
 STAGE="$BUILD/macos-stage"
@@ -93,7 +88,7 @@ ditto -x -k "$MAC_ARCHIVE" "$STAGE"
 xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
 spctl -a -t install -vv "$STAGE/retex"
 rm -f "$MAC_ARCHIVE"
-(cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE LICENSE-ULTRACOMPACT deploy)
+(cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
 
 for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl"; do
   ARCH="${spec%%:*}"
@@ -126,7 +121,7 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   chmod 755 "$STAGE/retex"
   stage_support "$STAGE"
   COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" \
-    retex README.md LICENSE LICENSE-ULTRACOMPACT deploy
+    retex README.md LICENSE deploy
 done
 
 if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
@@ -136,7 +131,7 @@ if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
   cp "$RETEX_WINDOWS_BINARY" "$STAGE/retex.exe"
   stage_support "$STAGE"
   (cd "$STAGE" && zip -qry "$OUT/retex-windows-x86_64.zip" \
-    retex.exe README.md LICENSE LICENSE-ULTRACOMPACT deploy)
+    retex.exe README.md LICENSE deploy)
 fi
 
 : > "$OUT/SHA256SUMS"

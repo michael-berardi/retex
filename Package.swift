@@ -1,80 +1,6 @@
 // swift-tools-version: 6.0
 
 import PackageDescription
-import Foundation
-
-// UltraCompact engine (proprietary, Implose Cybernetics — see
-// LICENSE-ULTRACOMPACT). Source builds are engine-free by default: nothing
-// proprietary is fetched or linked, and machine output is canonical JSON.
-// Official releases opt in explicitly:
-//   ULTRACOMPACT_DIST=1     fetch the prebuilt universal macOS xcframework
-//                           from the Implose release service and link it
-//   ULTRACOMPACT_LIB=<dir>  link a local engine build (libultracompact.a)
-let ultraCompactLib = ProcessInfo.processInfo.environment["ULTRACOMPACT_LIB"] ?? ""
-let ultraCompactLibExists = !ultraCompactLib.isEmpty
-    && FileManager.default.fileExists(atPath: ultraCompactLib + "/libultracompact.a")
-let ultraCompactDist = !ultraCompactLibExists
-    && ProcessInfo.processInfo.environment["ULTRACOMPACT_DIST"] == "1"
-let ultraCompactLinked = ultraCompactLibExists || ultraCompactDist
-
-// Built from explicitly typed pieces: one nested conditional expression
-// exceeded the Swift 6.0/6.1 type checker's time limit.
-let engineDependencies: [Target.Dependency] =
-    (ultraCompactLibExists ? ["CUltraCompact"] : [])
-    + (ultraCompactDist
-        ? [
-            .target(name: "CUltraCompact", condition: .when(platforms: [.macOS])),
-            .target(name: "UltraCompact", condition: .when(platforms: [.macOS])),
-        ]
-        : [])
-
-let coreLinkerSettings: [LinkerSetting] = ultraCompactLibExists
-    ? [
-        // Local engine build link; desktop/server only, never on iOS.
-        .unsafeFlags(["-L", ultraCompactLib, "-lultracompact"], .when(platforms: [.macOS, .linux])),
-    ]
-    : []
-
-let cliLinkerSettings: [LinkerSetting] = ultraCompactLibExists
-    ? [.unsafeFlags(["-L", ultraCompactLib, "-lultracompact"])]
-    : []
-
-var targets: [Target] = [
-    .target(
-        name: "RetexCore",
-        dependencies: [.product(name: "Crypto", package: "swift-crypto")] + engineDependencies,
-        linkerSettings: coreLinkerSettings
-    ),
-    .executableTarget(
-        name: "RetexCLI",
-        dependencies: ["RetexCore"] + engineDependencies,
-        linkerSettings: cliLinkerSettings
-    ),
-    .testTarget(
-        name: "RetexCoreTests",
-        dependencies: ["RetexCore"]
-    ),
-    .testTarget(
-        name: "RetexCLITests",
-        dependencies: ["RetexCLI"]
-    ),
-]
-
-if ultraCompactLinked {
-    // Umbrella for the engine's C ABI (uc.h + module map). Declared only
-    // when the engine is linked, so engine-free builds never reference it.
-    targets.append(.target(name: "CUltraCompact"))
-}
-
-if ultraCompactDist {
-    // Prebuilt proprietary engine (universal macOS static library).
-    // Version + checksum pin; update both on engine releases.
-    targets.append(.binaryTarget(
-        name: "UltraCompact",
-        url: "https://software.implosecybernetics.com/api/products/ultracompact/releases/0.1.1/artifacts/macos-universal/installer/UltraCompact.xcframework.zip",
-        checksum: "dc29f1b114be48d8fae6ed7b91eb8c744f3c6e48f8f091429d37f02b3925aa8d"
-    ))
-}
 
 let package = Package(
     name: "Retex",
@@ -91,5 +17,10 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
     ],
-    targets: targets
+    targets: [
+        .target(name: "RetexCore", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
+        .executableTarget(name: "RetexCLI", dependencies: ["RetexCore"]),
+        .testTarget(name: "RetexCoreTests", dependencies: ["RetexCore"]),
+        .testTarget(name: "RetexCLITests", dependencies: ["RetexCLI"]),
+    ]
 )

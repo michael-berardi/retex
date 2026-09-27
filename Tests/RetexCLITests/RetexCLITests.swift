@@ -30,9 +30,6 @@ final class RetexCLITests: XCTestCase {
     private var vaultDir: URL!
 
     override func setUpWithError() throws {
-        // Test encodes must not pollute the opt-in local UC telemetry sink.
-        setenv("UC_TELEMETRY", "0", 1)
-        unsetenv("UC_TELEMETRY_PATH")
         vaultDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("retex-cli-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: vaultDir, withIntermediateDirectories: true)
@@ -76,6 +73,21 @@ final class RetexCLITests: XCTestCase {
     }
 
     // MARK: - Envelope contract
+
+    func testVersionFlagMatchesVersionCommand() throws {
+        let flagged = try run(["--version"])
+        let command = try run(["version"])
+        XCTAssertEqual(flagged.status, 0)
+        XCTAssertEqual(flagged.stdout, command.stdout)
+        XCTAssertTrue(flagged.stderr.isEmpty)
+    }
+
+    func testRemovedCodecFlagsAreRejected() throws {
+        for flag in ["--uc", "--no-uc"] {
+            let result = try run(["count"] + vaultArg + [flag])
+            XCTAssertEqual(result.status, 64, "\(flag) should no longer be accepted")
+        }
+    }
 
     func testSuccessEnvelopeCarriesSchemaVersionAndOkTrue() throws {
         _ = try run(["create"] + vaultArg + ["--title", "Envelope", "--type", "note"])

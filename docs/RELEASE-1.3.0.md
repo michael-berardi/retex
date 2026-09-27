@@ -7,7 +7,7 @@ a regression test or a before/after measurement on the same machine.
 
 The synthetic vault had 20,000 notes (79 MB, flat YAML, flow-list tags, 5% of
 lines containing accented words). It ran on Linux x86_64 with 4 cores and a
-release build without the UltraCompact engine. Each time is the best of 3
+release build. Each time is the best of 3
 wall-clock runs, including process start.
 
 | Command | 1.2.2 | 1.3.0 | Output |
@@ -99,9 +99,8 @@ The causes were these:
 
 ### macOS release verification
 
-- `update --fleet` parsed the candidate's `create --json` reply as plain JSON,
-  but `--json` emits UltraCompact when the engine is linked. The mutation probe
-  now requests `--raw-json`, and accepts the clone's `realpath` spelling:
+- `update --fleet` requests `--raw-json` for the candidate's `create` reply
+  and accepts the clone's `realpath` spelling:
   Foundation drops macOS's `/private` prefix while the CLI reports it.
 - A quoted flow list (`tags: "[work, home]"`) produced the tags `[work` and
   `home]`; it reads as `work`, `home` again, as in 1.2.2.

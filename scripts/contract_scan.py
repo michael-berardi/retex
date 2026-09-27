@@ -7,13 +7,12 @@ are exact-migration candidates: a date-like field exists but as_of does not, so
 backfilling as_of copies an existing value and invents nothing. The certainty
 and unknowns properties are never auto-fillable; they require author judgment.
 
-Never writes to the vault. Pipeline: retex query --json | uc decode.
+Never writes to the vault. Pipeline: retex query --json.
 
 Usage: contract_scan.py <vault> [<vault>...]
 
 Environment:
   RETEX_BIN   path to the retex binary (default: retex from PATH)
-  UC_BIN      path to the uc codec binary (default: uc from PATH)
 
 Suggested operation: run weekly per vault, track full_contract coverage over
 time, and alert when new records appear without as_of or certainty. The owner
@@ -29,7 +28,6 @@ import subprocess
 import sys
 
 RETEX = os.environ.get("RETEX_BIN") or shutil.which("retex")
-UC = os.environ.get("UC_BIN") or shutil.which("uc")
 TYPES = ["memory", "report", "audit"]
 CONTRACT = ["as_of", "certainty", "source", "unknowns"]
 DATE_LIKE = ["as_of", "date", "created", "accessed", "review_after"]
@@ -40,17 +38,12 @@ def query(vault: str, rtype: str) -> list[dict]:
         [RETEX, "query", "--vault", vault, "--type", rtype, "--limit", "10000", "--json"],
         capture_output=True, text=True, check=False,
     )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return []
-    payload = proc.stdout
-    if UC and not payload.lstrip().startswith("{"):
-        dec = subprocess.run([UC, "decode"], input=payload, capture_output=True, text=True, check=False)
-        if dec.returncode == 0 and dec.stdout.strip():
-            payload = dec.stdout
-    try:
-        return json.loads(payload)["data"]
-    except (json.JSONDecodeError, KeyError):
-        return []
+    if proc.returncode != 0:
+        raise RuntimeError(f"retex query failed for {vault} ({rtype}): {proc.stderr.strip()}")
+    if not proc.stdout.strip():
+        raise ValueError(f"retex query returned empty output for {vault} ({rtype})")
+    payload = json.loads(proc.stdout)
+    return payload["data"]
 
 
 def scan(vault: str) -> dict:
@@ -87,8 +80,6 @@ def main() -> int:
     if not RETEX:
         print("contract_scan: retex binary not found; set RETEX_BIN", file=sys.stderr)
         return 66
-    if not UC:
-        print("contract_scan: uc binary not found; set UC_BIN for large result sets", file=sys.stderr)
     for vault in sys.argv[1:]:
         print(json.dumps(scan(os.path.expanduser(vault)), indent=2))
     return 0

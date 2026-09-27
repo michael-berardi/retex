@@ -1,6 +1,3 @@
-#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-import CUltraCompact
-#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -357,22 +354,10 @@ public struct FleetUpgradeVerifier {
     }
 
     private func normalizedMachineOutput(_ output: Data) throws -> Data {
-#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-        let decoded = String(decoding: output, as: UTF8.self).withCString { input -> String? in
-            guard let json = uc_decode_json(input) else { return nil }
-            defer { uc_free_string(json) }
-            return String(cString: json)
-        }
-        guard let decoded, let data = decoded.data(using: .utf8) else {
-            throw VerificationError.commandFailed("command returned invalid machine output")
-        }
-        return data
-#else
         guard let object = try? JSONSerialization.jsonObject(with: output) else {
             throw VerificationError.commandFailed("command returned invalid machine output")
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-#endif
     }
 
     private func copyRetexScope(from source: URL, to destination: URL) throws {

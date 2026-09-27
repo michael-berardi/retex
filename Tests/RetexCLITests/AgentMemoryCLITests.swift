@@ -33,8 +33,6 @@ final class AgentMemoryCLITests: XCTestCase {
     private var scratchDir: URL!
 
     override func setUpWithError() throws {
-        setenv("UC_TELEMETRY", "0", 1)
-        unsetenv("UC_TELEMETRY_PATH")
         vaultDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("retex-memory-cli-\(UUID().uuidString)", isDirectory: true)
         scratchDir = FileManager.default.temporaryDirectory
@@ -55,7 +53,7 @@ final class AgentMemoryCLITests: XCTestCase {
         process.executableURL = Self.binPath.appendingPathComponent("retex")
         process.arguments = arguments
         process.environment = ProcessInfo.processInfo.environment.merging(
-            ["AGENT_MEMORY_VAULT": vaultDir.path, "UC_TELEMETRY": "0"]
+            ["AGENT_MEMORY_VAULT": vaultDir.path]
         ) { _, new in new }
         process.standardOutput = stdout
         process.standardError = stderr
@@ -247,7 +245,7 @@ final class AgentMemoryCLITests: XCTestCase {
 
         let bin = Self.binPath.appendingPathComponent("retex").path
         let environment = ProcessInfo.processInfo.environment.merging(
-            ["AGENT_MEMORY_VAULT": vaultDir.path, "UC_TELEMETRY": "0"]
+            ["AGENT_MEMORY_VAULT": vaultDir.path]
         ) { _, new in new }
         let failures = ResultBox<String>()
         DispatchQueue.concurrentPerform(iterations: 8) { worker in

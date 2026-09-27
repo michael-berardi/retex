@@ -153,15 +153,6 @@ def tool_text(result: Any) -> str:
 
 
 def parse_tool_json(text: str) -> dict[str, Any]:
-    if text.startswith("@UC1"):
-        text = subprocess.run(
-            [os.environ.get("UC_BIN", "uc"), "unpack"],
-            input=text,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        ).stdout
     payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError("tool response must be a JSON object")

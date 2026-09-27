@@ -42,7 +42,7 @@ retex board --vault "$RETEX_VAULT" --lean
 ```
 
 Prefer `--lean` for agent-facing output: it returns the command payload without
-an envelope, using UC when available and compact deterministic JSON otherwise.
+an envelope, as compact deterministic JSON.
 Use `--lean --raw-json` when exact direct JSON parsing is required. Keep
 `--raw-json` without `--lean` for cross-version compatibility gates that verify
 the established enveloped contract.

@@ -1,6 +1,3 @@
-#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-import CUltraCompact
-#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -18,7 +15,6 @@ public struct MCPServer {
     private let vault: Vault
     private let store: MarkdownStore
     private let readOnly: Bool
-    private let uc: Bool
     private let input: FileHandle
     private let output: FileHandle
     /// Dedicated agent-memory vault. nil resolves `$AGENT_MEMORY_VAULT` or
@@ -29,14 +25,12 @@ public struct MCPServer {
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
-        uc: Bool = true,
         memoryVault: Vault? = nil
     ) {
         self.init(
             vault: vault,
             store: store,
             readOnly: readOnly,
-            uc: uc,
             memoryVault: memoryVault,
             input: .standardInput,
             output: .standardOutput
@@ -48,7 +42,6 @@ public struct MCPServer {
         vault: Vault,
         store: MarkdownStore = MarkdownStore(),
         readOnly: Bool = true,
-        uc: Bool = true,
         memoryVault: Vault? = nil,
         input: FileHandle,
         output: FileHandle
@@ -56,7 +49,6 @@ public struct MCPServer {
         self.vault = vault
         self.store = store
         self.readOnly = readOnly
-        self.uc = uc
         self.memoryVault = memoryVault
         self.input = input
         self.output = output
@@ -242,7 +234,7 @@ public struct MCPServer {
             let requested = request.params?.protocolVersion ?? ""
             let supported = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
             let negotiated = supported.contains(requested) ? requested : "2024-11-05"
-            var result: [String: JSONValue] = [
+            let result: [String: JSONValue] = [
                 "protocolVersion": .string(negotiated),
                 "capabilities": .object([
                     "tools": .object([:])
@@ -252,11 +244,6 @@ public struct MCPServer {
                     "version": .string(RetexVersion.version),
                 ]),
             ]
-            if uc {
-                result["instructions"] = .string(
-                    "Tool results use UltraCompact, a proprietary token-efficient encoding. Packets are model-readable text; decode to canonical JSON with the uc CLI only when exact JSON form is required."
-                )
-            }
             writeResponse(id: id, result: .object(result))
         case "ping":
             writeResponse(id: id, result: .object([:]))
@@ -274,7 +261,7 @@ public struct MCPServer {
             }
             do {
                 let payload = try callTool(request.params)
-                writeResponse(id: id, result: toolResult(text: uc ? Self.ucPacket(payload) : ((try? AgentOutput.compactJSON(payload)) ?? "{}"), isError: false))
+                writeResponse(id: id, result: toolResult(text: try AgentOutput.compactJSON(payload), isError: false))
             } catch let error as ToolError {
                 // Tool execution failures are results with isError, not protocol errors.
                 writeResponse(id: id, result: toolResult(text: error.message, isError: true))
@@ -821,12 +808,6 @@ public struct MCPServer {
               )
         else { return }
         output.write(Data(data + [UInt8(ascii: "\n")]))
-    }
-
-    /// UC readable-mode packet for a tool payload. Falls back to compact JSON
-    /// off macOS or if encoding fails. Agents read the packet directly.
-    private static func ucPacket(_ value: JSONValue) -> String {
-        (try? AgentOutput.encode(value)) ?? "{}"
     }
 
     private static func idJSON(_ id: Id) -> Any {

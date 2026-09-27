@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Measure actual Retex output, not a re-encoding of a hypothetical payload.
+"""Measure actual Retex compact JSON output on a disposable synthetic vault.
 
-Uses a disposable synthetic vault and the installed uc default o200k counter.
-Reports text and complete MCP response costs separately; no provider-billing or
-universal savings claim. Exit nonzero on semantic mismatch or a measured token
-regression against the equivalent compact JSON baseline.
+Reports emitted byte counts and semantic equality to the raw-JSON CLI output.
+No external codec or tokenizer is required.
 """
 import argparse
 import json
@@ -25,24 +23,11 @@ def compact(value):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--retex", default=os.environ.get("RETEX", "retex"))
-    ap.add_argument("--uc", default=os.environ.get("UC", "uc"))
     args = ap.parse_args()
     results = []
 
-    def decode(text):
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return json.loads(run([args.uc, "decode"], text))
-
-    def count(text):
-        return int(run([args.uc, "count"], text))
-
-    def record(label, emitted, baseline):
-        actual, original = count(emitted), count(baseline)
-        results.append({"case": label, "emitted_tokens": actual, "compact_baseline_tokens": original,
-                        "saved_tokens": original - actual, "emitted_bytes": len(emitted.encode()),
-                        "baseline_bytes": len(baseline.encode())})
+    def record(label, emitted):
+        results.append({"case": label, "emitted_bytes": len(emitted.encode())})
 
     with tempfile.TemporaryDirectory(prefix="retex-output-bench-") as directory:
         vault = Path(directory) / "vault"
@@ -60,8 +45,8 @@ def main():
                 common = [args.retex, *command, "--vault", str(vault), "--json", *(["--lean"] if lean else [])]
                 emitted = run(common)
                 raw = json.loads(run([*common, "--raw-json"]))
-                assert decode(emitted) == raw, f"CLI semantic mismatch: {label}"
-                record(f"cli-{label}-{'lean' if lean else 'wrapped'}", emitted, compact(raw))
+                assert json.loads(emitted) == raw, f"CLI semantic mismatch: {label}"
+                record(f"cli-{label}-{'lean' if lean else 'wrapped'}", emitted)
 
         requests = "\n".join(compact(x) for x in [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
@@ -69,26 +54,18 @@ def main():
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "read_note", "arguments": {"path": str(notes / "note-00.md")}}},
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "recall_context", "arguments": {"query": "renewal", "budget": "4000"}}},
         ]) + "\n"
-        def mcp(extra):
-            lines = run([args.retex, "mcp", "--vault", str(vault), *extra], requests).splitlines()
-            return {json.loads(line)["id"]: json.loads(line) for line in lines}
-        encoded, raw = mcp([]), mcp(["--no-uc"])
-        assert encoded[1]["result"]["serverInfo"]["version"] == run([args.retex, "version"])
+        responses = {json.loads(line)["id"]: json.loads(line)
+                     for line in run([args.retex, "mcp", "--vault", str(vault)], requests).splitlines()}
+        assert responses[1]["result"]["serverInfo"]["version"] == run([args.retex, "version"])
         for ident in [2, 3, 4]:
-            text = encoded[ident]["result"]["content"][0]["text"]
-            baseline_text = raw[ident]["result"]["content"][0]["text"]
-            assert decode(text) == json.loads(baseline_text), f"MCP semantic mismatch: {ident}"
-            record(f"mcp-{ident}-text", text, baseline_text)
-            record(f"mcp-{ident}-full-response", compact(encoded[ident]), compact(raw[ident]))
+            text = responses[ident]["result"]["content"][0]["text"]
+            assert isinstance(json.loads(text), dict), f"MCP JSON mismatch: {ident}"
+            record(f"mcp-{ident}-text", text)
+            record(f"mcp-{ident}-full-response", compact(responses[ident]))
 
-    report = {"tokenizer": "uc default o200k", "semantic_equality": True, "cases": results,
-              "caveats": ["Synthetic fixtures only; not provider-billed conversation savings.",
-                          "No decode round trip is needed for readable UC; exact parsing should request raw JSON.",
-                          "MCP full-response rows include text escaping and protocol wrappers.",
-                          "Recall budget bounds the record array bytes, not these complete response tokens."]}
-    print(json.dumps(report, indent=2))
-    if any(row["saved_tokens"] < 0 for row in results):
-        raise SystemExit("Measured regression: inspect negative saved_tokens rows")
+    print(json.dumps({"semantic_equality": True, "cases": results,
+                      "caveats": ["Synthetic fixtures only; not provider-billed conversation savings.",
+                                  "Recall budget bounds the record array bytes, not complete response bytes."]}, indent=2))
 
 
 if __name__ == "__main__":

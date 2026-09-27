@@ -1,6 +1,3 @@
-#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-import CUltraCompact
-#endif
 import XCTest
 import RetexCore
 
@@ -9,10 +6,6 @@ final class MCPServerTests: XCTestCase {
     private var store: MarkdownStore!
 
     override func setUpWithError() throws {
-        // Test encodes must not pollute the opt-in local UC telemetry sink
-        // (the engine caches its env lookup on first encode, after this).
-        setenv("UC_TELEMETRY", "0", 1)
-        unsetenv("UC_TELEMETRY_PATH")
         vaultDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("retex-mcp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: vaultDir, withIntermediateDirectories: true)
@@ -62,17 +55,9 @@ final class MCPServerTests: XCTestCase {
         ))
     }
 
-    /// Tool results are readable UC when the engine is linked and UC beats
-    /// compact JSON; decode those packets before inspecting the payload.
+    /// Tool results are compact JSON inside the content envelope.
     private func toolPayload(_ text: String) throws -> [String: Any] {
-        var json = text
-        #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-        if text.hasPrefix("@UC"), let decoded = text.withCString({ uc_decode_json($0) }) {
-            json = String(cString: decoded)
-            uc_free_string(decoded)
-        }
-        #endif
-        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
     }
 
     func testInitializeHandshake() throws {
@@ -84,6 +69,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(result["protocolVersion"] as? String, "2024-11-05")
         let serverInfo = try XCTUnwrap(result["serverInfo"] as? [String: Any])
         XCTAssertEqual(serverInfo["name"] as? String, "retex")
+        XCTAssertNil(result["instructions"])
     }
 
     func testServerWaitsForTheNextInteractiveRequest() throws {
