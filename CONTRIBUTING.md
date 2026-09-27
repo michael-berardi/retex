@@ -25,8 +25,7 @@ swift test
 
 Markdown stays the source of truth: a change must never require a database or
 hide data from ordinary text editors. Keep machine-readable output backwards
-compatible, or version it explicitly. Source builds do not include the proprietary
-UltraCompact engine; keep every feature working without it.
+compatible, or version it explicitly.
 
 ## Pull requests
 

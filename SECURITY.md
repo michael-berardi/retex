@@ -23,6 +23,4 @@ the release notes if they want to be.
 In scope: path traversal or symlink escapes out of a vault, unsafe handling
 of imported Notion or Obsidian archives, weaknesses in encrypted export,
 update verification bypasses, MCP tools that write when they should only
-read, and authentication flaws in `deploy/readonly-mcp/`. The optional
-UltraCompact engine is distributed separately; report issues with it the
-same way and they will be routed.
+read, and authentication flaws in `deploy/readonly-mcp/`.
