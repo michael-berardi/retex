@@ -9,9 +9,6 @@ import WinSDK
 #endif
 import Foundation
 import RetexCore
-#if canImport(CUltraCompact)
-import CUltraCompact
-#endif
 
 private struct SimpleExit: Error {
     let code: Int32
@@ -20,13 +17,13 @@ private struct SimpleExit: Error {
 @main
 enum RetexCLI {
     static func main() {
-        // Tag engine telemetry with this consumer (no overwrite of an
-        // explicit operator setting). The engine only reads it when the
-        // opt-in sink is enabled; no content ever leaves the machine.
-        setenv("UC_TELEMETRY_SOURCE", "retex", 0)
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.isEmpty || arguments == ["--help"] {
             print(help)
+            return
+        }
+        if arguments == ["--version"] {
+            print(version)
             return
         }
 
@@ -48,7 +45,6 @@ enum RetexCLI {
                 code: Int(code),
                 json: CommandLine.arguments.contains("--json")
                     || CommandLine.arguments.contains("--raw-json")
-                    || CommandLine.arguments.contains("--uc")
                     || lean,
                 lean: lean
             )
@@ -334,7 +330,7 @@ enum RetexCLI {
 
         case "mcp":
             let vault = try invocation.vault()
-            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write"), uc: !invocation.flag("no-uc")).run()
+            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write")).run()
 
         case "export":
             let vault = try invocation.vault()
@@ -996,19 +992,6 @@ enum RetexCLI {
         )
     }
 
-    /// Encode a value as a UC (UltraCompact) packet via the linked Rust
-    /// library. Falls back to compact JSON if encoding fails.
-    private static func ucPacket<T: Encodable>(_ value: T) throws -> String {
-        try AgentOutput.encode(SuccessResponse(data: value))
-    }
-
-    /// Encode the command payload directly for lean machine output. When the
-    /// UC engine is unavailable or declines to encode, compact sorted JSON is
-    /// the deterministic fallback.
-    private static func leanPacket<T: Encodable>(_ value: T) throws -> String {
-        try AgentOutput.encode(value)
-    }
-
     private static func compactJSON<T: Encodable>(_ value: T) throws -> String {
         try AgentOutput.compactJSON(value)
     }
@@ -1018,17 +1001,13 @@ enum RetexCLI {
         json: Bool,
         human: (T) -> String
     ) throws {
-        // Existing machine modes retain their envelope and formatting. Lean
-        // is additive: it removes the envelope, while --raw-json still wins
-        // when exact JSON parsing is requested.
-        let rawJson = CommandLine.arguments.contains("--raw-json")
+        // Lean emits the direct payload; raw JSON keeps its original pretty
+        // enveloped format unless lean is requested.
         let lean = CommandLine.arguments.contains("--lean")
-        if json && lean && rawJson {
+        if json && lean {
             print(try compactJSON(value))
-        } else if json && lean {
-            print(try leanPacket(value))
-        } else if json && !rawJson {
-            print(try ucPacket(value))
+        } else if json && !CommandLine.arguments.contains("--raw-json") {
+            print(try compactJSON(SuccessResponse(data: value)))
         } else if json {
             let response = SuccessResponse(data: value)
             let encoder = JSONEncoder()
@@ -1242,11 +1221,7 @@ enum RetexCLI {
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
       --allow-write     Add MCP mutation tools for a trusted local host
-      --uc              Request UC machine output; equivalent to --json when
-                        the engine is linked, canonical JSON otherwise
-      --lean            Emit the command payload directly (UC when linked,
-                        compact deterministic JSON otherwise)
-      --no-uc           Disable UC for MCP tool results
+      --lean            Emit the command payload directly as compact JSON
       --raw-json        Force canonical JSON for CLI machine output; with
                         --lean, emit compact deterministic direct JSON
       --strict          Exit nonzero when doctor finds any integrity issue
@@ -1256,7 +1231,8 @@ enum RetexCLI {
       --candidate <bin> Verify one candidate against registered vault clones
       --current <bin>   Installed Retex binary for explicit fleet comparison
       --check           Check update availability without installing
-      --json            Stable machine output (UC when linked, JSON otherwise)
+      --json            Stable compact JSON machine output
+      --version         Print the Retex version
       --all             Include archived records
       --help            Show this help
     """
@@ -1289,7 +1265,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "uc", "lean", "raw-json", "no-uc", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update", "operator-approved", "include-proposed"].contains(raw) {
+            } else if ["json", "lean", "raw-json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update", "operator-approved", "include-proposed"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -1304,7 +1280,7 @@ private struct Invocation {
         self.flags = flags
     }
 
-    var isJSON: Bool { flag("json") || flag("uc") || flag("lean") || flag("raw-json") }
+    var isJSON: Bool { flag("json") || flag("lean") || flag("raw-json") }
     var hasVault: Bool { option("vault") != nil }
 
     func flag(_ name: String) -> Bool { flags.contains(name) }

@@ -25,9 +25,7 @@ without locking files in a database.
 Retex is intentionally headless. There is no bundled reader UI; the vault
 format and the CLI are the product, and any reader consumes the same
 `RetexCore` package. Retex has no account system, remote database, or network
-telemetry. The optional UltraCompact engine records local usage metrics only
-when an operator explicitly enables its telemetry sink; note content never
-leaves the machine.
+telemetry; note content never leaves the machine.
 
 ## Quick look
 
@@ -117,12 +115,8 @@ swift build -c release
 
 On Windows, run `.build\release\retex.exe --help`.
 
-Source builds are pure MIT: nothing proprietary is fetched or linked, and
-machine output is canonical JSON. Official macOS binaries and the hosted Linux
-MCP image additionally link UltraCompact, a proprietary engine from Implose
-Cybernetics, for token-minimized output. It is governed by
-`LICENSE-ULTRACOMPACT`, not Retex's MIT license, and is only fetched when you
-opt in with `ULTRACOMPACT_DIST=1 swift build` on macOS.
+Retex is pure MIT: nothing proprietary is fetched or linked, in source builds
+and official binaries alike, and machine output is canonical JSON.
 
 ### Agent skill
 
@@ -183,7 +177,7 @@ record types and properties.
 
 ### Machine-readable output
 
-The existing `--json`, `--uc`, and `--raw-json` modes retain their logical
+The `--json` and `--raw-json` modes retain their logical
 response envelope (`schema_version` is bumped when that contract changes):
 
 ```json
@@ -196,19 +190,10 @@ response envelope (`schema_version` is bumped when that contract changes):
 
 `--lean` is an additive machine-output modifier for agents. It can be used by
 itself and emits the command payload directly, without `ok`, `data`, or
-`schema_version`. Builds linked with UltraCompact pass the direct payload
-through UC (small payloads may remain JSON); engine-free builds (the source
-default, Linux and Windows) fall back to compact JSON with sorted
-keys. Use `--lean --raw-json` when an agent needs deterministic, compact,
-directly parseable JSON.
-
-On builds linked with UltraCompact — the official macOS binary and hosted Linux
-MCP image — `--json` and `--uc` continue to emit an enveloped, token-minimized
-UC packet when that packet is smaller than JSON; small payloads remain JSON.
-Readable UC uses only model-readable codecs, so a decode call is unnecessary
-for ordinary reading; use `uc decode` when exact JSON parsing is required.
-`--raw-json` without `--lean` continues to force canonical enveloped JSON and
-remains the compatibility-gate mode.
+`schema_version`. Both `--lean` and `--json` emit compact JSON with sorted
+keys on all platforms. `--lean --raw-json` emits the same directly parseable
+payload. `--raw-json` without `--lean` keeps the pretty-printed enveloped JSON
+compatibility-gate mode.
 
 CLI and MCP share deterministic compact-JSON fallback and the same packet
 selection. The linked engine selects readable packets against compact JSON

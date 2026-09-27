@@ -1,9 +1,6 @@
 import Foundation
 import XCTest
 @testable import RetexCore
-#if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-import CUltraCompact
-#endif
 
 final class AgentOutputTests: XCTestCase {
     private struct Item: Codable, Equatable {
@@ -21,7 +18,7 @@ final class AgentOutputTests: XCTestCase {
         XCTAssertEqual(try baseline([String]()), "[]")
         XCTAssertEqual(try baseline(["count": 0]), "{\"count\":0}")
         XCTAssertEqual(try baseline(["z": 1, "a": 2]), "{\"a\":2,\"z\":1}")
-        XCTAssertEqual(try AgentOutput.encode(["z": 1, "a": 2]), try AgentOutput.encode(["a": 2, "z": 1]))
+        XCTAssertEqual(try AgentOutput.compactJSON(["z": 1, "a": 2]), try AgentOutput.compactJSON(["a": 2, "z": 1]))
     }
 
     func testStringsUnicodeAndEscapingPreserveCanonicalJSON() throws {
@@ -30,37 +27,24 @@ final class AgentOutputTests: XCTestCase {
         XCTAssertTrue(compact.contains("\\\""))
         XCTAssertTrue(compact.contains("café"))
         XCTAssertFalse(compact.contains("\\/"))
-        let output = try AgentOutput.encode(value)
-        XCTAssertLessThanOrEqual(output.utf8.count, compact.utf8.count)
+        let output = try AgentOutput.compactJSON(value)
+        XCTAssertEqual(output, compact)
         XCTAssertEqual(try jsonObject(output), try jsonObject(compact))
     }
 
-    func testRepeatedObjectsHaveByteReductionGate() throws {
+    func testRepeatedObjectsAreCompactJSON() throws {
         let value = (0..<80).map { Item(id: $0, name: "customer", tags: ["priority", "renewal"], note: "Repeated account context") }
         let compact = try baseline(value)
-        let output = try AgentOutput.encode(value)
-        XCTAssertLessThanOrEqual(output.utf8.count, compact.utf8.count)
+        let output = try AgentOutput.compactJSON(value)
+        XCTAssertEqual(output, compact)
         XCTAssertEqual(try jsonObject(output), try jsonObject(compact))
     }
 
-    func testExactUCDecodeSemanticEqualityWhenEngineAvailable() throws {
-        let value = (0..<40).map { Item(id: $0, name: "契約", tags: ["重要", "renewal"], note: "Escaped \\\"text\\\"") }
-        let compact = try baseline(value)
-        let output = try AgentOutput.encode(value)
-        #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-        let decoded = try XCTUnwrap(output.withCString { uc_decode_json($0) })
-        defer { uc_free_string(decoded) }
-        XCTAssertEqual(try jsonObject(String(cString: decoded)), try jsonObject(compact))
-        #else
-        XCTAssertEqual(try jsonObject(output), try jsonObject(compact))
-        #endif
-    }
-
-    func testPassThroughForNullAndNonengineFallback() throws {
+    func testNullAndTinyPayloadsAreCompactJSON() throws {
         let null: String? = nil
-        XCTAssertEqual(try AgentOutput.encode(null), "null")
+        XCTAssertEqual(try AgentOutput.compactJSON(null), "null")
         let value = ["tiny": "x"]
-        XCTAssertEqual(try AgentOutput.encode(value), try baseline(value), "Tiny payload must pass through when readable UC cannot beat bytes")
+        XCTAssertEqual(try AgentOutput.compactJSON(value), try baseline(value))
     }
 
     func testSharedVersionIsValid() {
@@ -68,14 +52,7 @@ final class AgentOutputTests: XCTestCase {
     }
 
     private func jsonObject(_ string: String) throws -> Data {
-        var json = string
-        #if (os(macOS) || os(Linux)) && canImport(CUltraCompact)
-        if let decoded = string.withCString({ uc_decode_json($0) }) {
-            json = String(cString: decoded)
-            uc_free_string(decoded)
-        }
-        #endif
-        let object = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed])
+        let object = try JSONSerialization.jsonObject(with: Data(string.utf8), options: [.fragmentsAllowed])
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .fragmentsAllowed])
     }
 }
