@@ -330,8 +330,12 @@ agents to a curated repository knowledge folder. Copy its `Dockerfile` to
 `.retex/knowledge/`, and deploy only that directory as the build context:
 
 ```bash
-railway up .retex --path-as-root --service retex-project
+docker build -t retex-project .retex
+docker run -d --restart unless-stopped -p 8080:8080 --env-file retex.env retex-project
 ```
+
+Any container host works the same way; keep the bearer token in the host's secret store,
+never in the image.
 
 Every note must opt in through front matter:
 
