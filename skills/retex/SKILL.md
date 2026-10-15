@@ -5,7 +5,7 @@ description: >
   update a Retex Markdown vault through the Retex CLI or MCP server. Prefer this
   structured interface over recursive file discovery or editor-specific APIs.
 category: knowledge
-version: 1.5.0
+version: 1.6.0
 author: Retex contributors
 tags: [retex, markdown, vault, knowledge, mcp, cli]
 trigger_keywords: [retex, markdown vault, knowledge vault, agent memory, kanban]
@@ -188,6 +188,11 @@ available for agents. `read_note` returns `contentHash`; write tools accept
 optional `expected_hash`; query and recall accept semicolon-separated
 `on_or_before` and `on_or_after` filters. Mutation tools require explicit
 `--allow-write` and a trusted local host.
+
+Prefer one long-lived MCP session for repeated queries: the server keeps
+parsed notes in memory and re-reads only changed files, and a write that
+finished before a call is always visible to it. `RETEX_MCP_CACHE=0` disables
+the cache; `RETEX_CACHE_TRACE=1` logs how each request was served on stderr.
 
 Remote agent access must use the hosted read-only helper, TLS at the platform
 edge, and a random bearer token of at least 32 characters. Never put tokens in

@@ -33,13 +33,18 @@ struct ASCIINeedle: Sendable {
 }
 
 /// One candidate file for raw-byte term matching. Terms match the file name
-/// or note text case- and diacritic-insensitively.
-private struct RawNoteText {
-    let data: Data
+/// or note text case- and diacritic-insensitively. Built from file bytes on
+/// a scan, or from an already decoded note held by a snapshot cache.
+struct RawNoteText: @unchecked Sendable {
+    /// File bytes; nil when the text came from a cached note.
+    private let data: Data?
     let filename: String
     let filenameData: Data
     private var decodedState: String??
     private var foldableState: Bool?
+    private var foldedFilename: String?
+    private var expandingState: Bool?
+    private var foldedText: String?
 
     init(url: URL, data: Data) {
         self.data = data
@@ -47,45 +52,85 @@ private struct RawNoteText {
         filenameData = Data(filename.utf8)
     }
 
+    /// Text of a parsed note with every per-note fact computed up front, so
+    /// a cached copy answers any number of queries without recomputing them.
+    init(note: Note) {
+        data = nil
+        filename = note.url.deletingPathExtension().lastPathComponent
+        filenameData = Data(filename.utf8)
+        decodedState = .some(note.source)
+        var source = note.source
+        foldableState = source.withUTF8(MarkdownStore.mayFoldToASCII)
+        expandingState = MarkdownStore.hasExpandingCaseFold(filename)
+            || MarkdownStore.hasExpandingCaseFold(note.source)
+        foldedFilename = MarkdownStore.foldedForRanking(filename)
+        if foldableState == true || MarkdownStore.mayFoldToASCII(filenameData), expandingState == false {
+            foldedText = MarkdownStore.foldedForRanking(note.source)
+        }
+    }
+
     /// Strictly decoded note text, computed at most once.
     var decoded: String? {
         mutating get {
             if let decodedState { return decodedState }
-            let value = MarkdownStore.decodeUTF8(data)
+            let value = data.flatMap(MarkdownStore.decodeUTF8)
             decodedState = .some(value)
             return value
         }
     }
 
+    private mutating func textContainsASCII(_ needle: ASCIINeedle) -> Bool {
+        if let data { return MarkdownStore.containsASCIIInsensitive(data, needle: needle) }
+        guard var text = decoded else { return false }
+        return text.withUTF8 { MarkdownStore.containsASCIIInsensitive($0, needle: needle) }
+    }
+
     mutating func contains(_ term: String, needle: ASCIINeedle?) -> Bool {
         if let needle {
             if MarkdownStore.containsASCIIInsensitive(filenameData, needle: needle)
-                || MarkdownStore.containsASCIIInsensitive(data, needle: needle) {
+                || textContainsASCII(needle) {
                 return true
             }
             // Accented Latin letters fold to ASCII ("café" matches "cafe").
             // Only text containing such letters pays for Unicode comparison.
             let filenameFolds = MarkdownStore.mayFoldToASCII(filenameData)
-            if foldableState == nil { foldableState = MarkdownStore.mayFoldToASCII(data) }
+            if foldableState == nil { foldableState = data.map(MarkdownStore.mayFoldToASCII) ?? false }
             guard filenameFolds || foldableState == true else { return false }
         }
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
-        return filename.range(of: term, options: options) != nil
-            || decoded?.range(of: term, options: options) != nil
+        // Letters whose case folding expands ("ß" matches "ss", "ﬁ" matches
+        // "fi") break a per-character fold, so they keep Foundation's search.
+        if expandingState == nil {
+            expandingState = MarkdownStore.hasExpandingCaseFold(filename)
+                || decoded.map(MarkdownStore.hasExpandingCaseFold) ?? false
+        }
+        if expandingState == true || MarkdownStore.hasExpandingCaseFold(term) {
+            let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+            return filename.range(of: term, options: options) != nil
+                || decoded?.range(of: term, options: options) != nil
+        }
+        // Otherwise fold the text once and byte-search the folded term:
+        // repeated diacritic-insensitive `range(of:)` over whole notes
+        // dominated recall on vaults with accented text.
+        let foldedTerm = MarkdownStore.foldedForRanking(term)
+        if foldedFilename == nil { foldedFilename = MarkdownStore.foldedForRanking(filename) }
+        if MarkdownStore.foldedContains(foldedFilename!, foldedTerm) { return true }
+        if let foldedText { return MarkdownStore.foldedContains(foldedText, foldedTerm) }
+        let folded = decoded.map(MarkdownStore.foldedForRanking) ?? ""
+        if data != nil { foldedText = folded }
+        return MarkdownStore.foldedContains(folded, foldedTerm)
     }
-}
-
-private struct RecallCandidate: Sendable {
-    let note: Note
-    let score: Int
-    let matchedTerms: [String]
 }
 
 public struct MarkdownStore {
     private let fileManager = FileManager.default
     let history = UndoHistory()
+    /// In-memory snapshots for long-running processes; nil reads the files
+    /// on every call (the CLI).
+    public let cache: VaultSnapshotCache?
 
-    public init() {}
+    public init(cache: VaultSnapshotCache? = nil) {
+        self.cache = cache
+    }
 
     public func scan(_ vault: Vault) throws -> [Note] {
         try scanWithDiagnostics(vault).notes
@@ -105,6 +150,19 @@ public struct MarkdownStore {
         guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
         if let limit, limit <= 0 { throw StoreError.invalidLimit }
 
+        let terms = ranked
+            ? normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
+            : [normalizedQuery]
+        let asciiNeedles = terms.map(Self.asciiNeedle)
+        if let cache {
+            let entries = try cache.snapshot(vault).entries
+            let found = Self.parallelCompactMap(entries) { entry -> Note? in
+                var text = entry.text
+                return terms.indices.allSatisfy({ text.contains(terms[$0], needle: asciiNeedles[$0]) }) ? entry.note : nil
+            }
+            return Self.orderSearch(found, query: normalizedQuery, terms: terms, ranked: ranked, limit: limit)
+        }
+
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -119,13 +177,6 @@ public struct MarkdownStore {
             candidates.append(url)
         }
         let files = candidates
-        let terms = ranked
-            ? normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
-            : [normalizedQuery]
-        let asciiNeedles: [ASCIINeedle?] = terms.map { term in
-            term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
-        }
-
         var matches = [Note?](repeating: nil, count: files.count)
         matches.withUnsafeMutableBufferPointer { matchesBuffer in
             let selfBox = SendableBox(self)
@@ -156,7 +207,16 @@ public struct MarkdownStore {
             }
         }
 
-        let found = matches.compacted()
+        return Self.orderSearch(matches.compacted(), query: normalizedQuery, terms: terms, ranked: ranked, limit: limit)
+    }
+
+    private static func orderSearch(
+        _ found: [Note],
+        query normalizedQuery: String,
+        terms: [String],
+        ranked: Bool,
+        limit: Int?
+    ) -> [Note] {
         let sorted: [Note]
         if ranked {
             let phrase = Self.foldedForRanking(normalizedQuery)
@@ -196,6 +256,25 @@ public struct MarkdownStore {
 
         let terms = Self.recallTerms(normalizedQuery)
         let phrase = Self.foldedForRanking(normalizedQuery)
+        if let cache {
+            let asciiNeedles = terms.map(Self.asciiNeedle)
+            let partials = Self.parallelCompactMap(try cache.snapshot(vault).entries) { entry -> RecallPartial? in
+                let note = entry.note
+                guard includeArchived || !note.isArchived,
+                      Self.matches(note, type: type, status: status, tag: tag, metadata: metadata,
+                                   onOrBefore: onOrBefore, onOrAfter: onOrAfter)
+                else { return nil }
+                var text = entry.text
+                let matched = terms.indices.filter { text.contains(terms[$0], needle: asciiNeedles[$0]) }.map { terms[$0] }
+                guard !matched.isEmpty else { return nil }
+                return RecallPartial(
+                    note: note,
+                    matched: matched,
+                    base: Self.recallBaseScore(note, phrase: phrase, terms: terms, matched: matched)
+                )
+            }
+            return Self.rankRecall(partials, phrase: phrase, limit: limit)
+        }
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -209,10 +288,8 @@ public struct MarkdownStore {
             candidates.append(url)
         }
         let files = candidates
-        let asciiNeedles: [ASCIINeedle?] = terms.map { term in
-            term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
-        }
-        var hits = [RecallCandidate?](repeating: nil, count: files.count)
+        let asciiNeedles = terms.map(Self.asciiNeedle)
+        var hits = [RecallPartial?](repeating: nil, count: files.count)
         hits.withUnsafeMutableBufferPointer { buffer in
             let selfBox = SendableBox(self)
             let hitsBox = SendableBox(buffer)
@@ -237,10 +314,10 @@ public struct MarkdownStore {
                           onOrAfter: onOrAfter
                       )
                 else { return }
-                hitsBox.value[index] = RecallCandidate(
+                hitsBox.value[index] = RecallPartial(
                     note: note,
-                    score: Self.recallScore(note, phrase: phrase, terms: terms, matched: matched),
-                    matchedTerms: matched
+                    matched: matched,
+                    base: Self.recallBaseScore(note, phrase: phrase, terms: terms, matched: matched)
                 )
             }
 
@@ -256,23 +333,41 @@ public struct MarkdownStore {
                 }
             }
         }
-        return hits.compactMap { $0 }.sorted { left, right in
-            if left.score != right.score { return left.score > right.score }
-            return Self.precedes(left.note, right.note)
-        }.prefix(limit).map { candidate in
-            RecallHit(
-                note: candidate.note,
-                score: candidate.score,
-                matchedTerms: candidate.matchedTerms,
-                excerpt: Self.evidenceExcerpt(candidate.note.body, terms: candidate.matchedTerms)
-            )
-        }
+        return Self.rankRecall(hits.compactMap { $0 }, phrase: phrase, limit: limit)
     }
 
     /// Resolves `[[wiki links]]` without depending on an editor or plugin.
     /// Markdown remains authoritative; this graph is derived on read.
     public func links(_ vault: Vault, for url: URL) throws -> NoteLinks {
         let target = try load(url)
+        if let cache {
+            // Snapshot entries carry their link keys and outgoing link
+            // lookups, so the graph is not re-parsed per call.
+            let entries = try cache.snapshot(vault).entries
+            var index: [String: [Note]] = [:]
+            for entry in entries {
+                for key in entry.linkKeys { index[key, default: []].append(entry.note) }
+            }
+            var outgoing: [Note] = []
+            var outgoingIDs: Set<String> = []
+            var unresolved: Set<String> = []
+            for rawLink in Self.wikiLinks(in: target.source) {
+                let candidates = Self.lookupKeys(rawLink).flatMap { index[$0] ?? [] }
+                if candidates.isEmpty { unresolved.insert(rawLink) }
+                for note in candidates where note.id != target.id && outgoingIDs.insert(note.id).inserted {
+                    outgoing.append(note)
+                }
+            }
+            let targetKeys = Self.linkKeys(target, root: vault.url)
+            let backlinks = entries.filter { entry in
+                entry.note.id != target.id && !entry.outgoingLookupKeys.isDisjoint(with: targetKeys)
+            }.map(\.note)
+            return NoteLinks(
+                outgoing: outgoing.sorted(by: Self.precedes),
+                backlinks: backlinks.sorted(by: Self.precedes),
+                unresolved: unresolved.sorted()
+            )
+        }
         let notes = try scan(vault)
         var index: [String: [Note]] = [:]
         for note in notes {
@@ -372,7 +467,10 @@ public struct MarkdownStore {
         return Array(Set(distinctive.isEmpty ? words : distinctive)).sorted()
     }
 
-    private static func recallScore(
+    /// Recall score without the body terms. The body is the only field large
+    /// enough to make folding expensive, so ranking scores it last and only
+    /// for notes that can still reach the top results.
+    static func recallBaseScore(
         _ note: Note,
         phrase: String,
         terms: [String],
@@ -383,22 +481,73 @@ public struct MarkdownStore {
         let path = foldedForRanking(note.url.path)
         let tags = note.tags.map(foldedForRanking)
         let metadata = note.metadata.map { (foldedForRanking($0.key), foldedForRanking($0.value)) }
-        let body = foldedForRanking(note.body)
         var score = matched.count * 1_000
 
         if matched.count == terms.count { score += 2_000 }
         if title == phrase { score += 10_000 }
         else if Self.foldedContains(title, phrase) { score += 4_000 }
-        if Self.foldedContains(body, phrase) { score += 800 }
         for term in matched {
             if Self.foldedContains(title, term) { score += 700 }
             if Self.foldedContains(filename, term) { score += 400 }
             if tags.contains(where: { Self.foldedContains($0, term) }) { score += 300 }
             if metadata.contains(where: { Self.foldedContains($0.0, term) || Self.foldedContains($0.1, term) }) { score += 220 }
             if Self.foldedContains(path, term) { score += 80 }
-            if Self.foldedContains(body, term) { score += 30 }
         }
         return score
+    }
+
+    /// Body share of the recall score, from an already folded body.
+    static func recallBodyScore(foldedBody body: String, phrase: String, matched: [String]) -> Int {
+        var score = Self.foldedContains(body, phrase) ? 800 : 0
+        for term in matched where Self.foldedContains(body, term) { score += 30 }
+        return score
+    }
+
+    /// Highest score `recallBodyScore` can add.
+    static func recallBodyBound(matched: [String]) -> Int { 800 + 30 * matched.count }
+
+    struct RecallPartial: Sendable {
+        let note: Note
+        let matched: [String]
+        let base: Int
+    }
+
+    /// Exact top-`limit` recall ranking. Candidates are visited by their best
+    /// possible score; once that bound falls below the current last place no
+    /// remaining note can enter the results, so their bodies are never folded.
+    /// The result equals scoring every candidate fully, then sorting.
+    static func rankRecall(_ partials: [RecallPartial], phrase: String, limit: Int) -> [RecallHit] {
+        let ordered = partials.sorted { left, right in
+            let l = left.base + recallBodyBound(matched: left.matched)
+            let r = right.base + recallBodyBound(matched: right.matched)
+            if l != r { return l > r }
+            return precedes(left.note, right.note)
+        }
+        var best: [(note: Note, score: Int, matched: [String])] = []
+        func ranksBefore(_ a: (note: Note, score: Int, matched: [String]), _ b: (note: Note, score: Int, matched: [String])) -> Bool {
+            a.score != b.score ? a.score > b.score : precedes(a.note, b.note)
+        }
+        for partial in ordered {
+            let bound = partial.base + recallBodyBound(matched: partial.matched)
+            if best.count >= limit, bound < best[limit - 1].score { break }
+            let body = foldedForRanking(partial.note.body)
+            let entry = (
+                note: partial.note,
+                score: partial.base + recallBodyScore(foldedBody: body, phrase: phrase, matched: partial.matched),
+                matched: partial.matched
+            )
+            let position = best.firstIndex { ranksBefore(entry, $0) } ?? best.count
+            best.insert(entry, at: position)
+            if best.count > limit { best.removeLast() }
+        }
+        return best.map { entry in
+            RecallHit(
+                note: entry.note,
+                score: entry.score,
+                matchedTerms: entry.matched,
+                excerpt: Self.evidenceExcerpt(entry.note.body, terms: entry.matched)
+            )
+        }
     }
 
     private static func evidenceExcerpt(_ body: String, terms: [String]) -> String {
@@ -458,7 +607,7 @@ public struct MarkdownStore {
         return links
     }
 
-    private static func linkKeys(_ note: Note, root: URL) -> Set<String> {
+    static func linkKeys(_ note: Note, root: URL) -> Set<String> {
         let rootComponents = root.standardizedFileURL.pathComponents.count
         let relative = note.url.deletingPathExtension().pathComponents
             .dropFirst(rootComponents)
@@ -470,7 +619,7 @@ public struct MarkdownStore {
         ])
     }
 
-    private static func lookupKeys(_ rawLink: String) -> [String] {
+    static func lookupKeys(_ rawLink: String) -> [String] {
         let normalized = normalizedLink(rawLink)
         let filename = normalizedLink((rawLink as NSString).lastPathComponent)
         return normalized == filename ? [normalized] : [normalized, filename]
@@ -480,11 +629,19 @@ public struct MarkdownStore {
         foldedForRanking(value.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters))
     }
 
+    /// Conversational filler dropped from recall questions. Terms match as
+    /// substrings, so a kept filler word ("we" in "web", "between") matches
+    /// most of a vault and buries the distinctive terms.
     private static let recallStopwords: Set<String> = [
-        "a", "about", "an", "and", "are", "as", "at", "be", "by", "did",
-        "do", "does", "for", "from", "how", "i", "in", "is", "it", "of",
-        "on", "or", "that", "the", "this", "to", "was", "what", "when",
-        "where", "which", "who", "why", "with",
+        "a", "about", "all", "also", "am", "an", "and", "any", "are", "as",
+        "at", "be", "been", "being", "but", "by", "can", "could", "did", "do",
+        "does", "for", "from", "had", "has", "have", "he", "her", "here", "his",
+        "how", "i", "if", "in", "into", "is", "it", "its", "just", "may", "me",
+        "might", "must", "my", "of", "on", "or", "our", "please", "shall", "she",
+        "should", "so", "than", "that", "the", "their", "them", "then", "there",
+        "these", "they", "this", "those", "to", "us", "was", "we", "were", "what",
+        "when", "where", "which", "who", "why", "will", "with", "would", "you",
+        "your",
     ]
 
     static func foldASCII(_ byte: UInt8) -> UInt8 {
@@ -494,17 +651,22 @@ public struct MarkdownStore {
     /// Whether UTF-8 bytes contain a character that may fold to ASCII under
     /// case- and diacritic-insensitive comparison: Latin-1 Supplement and
     /// Latin Extended letters, combining diacritics, Latin Extended
-    /// Additional, and letterlike symbols such as the Kelvin sign.
+    /// Additional, letterlike symbols such as the Kelvin sign, and the Latin
+    /// ligatures ("ﬀ" matches "ff").
     static func mayFoldToASCII(_ data: Data) -> Bool {
-        data.withUnsafeBytes { raw in
-            let bytes = raw.bindMemory(to: UInt8.self)
+        data.withUnsafeBytes { raw in mayFoldToASCII(raw.bindMemory(to: UInt8.self)) }
+    }
+
+    static func mayFoldToASCII(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+        do {
             var index = 0
             while index < bytes.count {
                 let byte = bytes[index]
                 if byte >= 0xC3 && byte <= 0xC9 || byte == 0xCC || byte == 0xCD { return true }
-                if byte == 0xE1 || byte == 0xE2, index + 1 < bytes.count {
+                if byte == 0xE1 || byte == 0xE2 || byte == 0xEF, index + 1 < bytes.count {
                     let next = bytes[index + 1]
-                    if byte == 0xE1 && next >= 0xB8 && next <= 0xBB || byte == 0xE2 && next == 0x84 {
+                    if byte == 0xE1 && next >= 0xB8 && next <= 0xBB || byte == 0xE2 && next == 0x84
+                        || byte == 0xEF && next == 0xAC {
                         return true
                     }
                 }
@@ -514,12 +676,47 @@ public struct MarkdownStore {
         }
     }
 
+    /// Byte needle for a search term. A non-ASCII term whose folding is pure
+    /// ASCII ("café" -> "cafe") searches the folded form: in text with no
+    /// characters that fold to ASCII, the two match exactly the same bytes.
+    static func asciiNeedle(for term: String) -> ASCIINeedle? {
+        if term.utf8.allSatisfy({ $0 < 0x80 }) { return ASCIINeedle(Array(term.utf8)) }
+        guard !hasExpandingCaseFold(term) else { return nil }
+        let folded = foldedForRanking(term)
+        guard !folded.isEmpty, folded.utf8.allSatisfy({ $0 < 0x80 }) else { return nil }
+        return ASCIINeedle(Array(folded.utf8))
+    }
+
+    /// Whether the text contains a character with a multi-character Unicode
+    /// case folding (CaseFolding.txt status F): "ß", "İ", Greek letters with
+    /// iota subscript, Armenian "և", and the Latin and Armenian ligatures.
+    static func hasExpandingCaseFold(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars where scalar.value >= 0xDF {
+            switch scalar.value {
+            case 0xDF, 0x130, 0x149, 0x1F0, 0x390, 0x3B0, 0x587,
+                 0x1E96...0x1E9A, 0x1E9E, 0x1F50, 0x1F52, 0x1F54, 0x1F56,
+                 0x1F80...0x1FAF, 0x1FB2...0x1FB4, 0x1FB6, 0x1FB7, 0x1FBC,
+                 0x1FC2...0x1FC4, 0x1FC6, 0x1FC7, 0x1FCC, 0x1FD2, 0x1FD3,
+                 0x1FD6, 0x1FD7, 0x1FE2...0x1FE4, 0x1FE6, 0x1FE7,
+                 0x1FF2...0x1FF4, 0x1FF6, 0x1FF7, 0x1FFC,
+                 0xFB00...0xFB06, 0xFB13...0xFB17:
+                return true
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
     static func containsASCIIInsensitive(_ data: Data, needle: ASCIINeedle) -> Bool {
+        data.withUnsafeBytes { raw in containsASCIIInsensitive(raw.bindMemory(to: UInt8.self), needle: needle) }
+    }
+
+    static func containsASCIIInsensitive(_ bytes: UnsafeBufferPointer<UInt8>, needle: ASCIINeedle) -> Bool {
         let pattern = needle.bytes
         guard !pattern.isEmpty else { return true }
-        guard data.count >= pattern.count else { return false }
-        return data.withUnsafeBytes { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+        guard bytes.count >= pattern.count else { return false }
+        do {
             var end = pattern.count - 1
             while end < bytes.count {
                 var offset = 0
@@ -637,7 +834,31 @@ public struct MarkdownStore {
         return score
     }
 
-    private static func precedes(_ a: Note, _ b: Note) -> Bool {
+    /// Order-preserving parallel compactMap for snapshot entries; small
+    /// inputs stay serial (concurrency overhead loses below a few hundred).
+    static func parallelCompactMap<T: Sendable>(
+        _ entries: [VaultSnapshotCache.Entry],
+        _ transform: @escaping @Sendable (VaultSnapshotCache.Entry) -> T?
+    ) -> [T] {
+        var output = [T?](repeating: nil, count: entries.count)
+        let count = entries.count
+        output.withUnsafeMutableBufferPointer { buffer in
+            let box = SendableBox(buffer)
+            if count < 500 {
+                for index in 0..<count { box.value[index] = transform(entries[index]) }
+            } else {
+                let chunk = 64
+                DispatchQueue.concurrentPerform(iterations: (count + chunk - 1) / chunk) { part in
+                    for index in (part * chunk)..<min((part + 1) * chunk, count) {
+                        box.value[index] = transform(entries[index])
+                    }
+                }
+            }
+        }
+        return output.compactMap { $0 }
+    }
+
+    static func precedes(_ a: Note, _ b: Note) -> Bool {
         if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
         if a.title != b.title { return a.title < b.title }
         return a.url.path < b.url.path
@@ -647,6 +868,10 @@ public struct MarkdownStore {
     /// output ordering is deterministic (modifiedAt desc, then title, then
     /// path — a total order, so concurrency cannot leak into results).
     public func scanWithDiagnostics(_ vault: Vault) throws -> ScanResult {
+        if let cache {
+            let snapshot = try cache.snapshot(vault)
+            return ScanResult(notes: snapshot.notes, unreadable: snapshot.unreadable)
+        }
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
