@@ -285,6 +285,10 @@ public struct MCPServer {
         ])
     }
 
+    static let mutatingTools: Set<String> = [
+        "create_note", "set_property", "move_card", "archive_note", "memory_propose",
+    ]
+
     private func callTool(_ params: Params?) throws -> JSONValue {
         guard let name = params?.name else {
             throw ToolError(message: "tools/call requires params.name")
@@ -294,6 +298,11 @@ public struct MCPServer {
             args[key]?.stringValue.isEmpty == false ? args[key]?.stringValue : nil
         }
 
+        // Writes made through this server re-walk the vault on the next
+        // request instead of waiting for their file events.
+        defer {
+            if Self.mutatingTools.contains(name) { store.cache?.invalidate() }
+        }
         do {
             return try dispatchTool(name, args: args, arg: arg)
         } catch let error as ToolError {
@@ -321,7 +330,10 @@ public struct MCPServer {
     }
 
     private func notesInVault() throws -> [Note] {
-        try store.scan(vault).filter(isConfined)
+        if let cache = store.cache {
+            return try cache.confinedNotes(vault, confined: isConfined)
+        }
+        return try store.scan(vault).filter(isConfined)
     }
 
     /// Scanned notes sit lexically under the vault and the scanner never

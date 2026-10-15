@@ -330,7 +330,14 @@ enum RetexCLI {
 
         case "mcp":
             let vault = try invocation.vault()
-            try MCPServer(vault: vault, readOnly: !invocation.flag("allow-write")).run()
+            // A long-lived server keeps parsed notes in memory and re-reads
+            // only changed files. RETEX_MCP_CACHE=0 reads every file per call.
+            let cached = ProcessInfo.processInfo.environment["RETEX_MCP_CACHE"] != "0"
+            try MCPServer(
+                vault: vault,
+                store: MarkdownStore(cache: cached ? VaultSnapshotCache() : nil),
+                readOnly: !invocation.flag("allow-write")
+            ).run()
 
         case "export":
             let vault = try invocation.vault()

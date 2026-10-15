@@ -309,6 +309,15 @@ can explicitly opt into `create_note`, `set_property`, `move_card`, and
 `archive_note` with `--allow-write`; the hosted helper never enables it.
 Responses use newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
 
+A running server keeps the vault's parsed notes in memory and re-reads only
+the files that changed, so repeated calls on a large vault answer in
+milliseconds instead of re-reading every file. On macOS it uses file events
+and confirms them before each request, so a note written just before a call is
+always visible; on other platforms, or if events are late or missing (reported
+on stderr), it checks every file's size and timestamps instead. Set
+`RETEX_MCP_CACHE=0` to read every file on each call, or `RETEX_CACHE_TRACE=1`
+to log how each request was served.
+
 Example host configuration (placeholders, no credentials):
 
 ```json
@@ -581,7 +590,8 @@ Implemented:
 - Agent memory: budgeted context packs, validated proposals, operator-approved
   promotion and supersession, usage counters, and memory MCP tools
 - Backwards-compatible MCP tools plus structured query, recall, link, and
-  schema interfaces
+  schema interfaces; long-running servers answer from an in-memory snapshot
+  kept current by file events
 - Notion ZIP, Obsidian, and generic Markdown-vault imports with attachment
   preservation, collision handling, and path/symlink limits
 - Cross-platform encrypted export/import with per-file checksums and legacy
@@ -594,7 +604,6 @@ Implemented:
 
 Not yet shipped:
 
-- A disposable full-text index for very large vaults (plain scans stay fast)
 - Optional encrypted sync server
 
 ## Contributing
