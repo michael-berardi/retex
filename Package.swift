@@ -18,7 +18,10 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
     ],
     targets: [
-        .target(name: "RetexCore", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
+        // System SQLite backs the disposable query index. macOS ships it in the
+        // SDK; Linux builds need libsqlite3-dev (static: libsqlite3.a).
+        .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", providers: [.apt(["libsqlite3-dev"])]),
+        .target(name: "RetexCore", dependencies: ["CSQLite", .product(name: "Crypto", package: "swift-crypto")]),
         .executableTarget(name: "RetexCLI", dependencies: ["RetexCore"]),
         .testTarget(name: "RetexCoreTests", dependencies: ["RetexCore"]),
         .testTarget(name: "RetexCLITests", dependencies: ["RetexCLI"]),
