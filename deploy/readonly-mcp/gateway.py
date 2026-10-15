@@ -9,6 +9,8 @@ import sys
 from collections.abc import Mapping
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -20,6 +22,20 @@ RETEX_BIN = os.environ.get("RETEX_BIN", "retex")
 VAULT = os.environ.get("RETEX_VAULT", "/data/vault")
 SERVICE_NAME = os.environ.get("RETEX_SERVICE_NAME", "retex-readonly")
 MAX_REQUEST_BYTES = 1_048_576
+# The only tools a hosted vault exposes. `retex mcp` also offers agent-memory
+# tools for local hosts; a shared hosted vault must not, so everything not
+# listed here is hidden from tools/list and refused on tools/call.
+READ_TOOLS = frozenset({
+    "list_notes",
+    "search_notes",
+    "read_note",
+    "query_records",
+    "recall_context",
+    "get_links",
+    "get_schema",
+    "get_board",
+    "get_stats",
+})
 
 
 def load_tokens(environ: Mapping[str, str] = os.environ) -> tuple[str, ...]:
@@ -67,12 +83,26 @@ def authorized(header: bytes) -> bool:
     return matched
 
 
+class ReadToolsOnly(Middleware):
+    """Expose exactly READ_TOOLS, whatever the Retex binary offers."""
+
+    async def on_list_tools(self, context, call_next):
+        return [tool for tool in await call_next(context) if tool.name in READ_TOOLS]
+
+    async def on_call_tool(self, context, call_next):
+        if context.message.name not in READ_TOOLS:
+            raise ToolError(f"{context.message.name} is not available on this read-only service")
+        return await call_next(context)
+
+
 def build_proxy() -> FastMCP:
     command = [RETEX_BIN, "mcp", "--vault", VAULT]
-    return FastMCP.as_proxy(
+    proxy = FastMCP.as_proxy(
         {"mcpServers": {"retex": {"command": command[0], "args": command[1:]}}},
         name=SERVICE_NAME,
     )
+    proxy.add_middleware(ReadToolsOnly())
+    return proxy
 
 
 def security_middleware(app):

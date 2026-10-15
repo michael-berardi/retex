@@ -267,10 +267,10 @@ tokens resolve from environment variables or direct command arguments, stay in
 memory, and never enter source, process arguments, reports, or temporary files:
 
 ```bash
-uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
   --config ~/.config/retex/hosted-fleet.json --service canary
 # Deploy the remaining services only after this passes.
-uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
   --config ~/.config/retex/hosted-fleet.json
 ```
 

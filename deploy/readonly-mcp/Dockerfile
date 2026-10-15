@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --break-system-packages \
-      "fastmcp==2.12.5" "mcp==1.16.0"
+      "fastmcp==2.12.5" "mcp==1.16.0" "pydantic==2.11.7"
 
 COPY --from=build /build/.build/release/retex /usr/local/bin/retex
 COPY --from=build /usr/lib/swift/linux /usr/lib/swift/linux

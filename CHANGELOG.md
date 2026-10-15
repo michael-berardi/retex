@@ -16,6 +16,9 @@
   ...). Short filler words matched most of a vault as substrings.
 - Fixed: a search for "ff" or "fi" now finds the ligatures "ﬀ" and "ﬁ" in notes
   without other accented Latin letters.
+- Hosted helper: the gateway exposes exactly the read tools the fleet verifier
+  expects and refuses the agent-memory tools that `retex mcp` added in 1.4.0.
+  `pydantic` is pinned to 2.11.7; newer releases break `mcp` 1.16.0 at import.
 
 ## 1.5.0
 
