@@ -34,7 +34,7 @@ struct ASCIINeedle: Sendable {
 
 /// One candidate file for raw-byte term matching. Terms match the file name
 /// or note text case- and diacritic-insensitively.
-private struct RawNoteText {
+struct RawNoteText {
     let data: Data
     let filename: String
     let filenameData: Data
@@ -75,6 +75,35 @@ private struct RawNoteText {
     }
 }
 
+/// Case- and diacritic-folded fields used by ranking. Computed per note on a
+/// plain scan; the query index stores them so ranking skips the folding.
+struct FoldedNote: Sendable {
+    let title: String
+    let filename: String
+    let path: String
+    let tags: [String]
+    let metadata: [[String]]
+    let body: String
+
+    init(title: String, filename: String, path: String, tags: [String], metadata: [[String]], body: String) {
+        self.title = title
+        self.filename = filename
+        self.path = path
+        self.tags = tags
+        self.metadata = metadata
+        self.body = body
+    }
+
+    init(_ note: Note) {
+        title = MarkdownStore.foldedForRanking(note.title)
+        filename = MarkdownStore.foldedForRanking(note.url.deletingPathExtension().lastPathComponent)
+        path = MarkdownStore.foldedForRanking(note.url.path)
+        tags = note.tags.map(MarkdownStore.foldedForRanking)
+        metadata = note.metadata.map { [MarkdownStore.foldedForRanking($0.key), MarkdownStore.foldedForRanking($0.value)] }
+        body = MarkdownStore.foldedForRanking(note.body)
+    }
+}
+
 private struct RecallCandidate: Sendable {
     let note: Note
     let score: Int
@@ -105,6 +134,27 @@ public struct MarkdownStore {
         guard !normalizedQuery.isEmpty else { throw StoreError.invalidQuery }
         if let limit, limit <= 0 { throw StoreError.invalidLimit }
 
+        let terms = ranked
+            ? normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
+            : [normalizedQuery]
+        let asciiNeedles: [ASCIINeedle?] = terms.map { term in
+            term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
+        }
+        let found: [(Note, FoldedNote?)]
+        if let index = Self.openIndex(vault) {
+            try index.refresh()
+            found = NoteIndex.parallelMap(try index.candidates(terms: terms, requireAll: true)) { candidate in
+                var text = RawNoteText(url: candidate.url, data: Data(candidate.source.utf8))
+                guard terms.indices.allSatisfy({ text.contains(terms[$0], needle: asciiNeedles[$0]) }) else { return nil }
+                return (candidate.note(), ranked ? candidate.folded() : nil)
+            }
+        } else {
+            found = try scanSearch(vault, terms: terms, asciiNeedles: asciiNeedles).map { ($0, nil) }
+        }
+        return Self.orderSearch(found, query: normalizedQuery, terms: terms, ranked: ranked, limit: limit)
+    }
+
+    private func scanSearch(_ vault: Vault, terms: [String], asciiNeedles: [ASCIINeedle?]) throws -> [Note] {
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -119,12 +169,6 @@ public struct MarkdownStore {
             candidates.append(url)
         }
         let files = candidates
-        let terms = ranked
-            ? normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
-            : [normalizedQuery]
-        let asciiNeedles: [ASCIINeedle?] = terms.map { term in
-            term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
-        }
 
         var matches = [Note?](repeating: nil, count: files.count)
         matches.withUnsafeMutableBufferPointer { matchesBuffer in
@@ -156,19 +200,28 @@ public struct MarkdownStore {
             }
         }
 
-        let found = matches.compacted()
+        return matches.compacted()
+    }
+
+    private static func orderSearch(
+        _ found: [(Note, FoldedNote?)],
+        query normalizedQuery: String,
+        terms: [String],
+        ranked: Bool,
+        limit: Int?
+    ) -> [Note] {
         let sorted: [Note]
         if ranked {
             let phrase = Self.foldedForRanking(normalizedQuery)
             let foldedTerms = terms.map(Self.foldedForRanking)
-            sorted = found.map { note in
-                (note, Self.relevanceScore(note, phrase: phrase, terms: foldedTerms))
+            sorted = found.map { note, folded in
+                (note, Self.relevanceScore(folded ?? FoldedNote(note), phrase: phrase, terms: foldedTerms))
             }.sorted { left, right in
                 if left.1 != right.1 { return left.1 > right.1 }
                 return Self.precedes(left.0, right.0)
             }.map(\.0)
         } else {
-            sorted = found.sorted(by: Self.precedes)
+            sorted = found.map(\.0).sorted(by: Self.precedes)
         }
         return limit.map { Array(sorted.prefix($0)) } ?? sorted
     }
@@ -196,6 +249,31 @@ public struct MarkdownStore {
 
         let terms = Self.recallTerms(normalizedQuery)
         let phrase = Self.foldedForRanking(normalizedQuery)
+        if let index = Self.openIndex(vault) {
+            try index.refresh()
+            let asciiNeedles: [ASCIINeedle?] = terms.map { term in
+                term.utf8.allSatisfy { $0 < 0x80 } ? ASCIINeedle(Array(term.utf8)) : nil
+            }
+            let hits = NoteIndex.parallelMap(try index.candidates(terms: terms, requireAll: false)) { candidate -> RecallCandidate? in
+                var text = RawNoteText(url: candidate.url, data: Data(candidate.source.utf8))
+                let matched = terms.indices.filter { text.contains(terms[$0], needle: asciiNeedles[$0]) }.map { terms[$0] }
+                guard !matched.isEmpty else { return nil }
+                let note = candidate.note()
+                guard includeArchived || !note.isArchived,
+                      Self.matches(note, type: type, status: status, tag: tag, metadata: metadata,
+                                   onOrBefore: onOrBefore, onOrAfter: onOrAfter)
+                else { return nil }
+                return RecallCandidate(
+                    note: note,
+                    score: Self.recallScore(candidate.folded(), phrase: phrase, terms: terms, matched: matched),
+                    matchedTerms: matched
+                )
+            }
+            if ProcessInfo.processInfo.environment["RETEX_INDEX_TRACE"] != nil {
+                FileHandle.standardError.write(Data("index recall hits: \(hits.count)\n".utf8))
+            }
+            return Self.orderRecall(hits, limit: limit)
+        }
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -239,7 +317,7 @@ public struct MarkdownStore {
                 else { return }
                 hitsBox.value[index] = RecallCandidate(
                     note: note,
-                    score: Self.recallScore(note, phrase: phrase, terms: terms, matched: matched),
+                    score: Self.recallScore(FoldedNote(note), phrase: phrase, terms: terms, matched: matched),
                     matchedTerms: matched
                 )
             }
@@ -256,7 +334,11 @@ public struct MarkdownStore {
                 }
             }
         }
-        return hits.compactMap { $0 }.sorted { left, right in
+        return Self.orderRecall(hits.compactMap { $0 }, limit: limit)
+    }
+
+    private static func orderRecall(_ hits: [RecallCandidate], limit: Int) -> [RecallHit] {
+        hits.sorted { left, right in
             if left.score != right.score { return left.score > right.score }
             return Self.precedes(left.note, right.note)
         }.prefix(limit).map { candidate in
@@ -372,18 +454,18 @@ public struct MarkdownStore {
         return Array(Set(distinctive.isEmpty ? words : distinctive)).sorted()
     }
 
-    private static func recallScore(
-        _ note: Note,
+    static func recallScore(
+        _ folded: FoldedNote,
         phrase: String,
         terms: [String],
         matched: [String]
     ) -> Int {
-        let title = foldedForRanking(note.title)
-        let filename = foldedForRanking(note.url.deletingPathExtension().lastPathComponent)
-        let path = foldedForRanking(note.url.path)
-        let tags = note.tags.map(foldedForRanking)
-        let metadata = note.metadata.map { (foldedForRanking($0.key), foldedForRanking($0.value)) }
-        let body = foldedForRanking(note.body)
+        let title = folded.title
+        let filename = folded.filename
+        let path = folded.path
+        let tags = folded.tags
+        let metadata = folded.metadata.map { ($0[0], $0[1]) }
+        let body = folded.body
         var score = matched.count * 1_000
 
         if matched.count == terms.count { score += 2_000 }
@@ -610,13 +692,13 @@ public struct MarkdownStore {
         }
     }
 
-    private static func relevanceScore(_ note: Note, phrase: String, terms: [String]) -> Int {
-        let title = foldedForRanking(note.title)
-        let filename = foldedForRanking(note.url.deletingPathExtension().lastPathComponent)
-        let path = foldedForRanking(note.url.path)
-        let tags = note.tags.map(foldedForRanking)
-        let metadata = note.metadata.map { (foldedForRanking($0.key), foldedForRanking($0.value)) }
-        let body = foldedForRanking(note.body)
+    private static func relevanceScore(_ folded: FoldedNote, phrase: String, terms: [String]) -> Int {
+        let title = folded.title
+        let filename = folded.filename
+        let path = folded.path
+        let tags = folded.tags
+        let metadata = folded.metadata.map { ($0[0], $0[1]) }
+        let body = folded.body
         var score = 0
 
         if title == phrase { score += 10_000 }
@@ -637,6 +719,19 @@ public struct MarkdownStore {
         return score
     }
 
+    /// The SQLite query index when enabled and usable. An index that cannot
+    /// be opened is reported on stderr and the command falls back to reading
+    /// the Markdown files, which are always authoritative.
+    static func openIndex(_ vault: Vault) -> NoteIndex? {
+        guard NoteIndex.isEnabled else { return nil }
+        do {
+            return try NoteIndex(vault: vault)
+        } catch {
+            FileHandle.standardError.write(Data("retex: query index unavailable, scanning files: \(error.localizedDescription)\n".utf8))
+            return nil
+        }
+    }
+
     private static func precedes(_ a: Note, _ b: Note) -> Bool {
         if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
         if a.title != b.title { return a.title < b.title }
@@ -647,6 +742,10 @@ public struct MarkdownStore {
     /// output ordering is deterministic (modifiedAt desc, then title, then
     /// path — a total order, so concurrency cannot leak into results).
     public func scanWithDiagnostics(_ vault: Vault) throws -> ScanResult {
+        if let index = Self.openIndex(vault) {
+            let stats = try index.refresh()
+            return ScanResult(notes: try index.allNotes().sorted(by: Self.precedes), unreadable: stats.unreadable)
+        }
         let root = vault.url.standardizedFileURL
         guard let enumerator = fileManager.enumerator(
             at: root,
