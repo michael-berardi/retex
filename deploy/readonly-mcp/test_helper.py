@@ -428,3 +428,33 @@ class HostedFleetVerifierTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    """The proxy must expose exactly the verifier's read tools."""
+
+    def test_gateway_and_verifier_agree(self) -> None:
+        self.assertEqual(set(gateway.READ_TOOLS), verify_fleet.READ_TOOLS)
+
+    async def test_proxy_hides_and_refuses_other_tools(self) -> None:
+        binary = os.environ.get("RETEX_TEST_BIN")
+        if not binary:
+            self.skipTest("set RETEX_TEST_BIN to a retex binary to run the proxy test")
+        from fastmcp import Client
+        from fastmcp.exceptions import ToolError
+
+        with tempfile.TemporaryDirectory() as vault:
+            Path(vault, "note.md").write_text("---\nshareable: true\n---\n# Note\nhello\n")
+            original = (gateway.RETEX_BIN, gateway.VAULT)
+            gateway.RETEX_BIN, gateway.VAULT = binary, vault
+            try:
+                async with Client(gateway.build_proxy()) as client:
+                    names = {tool.name for tool in await client.list_tools()}
+                    self.assertEqual(names, set(gateway.READ_TOOLS))
+                    with self.assertRaises(ToolError):
+                        await client.call_tool("memory_recall", {"query": "hello"})
+                    result = await client.call_tool("search_notes", {"query": "hello"})
+                    self.assertIn("note.md", result.content[0].text)
+            finally:
+                gateway.RETEX_BIN, gateway.VAULT = original
+

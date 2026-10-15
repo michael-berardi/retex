@@ -393,10 +393,10 @@ executed directly without a shell:
 
 ```bash
 chmod 600 ~/.config/retex/hosted-fleet.json
-uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
   --config ~/.config/retex/hosted-fleet.json --service canary
 # Deploy the remaining services only after the canary passes.
-uv run --with mcp==1.16.0 python deploy/readonly-mcp/verify_fleet.py \
+uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
   --config ~/.config/retex/hosted-fleet.json
 ```
 
