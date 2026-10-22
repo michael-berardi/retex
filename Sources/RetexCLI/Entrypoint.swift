@@ -394,6 +394,9 @@ enum RetexCLI {
                 }
             }
 
+        case "sync":
+            try runSync(invocation)
+
         case "memory":
             try runMemory(invocation, store: store)
 
@@ -676,6 +679,40 @@ enum RetexCLI {
         if let inline = invocation.option("json") { return Data(inline.utf8) }
         if invocation.positionals.count > 1 { return Data(invocation.positionals[1].utf8) }
         return nil
+    }
+
+    private static func runSync(_ invocation: Invocation) throws {
+        let action = try invocation.positional(0, named: "sync action (push, pull, status)")
+        let vault = try invocation.vault()
+        guard let token = ProcessInfo.processInfo.environment[invocation.option("token-env") ?? "RETEX_SYNC_TOKEN"],
+              !token.isEmpty
+        else {
+            throw UsageError("Set the sync token in RETEX_SYNC_TOKEN (or name another variable with --token-env)")
+        }
+        let sync = VaultSync(vault: vault, token: token)
+        let server = invocation.option("server")
+        let vaultID = invocation.option("vault-id")
+        switch action {
+        case "push":
+            let result = try sync.push(server: server, vaultID: vaultID, passphrase: try Self.passphrase(invocation),
+                                       force: invocation.flag("force"))
+            try output(result, json: invocation.isJSON) {
+                "Pushed \($0.files) files (\($0.bytes) encrypted bytes), revision \($0.revision.prefix(12))"
+            }
+        case "pull":
+            let result = try sync.pull(server: server, vaultID: vaultID, passphrase: try Self.passphrase(invocation),
+                                       force: invocation.flag("force"))
+            try output(result, json: invocation.isJSON) {
+                "Pulled \($0.files) files (\($0.removed) removed), revision \($0.revision.prefix(12))"
+            }
+        case "status":
+            let status = try sync.status(server: server, vaultID: vaultID)
+            try output(status, json: invocation.isJSON) {
+                "\($0.vaultID) @ \($0.server): local changes \($0.localChanges ? "yes" : "no"), remote \($0.remoteChanged ? "changed or missing" : "unchanged")"
+            }
+        default:
+            throw UsageError("Unknown sync action: \(action). Use push, pull, or status.")
+        }
     }
 
     private static func runFleet(_ invocation: Invocation) throws {
@@ -1196,6 +1233,9 @@ enum RetexCLI {
       retex mcp --vault ./CRM
       retex export --vault ./CRM --out backup.retex --passphrase-env VAULT_PASS
       retex import --from backup.retex --into ~/Vaults/restored --passphrase-env VAULT_PASS
+      retex sync push --vault ./CRM --server https://sync.example.com --vault-id crm --passphrase-env VAULT_PASS
+      retex sync pull --vault ./CRM --passphrase-env VAULT_PASS
+      retex sync status --vault ./CRM --lean
       retex import --from notion-export.zip --into ~/Vaults/notion --format notion --lean
       retex import --from ~/Documents/Obsidian --into ~/Vaults/obsidian --format obsidian --lean
       retex fleet register --vault ~/Vaults/CRM --auto-update --lean
@@ -1227,6 +1267,10 @@ enum RetexCLI {
       --passphrase-env <VAR>
                         Environment variable holding the passphrase (never a
                         command-line value; prompts if omitted)
+      --server <url>    Sync server (https; saved in .retex/sync.json)
+      --vault-id <id>   Vault name on the sync server
+      --token-env <VAR> Sync bearer token variable (default RETEX_SYNC_TOKEN)
+      --force           Sync push/pull: skip conflict and local-change checks
       --allow-write     Add MCP mutation tools for a trusted local host
       --lean            Emit the command payload directly as compact JSON
       --raw-json        Force canonical JSON for CLI machine output; with
@@ -1272,7 +1316,7 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "lean", "raw-json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update", "operator-approved", "include-proposed"].contains(raw) {
+            } else if ["json", "lean", "raw-json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update", "operator-approved", "include-proposed", "force"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {

@@ -112,6 +112,57 @@ public struct VaultCrypto {
         return try JSONEncoder().encode(ArchiveEnvelope(version: 2, files: files))
     }
 
+    /// Relative paths of every portable file `makeArchive` would include.
+    public static func portableFilePaths(vaultURL: URL) throws -> [String] {
+        let root = vaultURL.standardizedFileURL
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { throw StoreError.unreadableVault(vaultURL) }
+        var paths: [String] = []
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true, values.isRegularFile == true,
+                  portableVaultExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            paths.append(url.standardizedFileURL.pathComponents
+                .dropFirst(root.pathComponents.count).joined(separator: "/"))
+        }
+        return paths.sorted()
+    }
+
+    /// Stable digest of the portable file set (paths plus content hashes).
+    public static func contentDigest(vaultURL: URL) throws -> String {
+        let root = vaultURL.standardizedFileURL
+        var lines = ""
+        for path in try portableFilePaths(vaultURL: vaultURL) {
+            let data = try Data(contentsOf: root.appendingPathComponent(path))
+            lines += "\(sha256(data))  \(path)\n"
+        }
+        return sha256(Data(lines.utf8))
+    }
+
+    /// Makes `dir` match the archive: writes every archived file and removes
+    /// portable files the archive does not contain (remote deletions).
+    /// Validates the whole archive before touching the vault.
+    @discardableResult
+    public static func mirrorArchive(_ data: Data, into dir: URL) throws -> (written: Int, removed: Int) {
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let written = try restoreArchive(data, into: staging, requireEmptyDestination: true)
+        let keep = Set(try portableFilePaths(vaultURL: staging))
+        var removed = 0
+        if FileManager.default.fileExists(atPath: dir.path) {
+            for path in try portableFilePaths(vaultURL: dir) where !keep.contains(path) {
+                try FileManager.default.removeItem(at: dir.appendingPathComponent(path))
+                removed += 1
+            }
+        }
+        _ = try restoreArchive(data, into: dir, requireEmptyDestination: false)
+        return (written, removed)
+    }
+
     /// Restores a versioned vault archive into a new or empty directory.
     /// Version 1 Markdown-only exports remain readable; version 2 also
     /// preserves attachments and other non-hidden vault files with per-file
