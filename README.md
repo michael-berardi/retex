@@ -7,6 +7,7 @@
   <a href="#mcp-server">MCP</a> ·
   <a href="#import-existing-knowledge">Import</a> ·
   <a href="#encrypted-export">Encrypted export</a> ·
+  <a href="#encrypted-sync">Sync</a> ·
   <a href="#updates">Updates</a>
 </p>
 
@@ -64,6 +65,8 @@ any editor.
 - Import Notion Markdown/CSV ZIP exports, Obsidian vaults, and ordinary
   Markdown directories while preserving attachments and rejecting symlinks.
 - Encrypted, checksummed vault-and-attachment export/import on every platform.
+- Optional encrypted sync (`retex sync`): push and pull a vault through a
+  server that only ever stores ciphertext.
 - Opt-in fleet updates verify disposable clones before changing the binary or
   initializing registered live vaults; rollback remains automatic on failure.
 - Audit agent-facing `memory`, `report`, and `audit` metadata with the bundled,
@@ -454,6 +457,44 @@ state, and Retex-derived state remain excluded. Export passphrases require at
 least 12 characters and come from an interactive prompt or named environment
 variable, never a process-list-visible argument.
 
+## Encrypted sync
+
+Sync is optional and off until you run it. Your vault is archived and
+encrypted on your machine with the same `RETEXENC1` envelope as export, so the
+server stores one opaque blob per vault and never sees a passphrase or note.
+
+```bash
+export RETEX_SYNC_TOKEN=...   # bearer token for the server
+read -s RETEX_PASS; export RETEX_PASS
+retex sync push --vault ~/Vaults/CRM --server https://sync.example.com \
+  --vault-id crm --passphrase-env RETEX_PASS      # server and id are saved
+retex sync pull --vault ~/Vaults/CRM --passphrase-env RETEX_PASS   # other machine
+retex sync status --vault ~/Vaults/CRM --lean
+```
+
+- Writes are optimistic: a push made from an out-of-date copy is refused with
+  a conflict instead of overwriting the other machine. Pull, then push.
+- A pull decrypts and validates the whole archive before touching the vault,
+  mirrors remote deletions, and refuses to overwrite unsynced local changes
+  unless you pass `--force`. A wrong passphrase leaves the vault unchanged.
+- The server must be `https` (plain `http` only for localhost). The token is
+  read from `RETEX_SYNC_TOKEN` or the variable named by `--token-env`, never
+  from an argument. State lives in `<vault>/.retex/sync.json`.
+- Same scope as export: Markdown and portable attachments; hidden and
+  Retex-derived state stay local. Last pull wins per vault, with no merging.
+
+A reference server (Python standard library, no dependencies) is in
+`deploy/sync-server/server.py`:
+
+```bash
+RETEX_SYNC_TOKEN=<24+ random characters> RETEX_SYNC_DIR=/var/lib/retex-sync \
+  python3 deploy/sync-server/server.py     # serve behind TLS
+```
+
+It implements `GET`, `HEAD` and `PUT /v1/vaults/<id>` with `ETag` and
+`If-Match` / `If-None-Match` preconditions, so any storage service that honors
+those can stand in.
+
 ## Updates
 
 Check availability without changing the installation:
@@ -594,6 +635,7 @@ Implemented:
   kept current by file events
 - Notion ZIP, Obsidian, and generic Markdown-vault imports with attachment
   preservation, collision handling, and path/symlink limits
+- Optional encrypted sync (`retex sync`) with a reference server
 - Cross-platform encrypted export/import with per-file checksums and legacy
   archive compatibility
 - Verified self-update, atomic rollback, disposable clone gates, opt-in fleet
@@ -601,10 +643,6 @@ Implemented:
 - Versioned machine-readable envelopes and regression coverage for parsing,
   mutations, CLI/MCP contracts, imports, crypto, updates, and hosted gateway
   security
-
-Not yet shipped:
-
-- Optional encrypted sync server
 
 ## Contributing
 

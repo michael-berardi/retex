@@ -1,4 +1,4 @@
 /// Product version shared by CLI, MCP discovery, and the release gate.
 public enum RetexVersion {
-    public static let version = "1.6.1"
+    public static let version = "1.7.0"
 }
