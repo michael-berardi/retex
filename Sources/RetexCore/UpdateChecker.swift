@@ -32,7 +32,9 @@ public struct UpdateChecker {
     private let fm = FileManager.default
 
     /// - Parameter repo: `owner/repo` on GitHub.
-    public init(repo: String = "michael-berardi/retex", session: URLSession = .shared) {
+    /// - Parameter repo: `owner/repo` on GitHub. The caller must supply this;
+    ///   Retex ships no built-in repository, owner or personal name.
+    public init(repo: String, session: URLSession = .shared) {
         self.repo = repo
         self.session = session
     }
