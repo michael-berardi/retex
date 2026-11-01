@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.0 - 2026-11-01
+
+- Neutrality: the self-updater no longer ships a built-in GitHub owner;
+  set `RETEX_UPDATE_REPO` to the owner/repo it should track.
+- Neutrality: README release links and badges use a neutral placeholder owner.
+- Neutrality: a new `NeutralityTests` suite scans shipped source, docs, skills,
+  scripts, and README for model ids, provider preferences, and personal names.
+
+## 1.7.0 - 2026-10-22
+
+- Encrypted vault sync (`retex sync push|pull|status`) with a reference server.
+
 ## 1.6.1 - 2026-10-16
 
 - Hosted helper: the gateway exposes exactly the read tools the fleet verifier

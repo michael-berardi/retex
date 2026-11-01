@@ -773,11 +773,18 @@ enum RetexCLI {
         }
     }
 
+    private static func updateRepo() throws -> String {
+        guard let repo = ProcessInfo.processInfo.environment["RETEX_UPDATE_REPO"], !repo.isEmpty else {
+            throw UsageError("Set RETEX_UPDATE_REPO to the GitHub owner/repo for self-update (e.g. owner/repo).")
+        }
+        return repo
+    }
+
     private static func runUpdate(_ invocation: Invocation) throws {
         guard !invocation.flag("auto") || invocation.flag("fleet") else {
             throw UsageError("--auto requires --fleet and an explicitly registered fleet")
         }
-        let checker = UpdateChecker()
+        let checker = UpdateChecker(repo: try updateRepo())
         let current = RetexCLI.version
         let release = try checker.latestRelease()
         guard UpdateChecker.isNewer(releaseTag: release.tag, current: current) else {

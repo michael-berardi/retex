@@ -63,13 +63,14 @@ final class AgentMemoryTests: XCTestCase {
         reason: String? = nil,
         sourceHarness: String? = nil,
         ifHash: String? = nil,
+        now: Date = Date(),
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> AgentMemory.MutationResult {
         try memory.propose(
             vault: vault, op: op, key: key, recordJSON: json,
             evidence: evidence, reason: reason, sourceHarness: sourceHarness,
-            ifHash: ifHash
+            ifHash: ifHash, now: now
         )
     }
 
@@ -702,21 +703,21 @@ final class AgentMemoryTests: XCTestCase {
 
     func testReviewSortsAndFlagsPromoteReady() throws {
         // promote-ready: correction, support 2, two distinct sessions, operator evidence.
-        _ = try propose(json: try recordJSON(key: "global/ready", title: "Ready correction"))
-        _ = try propose("upvote", key: "global/ready", evidence: ["pi:2026-09-26-s2#1", "operator:2026-09-27"])
+        _ = try propose(json: try recordJSON(key: "global/ready", title: "Ready correction"), now: fixedNow)
+        _ = try propose("upvote", key: "global/ready", evidence: ["pi:2026-09-26-s2#1", "operator:2026-09-27"], now: fixedNow)
         // support 2 but no operator evidence
-        _ = try propose(json: try recordJSON(key: "global/no-operator", kind: "correction", title: "No operator"))
-        _ = try propose("upvote", key: "global/no-operator", evidence: ["pi:2026-09-26-s2#1"])
+        _ = try propose(json: try recordJSON(key: "global/no-operator", kind: "correction", title: "No operator"), now: fixedNow)
+        _ = try propose("upvote", key: "global/no-operator", evidence: ["pi:2026-09-26-s2#1"], now: fixedNow)
         // operator evidence but wrong kind
-        _ = try propose(json: try recordJSON(key: "global/wrong-kind", kind: "gotcha", title: "Wrong kind"))
-        _ = try propose("upvote", key: "global/wrong-kind", evidence: ["operator:2026-09-26"])
+        _ = try propose(json: try recordJSON(key: "global/wrong-kind", kind: "gotcha", title: "Wrong kind"), now: fixedNow)
+        _ = try propose("upvote", key: "global/wrong-kind", evidence: ["operator:2026-09-26"], now: fixedNow)
         // operator-flavoured (#user) but a single distinct session
         _ = try propose(json: try recordJSON(
             key: "global/one-session",
             title: "One session",
             evidence: ["claude:session-a#user-1"]
-        ))
-        _ = try propose("upvote", key: "global/one-session", evidence: ["claude:session-a#user-2"])
+        ), now: fixedNow)
+        _ = try propose("upvote", key: "global/one-session", evidence: ["claude:session-a#user-2"], now: fixedNow)
 
         let items = try memory.review(vault: vault)
         XCTAssertEqual(items.count, 4)
