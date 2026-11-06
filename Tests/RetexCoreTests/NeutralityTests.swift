@@ -29,7 +29,10 @@ final class NeutralityTests: XCTestCase {
 
     // Documented exceptions for product technical identity (e.g. bundle ids).
     // Each entry is (relative file path, substring) and must be commented.
-    private let allowedLineSubstrings: [(file: String, substring: String)] = []
+    private let allowedLineSubstrings: [(file: String, substring: String)] = [
+        // The project's own repository and release URLs (install commands, badges).
+        ("README.md", "michael-berardi/retex"),
+    ]
 
     // Model IDs and provider/paid-route choices that only an operator should choose.
     private let modelChoiceRegex = try! NSRegularExpression(
