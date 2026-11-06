@@ -286,6 +286,40 @@ class VaultRefresherTests(unittest.TestCase):
         names = sorted(p.name for p in refresher.serving_dir.iterdir())
         self.assertEqual(names, [".retex", "c.md"])
 
+    def test_commit_outside_served_subdir_does_not_download_or_swap(self) -> None:
+        """Regression: every commit anywhere in the vault repo used to trigger a full
+        clone + copy of the whole repo (186 refreshes / ~110 GB written in 5 days)."""
+        (self.work / "curated").mkdir(exist_ok=True)
+        (self.work / "curated" / "c.md").write_text(self._note_text("# Curated"), encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.work), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.work), "commit", "--quiet", "-m", "subdir"], check=True)
+        subprocess.run(["git", "-C", str(self.work), "push", "--quiet", "origin", "main"], check=True)
+        refresher = self._refresher(RETEX_VAULT_SUBDIR="curated")
+        refresher.bootstrap_layout()
+        self.assertTrue(refresher.poll_once())
+        first_inode = refresher.serving_dir.stat().st_ino
+        self._commit_note("# Elsewhere", name="other.md")  # outside curated/
+        calls: list[list[str]] = []
+        original = refresher._run
+
+        def spy(args, **kwargs):
+            calls.append(list(args))
+            return original(args, **kwargs)
+
+        refresher._run = spy  # type: ignore[method-assign]
+        self.assertFalse(refresher.poll_once())
+        flat = [" ".join(c) for c in calls]
+        self.assertTrue(any("--filter=blob:none" in c for c in flat))
+        self.assertFalse(any(" checkout " in f" {c} " for c in flat), flat)   # no content download
+        self.assertFalse(any(" init " in f" {c} " and "--vault" in c for c in flat), flat)  # no re-index
+        self.assertEqual(refresher.serving_dir.stat().st_ino, first_inode)  # no swap
+        self.assertEqual(json.loads(refresher.status_path.read_text())["revision"], refresher.applied_revision)
+        # A later change inside the subdir still propagates.
+        (self.work / "curated" / "c.md").write_text(self._note_text("# Curated v2"), encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.work), "commit", "--quiet", "-am", "v2"], check=True)
+        subprocess.run(["git", "-C", str(self.work), "push", "--quiet", "origin", "main"], check=True)
+        self.assertTrue(refresher.poll_once())
+        self.assertIn("Curated v2", (refresher.serving_dir / "c.md").read_text())
 
 
 
