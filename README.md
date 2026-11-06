@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/your-org/retex/releases/latest"><img src="https://img.shields.io/github/v/release/your-org/retex?label=release" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/your-org/retex" alt="MIT License" /></a>
+  <a href="https://github.com/michael-berardi/retex/releases/latest"><img src="https://img.shields.io/github/v/release/michael-berardi/retex?label=release" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/michael-berardi/retex" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="macOS, Linux and Windows" />
   <img src="https://img.shields.io/badge/MCP-server-8A2BE2" alt="MCP server" />
 </p>
@@ -84,14 +84,14 @@ any editor.
 ## Install and run
 
 Download the latest release from the
-[Releases](https://github.com/your-org/retex/releases/latest) page and
+[Releases](https://github.com/michael-berardi/retex/releases/latest) page and
 verify it against `SHA256SUMS`.
 
 macOS (universal, Developer ID signed and notarized):
 
 ```bash
-curl -fLO https://github.com/your-org/retex/releases/latest/download/retex-universal.zip
-curl -fLO https://github.com/your-org/retex/releases/latest/download/SHA256SUMS
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
 grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
 unzip retex-universal.zip        # retex binary + docs
 sudo mv retex /usr/local/bin/
@@ -101,8 +101,8 @@ retex --help
 Linux (static, `x86_64` or `aarch64`):
 
 ```bash
-curl -fLO https://github.com/your-org/retex/releases/latest/download/retex-linux-x86_64.tar.gz
-curl -fLO https://github.com/your-org/retex/releases/latest/download/SHA256SUMS
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-linux-x86_64.tar.gz
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
 grep ' retex-linux-x86_64.tar.gz$' SHA256SUMS | sha256sum -c -
 tar -xzf retex-linux-x86_64.tar.gz
 ```
@@ -110,7 +110,7 @@ tar -xzf retex-linux-x86_64.tar.gz
 ### Build from source
 
 ```bash
-git clone https://github.com/your-org/retex.git
+git clone https://github.com/michael-berardi/retex.git
 cd retex
 swift build -c release
 .build/release/retex --help
