@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.2 - 2026-11-06
+
+- Release binaries are published again. 1.8.0 and 1.8.1 shipped without the
+  macOS and Linux archives because the release build's test step hung: the
+  CLI tests asked `swift build --show-bin-path` for the binary from inside
+  `swift test`, which holds the build lock. The tests now find the binary
+  beside their own test bundle (override with `RETEX_TEST_BIN_DIR`).
+- README install commands and badges point at the real repository again.
+
 ## 1.8.1 - 2026-11-06
 
 - Hosted helper: the vault refresher no longer downloads and copies the whole

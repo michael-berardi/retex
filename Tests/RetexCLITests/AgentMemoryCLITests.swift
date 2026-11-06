@@ -10,23 +10,18 @@ final class AgentMemoryCLITests: XCTestCase {
     }
 
     private static let binPath: URL = {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["swift", "build", "--show-bin-path"]
-        process.currentDirectoryURL = repoRoot
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            fatalError("Could not resolve retex binary path: \(error)")
+        // The test bundle sits in the same products directory as the retex
+        // binary. Asking `swift build --show-bin-path` from inside `swift test`
+        // waits on the build lock that `swift test` holds and never returns.
+        let products = Bundle(for: BundleLocator.self).bundleURL.deletingLastPathComponent()
+        if let override = ProcessInfo.processInfo.environment["RETEX_TEST_BIN_DIR"] {
+            return URL(fileURLWithPath: override)
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        precondition(process.terminationStatus == 0, "swift build --show-bin-path failed")
-        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return URL(fileURLWithPath: path)
+        precondition(
+            FileManager.default.isExecutableFile(atPath: products.appendingPathComponent("retex").path),
+            "retex binary not found next to the test bundle in \(products.path); set RETEX_TEST_BIN_DIR"
+        )
+        return products
     }()
 
     private var vaultDir: URL!
