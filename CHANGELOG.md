@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.1 - 2026-11-06
+
+- Hosted helper: the vault refresher no longer downloads and copies the whole
+  vault repository for every new commit. It reads the served subdirectory's
+  git tree first (blobless, no checkout) and skips the refresh when that tree
+  is unchanged; a changed subdirectory is fetched with a sparse checkout.
+  One deployment measured about 110 GB written in 5 days from refreshes
+  triggered by commits outside its subdirectory.
+- The hosted Dockerfile defaults to the current release again (`v1.8.1`);
+  it still pointed at `v1.7.0`.
+
 ## 1.8.0 - 2026-11-01
 
 - Neutrality: the self-updater no longer ships a built-in GitHub owner;

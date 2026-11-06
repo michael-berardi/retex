@@ -67,6 +67,8 @@ class VaultRefresher:
         self.serving_dir = self.data_dir / "vault"  # real directory, never a symlink
         self.status_path = self.data_dir / "vault-sync.json"
         self.applied_revision: str | None = None
+        self.applied_tree: str | None = None  # git tree id of the served subdir
+        self._pending_tree: str | None = None
         self.consecutive_failures = 0
         self._askpass_dir: str | None = None
 
@@ -107,20 +109,39 @@ class VaultRefresher:
                 return sha.strip()
         raise RuntimeError(f"ref {self.ref!r} not found on remote")
 
-    def fetch_revision(self, revision: str) -> tuple[Path, Path]:
-        """Shallow-clone the revision; returns (stage_root, content_dir)."""
+    def fetch_revision(self, revision: str) -> tuple[Path, Path] | None:
+        """Blobless, sparse shallow clone of the revision.
+
+        Returns (stage_root, content_dir), or None when the served subdirectory
+        has the same git tree as the revision already applied (a commit that
+        touched other parts of the vault repo). The tree id is read before any
+        file content is downloaded, so such commits cost only the tree
+        metadata, not a full checkout of the whole repository.
+        """
         stage = Path(tempfile.mkdtemp(prefix="retex-fetch-"))
         try:
+            repo_dir = stage / "repo"
             self._run([
                 "git", "clone", "--quiet", "--depth", "1", "--single-branch",
-                "--branch", self.ref, "--", self.repo, str(stage / "repo"),
+                "--filter=blob:none", "--no-checkout",
+                "--branch", self.ref, "--", self.repo, str(repo_dir),
             ])
-            content = stage / "repo"
+            spec = f"HEAD:{self.subdir}" if self.subdir else "HEAD^{tree}"
+            try:
+                tree = self._run(["git", "-C", str(repo_dir), "rev-parse", "--verify", spec]).stdout.strip()
+            except subprocess.CalledProcessError:
+                raise RuntimeError(f"subdir {self.subdir!r} missing at {self.ref}") from None
+            if tree and tree == self.applied_tree:
+                shutil.rmtree(stage, ignore_errors=True)
+                return None
             if self.subdir:
-                content = content / self.subdir
+                self._run(["git", "-C", str(repo_dir), "sparse-checkout", "set", "--cone", "--", self.subdir])
+            self._run(["git", "-C", str(repo_dir), "checkout", "--quiet", "HEAD"])
+            content = repo_dir / self.subdir if self.subdir else repo_dir
             if not content.is_dir():
                 raise RuntimeError(f"subdir {self.subdir!r} missing at {self.ref}")
-            shutil.rmtree(stage / "repo" / ".git", ignore_errors=True)
+            self._pending_tree = tree
+            shutil.rmtree(repo_dir / ".git", ignore_errors=True)
             return stage, content
         except Exception:
             shutil.rmtree(stage, ignore_errors=True)
@@ -169,8 +190,16 @@ class VaultRefresher:
         tmp.write_text(json.dumps(status), encoding="utf-8")
         os.replace(tmp, self.status_path)
 
-    def apply_revision(self, revision: str) -> None:
-        stage, content = self.fetch_revision(revision)
+    def apply_revision(self, revision: str) -> bool:
+        """Returns True when new content was swapped in, False when unchanged."""
+        fetched = self.fetch_revision(revision)
+        if fetched is None:
+            # Same served tree: nothing to download, validate or swap.
+            self.applied_revision = revision
+            self._write_status()
+            log(f"revision {revision[:12]} leaves served content unchanged")
+            return False
+        stage, content = fetched
         try:
             validate(content)
             target = self.volumes_dir / revision
@@ -195,11 +224,13 @@ class VaultRefresher:
             if retired and retired != self.serving_dir:
                 shutil.rmtree(retired, ignore_errors=True)
             self.applied_revision = revision
+            self.applied_tree = self._pending_tree
             for stale in self.volumes_dir.iterdir():
                 if stale.is_dir() and stale.name not in (revision, "seed"):
                     shutil.rmtree(stale, ignore_errors=True)
             self._write_status()
             log(f"serving revision {revision[:12]}")
+            return True
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
@@ -213,9 +244,9 @@ class VaultRefresher:
             if revision == self.applied_revision:
                 self.consecutive_failures = 0
                 return False
-            self.apply_revision(revision)
+            changed = self.apply_revision(revision)
             self.consecutive_failures = 0
-            return True
+            return changed
         except subprocess.CalledProcessError as exc:
             # Never include stderr: git error output can embed auth context.
             detail = f"git {exc.cmd[0]} failed with code {exc.returncode}"
