@@ -5,6 +5,7 @@
 - `init` creates a missing vault and its parent directories, and reports a
   clear error when the vault path is a file. Other commands still require an
   existing vault.
+- Release builds: the Linux cross-build picks a macOS SDK that the Swift toolchain can compile every package manifest with. A newer SDK (MacOSX 27.2 with Swift 6.3.3) crashed the manifest compile; `RETEX_LINUX_MANIFEST_SDK` overrides the choice.
 
 ## 1.8.2 - 2026-11-06
 

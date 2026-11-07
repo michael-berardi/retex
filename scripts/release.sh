@@ -33,6 +33,27 @@ else
   LINUX_SWIFT="swift"
 fi
 LLVM_STRIP="${RETEX_LLVM_STRIP:-llvm-strip}"
+# The swift.org toolchain compiles package manifests against the host macOS SDK.
+# A macOS SDK newer than the toolchain (e.g. MacOSX27.2 with Swift 6.3.3) makes
+# the manifest compile crash (signal 11, unknown -target-arch-variant). Use the
+# newest SDK the toolchain accepts; RETEX_LINUX_MANIFEST_SDK overrides it.
+linux_manifest_sdk() {
+  if [[ -n "${RETEX_LINUX_MANIFEST_SDK:-}" ]]; then
+    [[ -d "$RETEX_LINUX_MANIFEST_SDK" ]] || { echo "FAIL: RETEX_LINUX_MANIFEST_SDK is not a directory: $RETEX_LINUX_MANIFEST_SDK" >&2; exit 1; }
+    print -r -- "$RETEX_LINUX_MANIFEST_SDK"; return
+  fi
+  local sdk probe
+  probe="$(mktemp -d)"
+  for sdk in $(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX[0-9]*.sdk 2>/dev/null | sort -t X -k 3 -V -r); do
+    # show-dependencies compiles every dependency manifest, where the crash shows up.
+    if SDKROOT="$sdk" "$LINUX_SWIFT" package --scratch-path "$probe" show-dependencies --format json >/dev/null 2>&1; then
+      rm -rf "$probe"; print -r -- "$sdk"; return
+    fi
+  done
+  rm -rf "$probe"
+  echo "FAIL: no macOS SDK lets $LINUX_SWIFT compile Package.swift; set RETEX_LINUX_MANIFEST_SDK" >&2
+  exit 1
+}
 OUT="${RETEX_OUT:-release}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -107,7 +128,7 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   done
 
   SCRATCH="$BUILD/linux-$ARCH"
-  "$LINUX_SWIFT" build -c release --swift-sdk "$LINUX_SDK" --triple "$TRIPLE" \
+  SDKROOT="${MANIFEST_SDK:=$(linux_manifest_sdk)}" "$LINUX_SWIFT" build -c release --swift-sdk "$LINUX_SDK" --triple "$TRIPLE" \
     -Xcc --sysroot -Xcc "$SDK_ROOT" \
     -Xswiftc -sdk -Xswiftc "$SDK_ROOT" \
     -Xswiftc -resource-dir -Xswiftc "$STATIC_ROOT" \
