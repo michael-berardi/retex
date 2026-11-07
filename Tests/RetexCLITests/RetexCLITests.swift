@@ -433,6 +433,31 @@ final class RetexCLITests: XCTestCase {
         XCTAssertEqual(unknown.status, 64)
     }
 
+    func testInitCreatesMissingVaultAndParents() throws {
+        let vault = vaultDir.appendingPathComponent("new/notes", isDirectory: true)
+        let result = try run(["init", "--vault", vault.path, "--lean"])
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vault.appendingPathComponent(".retex").path))
+        XCTAssertEqual(try jsonEnvelope(result.stdout)["vault"] as? String, vault.path)
+    }
+
+    func testOtherCommandsDoNotCreateMissingVault() throws {
+        let vault = vaultDir.appendingPathComponent("missing/notes", isDirectory: true)
+        let result = try run(["list", "--vault", vault.path, "--lean"])
+        XCTAssertEqual(result.status, 64)
+        XCTAssertTrue(result.stderr.contains("Vault does not exist"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vault.deletingLastPathComponent().path))
+    }
+
+    func testInitRejectsFileAsVault() throws {
+        let file = vaultDir.appendingPathComponent("not-a-directory")
+        try Data("untouched".utf8).write(to: file)
+        let result = try run(["init", "--vault", file.path, "--lean"])
+        XCTAssertEqual(result.status, 64)
+        XCTAssertTrue(result.stderr.contains("Vault is not a directory"), result.stderr)
+        XCTAssertEqual(try Data(contentsOf: file), Data("untouched".utf8))
+    }
+
     func testInitCreatesPrivateVaultStateIdempotently() throws {
         for _ in 0..<2 {
             let (status, out, _) = try run(["init"] + vaultArg + ["--raw-json"])

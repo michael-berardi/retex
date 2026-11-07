@@ -1,5 +1,5 @@
 FROM swift:6.3.1-noble AS build
-ARG RETEX_REF=v1.8.2
+ARG RETEX_REF=v1.8.3
 WORKDIR /build
 RUN git clone --filter=blob:none https://github.com/michael-berardi/retex.git . \
     && git checkout --detach "${RETEX_REF}"

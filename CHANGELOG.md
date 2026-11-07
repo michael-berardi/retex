@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.3 - 2026-11-07
+
+- `init` creates a missing vault and its parent directories, and reports a
+  clear error when the vault path is a file. Other commands still require an
+  existing vault.
+
 ## 1.8.2 - 2026-11-06
 
 - Release binaries are published again. 1.8.0 and 1.8.1 shipped without the

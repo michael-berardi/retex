@@ -38,6 +38,9 @@ retex recall "what changed in the release" --vault ~/Documents/CRM --budget 1200
 retex mcp --vault ~/Documents/CRM        # read-only MCP server for any agent
 ```
 
+`init` creates the vault directory and any missing parent directories. Other
+commands require the vault directory to already exist.
+
 `--lean` prints a compact, token-efficient format for agents and `--raw-json`
 prints plain JSON; either way the notes stay ordinary Markdown you can open in
 any editor.

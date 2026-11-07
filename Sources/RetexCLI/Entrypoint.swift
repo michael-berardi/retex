@@ -64,7 +64,7 @@ enum RetexCLI {
         let store = MarkdownStore()
         switch invocation.command {
         case "init":
-            let vault = try invocation.vault()
+            let vault = try invocation.vaultForInitialization()
             let state = try UndoHistory.prepare(for: vault)
             try output(
                 ["vault": vault.url.path, "state": state.path],
@@ -1364,6 +1364,20 @@ private struct Invocation {
     func positional(_ index: Int, named name: String) throws -> String {
         guard positionals.indices.contains(index) else { throw UsageError("Missing \(name)") }
         return positionals[index]
+    }
+
+    func vaultForInitialization() throws -> Vault {
+        let url = resolve(try requiredOption("vault"), directory: true)
+        let manager = FileManager.default
+        var isDirectory: ObjCBool = false
+        if manager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw UsageError("Vault is not a directory: \(url.path)")
+            }
+        } else {
+            try manager.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return Vault(url: url)
     }
 
     func vault() throws -> Vault {
