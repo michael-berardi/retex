@@ -8,7 +8,6 @@ import Foundation
 /// Exclusions:
 /// - LICENSE and package metadata (Package.swift/Package.resolved) are intentionally
 ///   not scanned: they carry legal attribution (author/copyright) that must remain.
-/// - Tests' synthetic fixtures and test data are not scanned: they live under Tests/.
 /// - Provider-adapter code that must name its own provider catalog may stay, but must
 ///   not set defaults. Add such files to `allowedFiles` with a comment when needed.
 final class NeutralityTests: XCTestCase {
@@ -20,7 +19,7 @@ final class NeutralityTests: XCTestCase {
     }
 
     private var shippedPaths: [String] {
-        ["Sources", "docs", "skills", "scripts", "README.md"]
+        ["Sources", "docs", "skills", "scripts", "Tests", "README.md"]
     }
 
     // Provider-adapter code that names a provider's own catalog. These may name
@@ -100,7 +99,7 @@ final class NeutralityTests: XCTestCase {
                 guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
                       values.isRegularFile == true else { continue }
                 let relativePath = fileURL.path.replacingOccurrences(of: repoRoot.path + "/", with: "")
-                if allowedFiles.contains(relativePath) { continue }
+                if allowedFiles.contains(relativePath) || relativePath == "Tests/RetexCoreTests/NeutralityTests.swift" { continue }
                 guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
                 let lines = content.components(separatedBy: .newlines)
                 for (index, line) in lines.enumerated() where predicate(relativePath, index + 1, line) {

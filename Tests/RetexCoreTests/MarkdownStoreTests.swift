@@ -467,7 +467,7 @@ final class ScanDeterminismTests: XCTestCase {
 
         // Same mtime for all files: ordering must fall through to title/path.
         let when = Date(timeIntervalSince1970: 1_000_000)
-        for name in ["zulu", "alpha", "mike", "bravo"] {
+        for name in ["zulu", "alpha", "tango", "bravo"] {
             let url = dir.appendingPathComponent("\(name).md")
             try "---\ntitle: \(name)\n---\nbody".write(to: url, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
@@ -482,6 +482,6 @@ final class ScanDeterminismTests: XCTestCase {
         for _ in 0..<5 {
             XCTAssertEqual(try store.scan(Vault(url: dir)).map(\.title), first)
         }
-        XCTAssertEqual(first, ["alpha", "bravo", "mike", "zulu"])
+        XCTAssertEqual(first, ["alpha", "bravo", "tango", "zulu"])
     }
 }

@@ -97,7 +97,7 @@ final class VocabularyExtractorTests: XCTestCase {
 
     func testStructuralBoundariesDoNotCreateSourceExcerptsEvenWhenRepeated() throws {
         let source = """
-        /Users/alice/Documents/AcmeProject
+        /home/example/Documents/AcmeProject
         Marisol Vega — Confidential Merger
         Northwind Research, Internal Project
         ClientName=SecretPlans
