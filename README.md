@@ -663,3 +663,7 @@ Apple notarization before publication. Verify `SHA256SUMS` and run
 ## License
 
 Retex is released under the [MIT License](LICENSE).
+
+---
+
+Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/retex/): free, private, open-source tools for working with AI agents.
