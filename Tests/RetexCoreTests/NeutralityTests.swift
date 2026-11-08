@@ -39,11 +39,46 @@ final class NeutralityTests: XCTestCase {
         options: [.caseInsensitive]
     )
 
-    // Names of the people and organisations Retex was first built for: never in the shipped tool.
+    // Generic names and paths that must not appear in the shipped tool.
     private let personalRegex = try! NSRegularExpression(
-        pattern: #"Mike|Berardi|Dana|Felix|acme|acme|Mouseia|Liberty Design|libertydesign|acme|/Users/"#,
+        pattern: #"Mike|Berardi|Felix|Mouseia|Liberty Design|libertydesign|/Users/"#,
         options: [.caseInsensitive]
     )
+
+    private func privateTerms(at url: URL) throws -> [NSRegularExpression] {
+        let content: String
+        do {
+            content = try String(contentsOf: url, encoding: .utf8)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileReadNoSuchFileError {
+            return []
+        }
+        return try content.components(separatedBy: .newlines).compactMap { rawLine in
+            let term = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty, !term.hasPrefix("#") else { return nil }
+            let escaped = NSRegularExpression.escapedPattern(for: term)
+            let word = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+            let prefix = term.unicodeScalars.first.map { word.contains($0) } == true ? #"\b"# : ""
+            let suffix = term.unicodeScalars.last.map { word.contains($0) } == true ? #"\b"# : ""
+            return try NSRegularExpression(pattern: prefix + escaped + suffix, options: [.caseInsensitive])
+        }
+    }
+
+    private func matches(_ patterns: [NSRegularExpression], in line: String) -> Bool {
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        return patterns.contains { $0.firstMatch(in: line, range: range) != nil }
+    }
+
+    func testPrivateTermsLoader() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "# comment\n\nzzqx-private-term\n".write(to: url, atomically: true, encoding: .utf8)
+        let patterns = try privateTerms(at: url)
+        XCTAssertTrue(matches(patterns, in: "A ZZQX-PRIVATE-TERM appears."))
+        XCTAssertFalse(matches(patterns, in: "A neutral example."))
+        XCTAssertFalse(matches(patterns, in: "xzzqx-private-term"))
+        XCTAssertTrue(try privateTerms(at: url.appendingPathExtension("missing")).isEmpty)
+    }
 
     func testShippedFilesShipNoModelChoice() throws {
         let hits = try scanShippedFiles { file, _, line in
@@ -60,12 +95,14 @@ final class NeutralityTests: XCTestCase {
     }
 
     func testShippedFilesNameNoPersonOrProject() throws {
+        let path = ProcessInfo.processInfo.environment["OSS_PRIVATE_TERMS"]
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/oss-audit/names.txt").path
+        let patterns = [personalRegex] + (try privateTerms(at: URL(fileURLWithPath: path)))
         let hits = try scanShippedFiles { file, _, line in
             !allowedFiles.contains(file)
                 && !isAllowedLine(file: file, line: line)
-                && personalRegex.firstMatch(
-                    in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)
-                ) != nil
+                && matches(patterns, in: line)
         }
         XCTAssertTrue(
             hits.isEmpty,
