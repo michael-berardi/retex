@@ -129,6 +129,7 @@ it the same way and writes it the same way:
 ```bash
 retex memory context --project "$PROJECT" --budget 6000 --lean   # session pack, ≤ 6,000 chars
 retex memory recall "how do we deploy" --budget 4000 --lean      # on-demand, provenance
+retex memory show global/deploy-lds --lean                       # one record, in full
 cite what you use:  retex memory cite global/deploy-lds --lean   # [mem: scope/slug]
 retex memory propose --op add --json-file record.json --evidence pi:2026-09-25-s3#12 --lean
 retex memory propose --op upvote --key global/deploy-lds --evidence operator:2026-09-26 --lean
@@ -138,7 +139,10 @@ retex memory doctor --lean
 
 Records are `type: memory` Markdown with strict limits (key `scope/slug`,
 title ≤ 120, body ≤ 600, evidence ≥ 1 locator, no secrets, no speculation
-words — rejections carry stable reason codes). Agents and dreams may only
+words — rejections carry stable reason codes). Two optional fields say how a
+rule was established: `verified_by` (the command, observation or person) and
+`confirmation: confirmed | unconfirmed` (`confirmed` requires `verified_by`).
+`memory doctor` warns about records without them and never fails for that. Agents and dreams may only
 **propose** (`add`/`upvote`/`edit`/`retire`); `promote`, `reject`, `retire`,
 and `stale` are operator actions and require `--operator-approved`. Only
 `active` records reach the session pack. Every mutation is journaled:

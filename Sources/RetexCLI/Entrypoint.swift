@@ -574,8 +574,11 @@ enum RetexCLI {
                 includeProposed: invocation.flag("include-proposed")
             )
             try output(result, json: invocation.isJSON) { result in
-                result.records.map {
-                    "\($0.title) [score \($0.score)]\n  \($0.path)\n\($0.excerpt)"
+                result.records.map { item -> String in
+                    var lines = ["\(item.title) [score \(item.score)]", "  \(item.path)"]
+                    if let verified = Self.verificationLine(item) { lines.append("  \(verified)") }
+                    lines.append(item.excerpt)
+                    return lines.joined(separator: "\n")
                 }.joined(separator: "\n\n")
             }
 
@@ -590,7 +593,9 @@ enum RetexCLI {
                 evidence: invocation.evidenceOptions("evidence"),
                 reason: invocation.option("reason"),
                 sourceHarness: invocation.option("source-harness"),
-                ifHash: invocation.option("if-hash")
+                ifHash: invocation.option("if-hash"),
+                verifiedBy: invocation.option("verified-by"),
+                confirmation: invocation.option("confirmation")
             )
             try output(result, json: invocation.isJSON) { result in
                 "\(result.op) \(result.key) -> \(result.status)\n  \(result.path)"
@@ -647,6 +652,26 @@ enum RetexCLI {
                 }.joined(separator: "\n")
             }
 
+        case "show":
+            let vault = try memory.vault(explicit: invocation.option("vault"))
+            let key = try invocation.positional(1, named: "key")
+            let record = try memory.show(vault: vault, key: key)
+            try output(record, json: invocation.isJSON) { record in
+                var lines = [
+                    "key: \(record.key)",
+                    "title: \(record.title)",
+                    "kind: \(record.kind) · scope: \(record.scope) · status: \(record.status)",
+                    "certainty: \(record.certainty) · support: \(record.support) · confidence: \(record.confidence)",
+                ]
+                if let line = Self.verificationLine(record) { lines.append(line) }
+                lines.append("evidence: \(record.evidence.joined(separator: ", "))")
+                lines.append("as_of: \(record.asOf) · updated: \(record.updated)")
+                lines.append("path: \(record.path)")
+                lines.append("")
+                lines.append(record.body)
+                return lines.joined(separator: "\n")
+            }
+
         case "cite":
             let vault = try memory.vault(explicit: invocation.option("vault"))
             let key = try invocation.positional(1, named: "key")
@@ -666,14 +691,40 @@ enum RetexCLI {
                     lines.append("Issues:")
                     lines.append(contentsOf: report.issues.map { "  - \($0)" })
                 }
+                if !report.warnings.isEmpty {
+                    lines.append("Warnings (advisory, no failure):")
+                    lines.append(contentsOf: report.warnings.map { "  - \($0)" })
+                }
                 return lines.joined(separator: "\n")
             }
             if !report.ok { throw SimpleExit(code: 1) }
 
         default:
             throw UsageError(
-                "Unknown memory subcommand: \(subcommand) (use init, context, recall, propose, promote, reject, retire, stale, review, cite, or doctor)"
+                "Unknown memory subcommand: \(subcommand) (use init, context, recall, propose, promote, reject, retire, stale, review, show, cite, or doctor)"
             )
+        }
+    }
+
+    /// "verified by <what> (confirmed)" when either field is present.
+    private static func verificationLine(_ record: AgentMemory.RecallItem) -> String? {
+        verificationLine(verifiedBy: record.verifiedBy, confirmation: record.confirmation)
+    }
+
+    private static func verificationLine(_ record: AgentMemory.RecordView) -> String? {
+        verificationLine(verifiedBy: record.verifiedBy, confirmation: record.confirmation)
+    }
+
+    private static func verificationLine(verifiedBy: String?, confirmation: String?) -> String? {
+        switch (verifiedBy, confirmation) {
+        case let (verified?, confirmed?):
+            return "verified by \(verified) (\(confirmed))"
+        case let (verified?, nil):
+            return "verified by \(verified)"
+        case let (nil, confirmed?):
+            return "confirmation: \(confirmed)"
+        default:
+            return nil
         }
     }
 
@@ -1195,7 +1246,10 @@ enum RetexCLI {
       propose --op add --json '<record>'     Propose a new lesson (lands as proposed)
       propose --op upvote --key K --evidence LOC
                                              Reinforce an existing record
+      propose --op add --verified-by "npm test" --confirmation confirmed
+                                             What established the rule (optional)
       review                                 List pending proposals
+      show K                                 Print one memory record in full
       cite K                                 Record that a memory was used
     Operator only (require --operator-approved):
       promote K | reject K | stale K | retire K
@@ -1268,6 +1322,7 @@ enum RetexCLI {
       retex memory context --project lds --budget 6000 --lean
       retex memory recall "how do we deploy" --budget 4000 --lean
       retex memory propose --op add --json-file record.json --evidence pi:2026-09-25-s3#12 --lean
+      retex memory show global/deploy-lds --lean
       retex memory review --lean
       retex memory promote global/deploy-lds --operator-approved --lean
       retex memory cite global/deploy-lds --lean

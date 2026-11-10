@@ -658,6 +658,8 @@ public struct MCPServer {
                         "status": .string(item.status),
                         "score": .string(String(item.score)),
                         "excerpt": .string(item.excerpt),
+                        "verifiedBy": .string(item.verifiedBy ?? ""),
+                        "confirmation": .string(item.confirmation ?? ""),
                     ])
                 }),
             ])

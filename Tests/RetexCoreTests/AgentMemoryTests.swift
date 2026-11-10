@@ -37,7 +37,9 @@ final class AgentMemoryTests: XCTestCase {
         confidence: String? = nil,
         certainty: String? = nil,
         scope: String? = nil,
-        sourceHarness: String? = nil
+        sourceHarness: String? = nil,
+        verifiedBy: String? = nil,
+        confirmation: String? = nil
     ) throws -> Data {
         var object: [String: Any] = [
             "key": key,
@@ -50,6 +52,8 @@ final class AgentMemoryTests: XCTestCase {
         if let certainty { object["certainty"] = certainty }
         if let scope { object["scope"] = scope }
         if let sourceHarness { object["source_harness"] = sourceHarness }
+        if let verifiedBy { object["verified_by"] = verifiedBy }
+        if let confirmation { object["confirmation"] = confirmation }
         if !evidence.isEmpty { object["evidence"] = evidence }
         return try JSONSerialization.data(withJSONObject: object)
     }
@@ -63,6 +67,9 @@ final class AgentMemoryTests: XCTestCase {
         reason: String? = nil,
         sourceHarness: String? = nil,
         ifHash: String? = nil,
+        verification: (String, String)? = nil,
+        verifiedBy: String? = nil,
+        confirmation: String? = nil,
         now: Date = Date(),
         file: StaticString = #filePath,
         line: UInt = #line
@@ -70,7 +77,10 @@ final class AgentMemoryTests: XCTestCase {
         try memory.propose(
             vault: vault, op: op, key: key, recordJSON: json,
             evidence: evidence, reason: reason, sourceHarness: sourceHarness,
-            ifHash: ifHash, now: now
+            ifHash: ifHash,
+            verifiedBy: verification?.0 ?? verifiedBy,
+            confirmation: verification?.1 ?? confirmation,
+            now: now
         )
     }
 
@@ -892,6 +902,122 @@ final class AgentMemoryTests: XCTestCase {
         // Telemetry still leaves no undo entries.
         XCTAssertEqual(try UndoHistory().entries(for: used.url.path).count, 2)
         XCTAssertEqual(try UndoHistory().entries(for: recalled.url.path).count, 2)
+    }
+
+    // MARK: - verified_by / confirmation
+
+    func testProposeAcceptsVerificationFields() throws {
+        _ = try propose(json: try recordJSON(
+            key: "global/verified",
+            verifiedBy: "swift test (177 tests) on 2026-11-09",
+            confirmation: "confirmed"
+        ))
+        var record = try memory.loadRecord(vault: vault, key: "global/verified")
+        XCTAssertEqual(record.verifiedBy, "swift test (177 tests) on 2026-11-09")
+        XCTAssertEqual(record.confirmation, "confirmed")
+        // Frontmatter round-trips: the fields survive a re-read of the file.
+        let reloaded = AgentMemory.parse(note: try MarkdownStore().load(record.url))
+        XCTAssertEqual(reloaded, record)
+
+        // The flags work too, and an older record stays valid without them.
+        _ = try propose(json: try recordJSON(key: "global/flags"), verifiedBy: "operator:2026-11-09", confirmation: "unconfirmed")
+        record = try memory.loadRecord(vault: vault, key: "global/flags")
+        XCTAssertEqual(record.verifiedBy, "operator:2026-11-09")
+        XCTAssertEqual(record.confirmation, "unconfirmed")
+        _ = try propose(json: try recordJSON(key: "global/legacy"))
+        let legacy = try memory.loadRecord(vault: vault, key: "global/legacy")
+        XCTAssertNil(legacy.verifiedBy)
+        XCTAssertNil(legacy.confirmation)
+        let text = try String(contentsOf: legacy.url, encoding: .utf8)
+        XCTAssertFalse(text.contains("verified_by:"))
+        XCTAssertFalse(text.contains("confirmation:"))
+    }
+
+    func testVerificationFieldsAreValidated() throws {
+        expectReason("bad-confirmation") {
+            _ = try propose(json: try recordJSON(key: "global/bad-conf", confirmation: "probably"))
+        }
+        expectReason("missing-field:verified_by") {
+            _ = try propose(json: try recordJSON(key: "global/conf-only", confirmation: "confirmed"))
+        }
+        expectReason("too-long:verified_by") {
+            _ = try propose(json: try recordJSON(key: "global/long-verified", verifiedBy: String(repeating: "a", count: 201)))
+        }
+        expectReason("bad-verified_by") {
+            _ = try propose(json: try recordJSON(key: "global/multiline-verified", verifiedBy: "line one\nline two"))
+        }
+        expectReason("speculation") {
+            _ = try propose(json: try recordJSON(key: "global/maybe-verified", verifiedBy: "maybe the tests passed"))
+        }
+        expectReason("secret:bearer-token") {
+            _ = try propose(json: try recordJSON(
+                key: "global/secret-verified",
+                verifiedBy: "curl -H 'Authorization: Bearer \(String(repeating: "a", count: 40))'"
+            ))
+        }
+    }
+
+    func testEditInheritsVerificationFields() throws {
+        _ = try propose(json: try recordJSON(key: "global/inherit", verifiedBy: "swift build", confirmation: "confirmed"))
+        _ = try memory.promote(vault: vault, key: "global/inherit", operatorApproved: true, ifHash: nil)
+        let successor = try propose("edit", key: "global/inherit", json: try recordJSON(key: "global/inherit", title: "Edited rule"))
+        let edited = try memory.loadRecord(vault: vault, key: successor.key)
+        XCTAssertEqual(edited.verifiedBy, "swift build")
+        XCTAssertEqual(edited.confirmation, "confirmed")
+
+        // An explicit value wins over the inherited one.
+        let second = try propose("edit", key: successor.key, json: try recordJSON(key: successor.key, title: "Edited again"),
+                                 verification: ("npm test", "unconfirmed"))
+        let twice = try memory.loadRecord(vault: vault, key: second.key)
+        XCTAssertEqual(twice.verifiedBy, "npm test")
+        XCTAssertEqual(twice.confirmation, "unconfirmed")
+    }
+
+    func testShowAndRecallSurfaceVerificationFields() throws {
+        _ = try propose(json: try recordJSON(
+            key: "global/shown", title: "Deploy with the script", body: "Run the deploy script.",
+            verifiedBy: "operator:2026-11-09", confirmation: "confirmed"
+        ))
+        _ = try memory.promote(vault: vault, key: "global/shown", operatorApproved: true, ifHash: nil)
+
+        let view = try memory.show(vault: vault, key: "global/shown")
+        XCTAssertEqual(view.verifiedBy, "operator:2026-11-09")
+        XCTAssertEqual(view.confirmation, "confirmed")
+        XCTAssertEqual(view.key, "global/shown")
+        XCTAssertEqual(view.body, "Run the deploy script.")
+        expectReason("not-found") {
+            _ = try memory.show(vault: vault, key: "global/absent")
+        }
+
+        let recalled = try memory.recall(vault: vault, query: "deploy", budget: 4000, includeProposed: false, now: fixedNow)
+        XCTAssertEqual(recalled.records.count, 1)
+        XCTAssertEqual(recalled.records.first?.verifiedBy, "operator:2026-11-09")
+        XCTAssertEqual(recalled.records.first?.confirmation, "confirmed")
+    }
+
+    func testDoctorWarnsButDoesNotFailOnMissingVerificationFields() throws {
+        _ = try propose(json: try recordJSON(key: "global/unverified"))
+        _ = try memory.promote(vault: vault, key: "global/unverified", operatorApproved: true, ifHash: nil)
+        var report = try memory.doctor(vault: vault)
+        XCTAssertTrue(report.ok, "missing optional fields must not fail doctor: \(report.issues)")
+        XCTAssertEqual(report.issues, [])
+        XCTAssertEqual(report.warnings.count, 2)
+        XCTAssertTrue(report.warnings[0].contains("no verified_by"), "\(report.warnings)")
+        XCTAssertTrue(report.warnings[1].contains("no confirmation"), "\(report.warnings)")
+
+        // Filled in, the warnings disappear.
+        _ = try propose("edit", key: "global/unverified",
+                        json: try recordJSON(key: "global/unverified"),
+                        verification: ("swift test", "confirmed"))
+        // Promoting the successor retires the unverified one it supersedes.
+        _ = try memory.promote(vault: vault, key: "global/unverified-v2", operatorApproved: true, ifHash: nil)
+        report = try memory.doctor(vault: vault)
+        // The retired record still lacks them, so the aggregate counts drop
+        // from 1 of 1 to 1 of 2 — a warning either way, never a failure.
+        XCTAssertTrue(report.ok)
+        XCTAssertEqual(report.warnings.count, 2)
+        XCTAssertTrue(report.warnings[0].contains("1 of 2 records have no verified_by"), "\(report.warnings)")
+        XCTAssertTrue(report.warnings[1].contains("1 of 2 records have no confirmation"), "\(report.warnings)")
     }
 
     private func errno_descr() -> String { String(describing: errno) }

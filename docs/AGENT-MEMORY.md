@@ -46,6 +46,8 @@ context until an operator promotes it with `--operator-approved`.
 | `confidence` | 0..1 | default `0.7`; dreamer/agent estimate, never shown as fact |
 | `certainty` | `observed` \| `inferred` \| `reported` | default `inferred` |
 | `source_harness` | one token, e.g. `claude-code`, `pi`, `dream`, `operator`, `agent` | who proposed; default `agent` |
+| `verified_by` | ≤ 200 chars, single line, optional | **what established the rule**: the command, observation or person ("`swift test` (185 tests)", "operator run on 2026-11-09"). Scanned for secrets and speculation words like every other text field. Absent means "not recorded", not "unverified" |
+| `confirmation` | `confirmed` \| `unconfirmed`, optional | explicit confirmation mark, distinct from `status` (publication) and `certainty` (truth level). `confirmed` **requires** `verified_by` (`missing-field:verified_by`) |
 | `status` | `proposed` \| `active` \| `stale` \| `retired` \| `rejected` | only `active` is injected |
 | `valid_from` / `valid_until` | ISO date | set by promote / retire / supersede |
 | `supersedes` / `superseded_by` | `[[key]]` wiki links | chain visible via `retex links` |
@@ -59,7 +61,9 @@ context until an operator promotes it with `--operator-approved`.
 
 Validation rejects with a stable reason code, never silently: `missing-field:<f>`,
 `too-long:<f>`, `bad-key`, `bad-scope`, `bad-kind`, `bad-confidence`,
-`bad-certainty`, `bad-evidence`, `bad-status`, `speculation` (maybe, probably,
+`bad-certainty`, `bad-confirmation` (`confirmation` must be `confirmed` or
+`unconfirmed`), `bad-verified_by` (must be one line), `too-long:verified_by`
+(> 200 chars), `bad-evidence`, `bad-status`, `speculation` (maybe, probably,
 i think, might be, possibly, seems like), `secret:<pattern>` (scanner ported
 from `ultraterm-dream/src/sanitize.js`: private key blocks, JWTs, bearer
 tokens, `sk-ant-`/`sk-…` keys (word-shaped lookalikes kept), `ghp_`-family,
@@ -128,7 +132,8 @@ was a citation does not also gain a recall hit that day, and vice versa.
 
 **Writes.** `retex memory propose --op add|upvote|edit|retire [--key K]
 [--json RECORD_JSON | --json-file F] [--evidence L]... [--reason R]
-[--source-harness H] [--if-hash H]`:
+[--source-harness H] [--verified-by X] [--confirmation confirmed|unconfirmed]
+[--if-hash H]`:
 
 - `add` creates a `proposed` record; the key must be free, otherwise
   `key-conflict` names the existing status;
@@ -137,7 +142,17 @@ was a citation does not also gain a recall hit that day, and vice versa.
 - `edit` proposes a successor at `K-v<N>` (`supersedes: [[K]]`); fields absent
   from the JSON are inherited from K;
 - `retire` marks `retire_proposed: <reason>` on the record; status unchanged;
+- `verified_by` / `confirmation` are optional: pass them in the record JSON or
+  as `--verified-by` / `--confirmation`. `edit` inherits both from the record
+  it supersedes when the update omits them, and every existing record without
+  them stays valid;
 - output: `{ok, op, key, path, status, contentHash}`.
+
+**Show.** `retex memory show <key> [--json]` prints one record in full —
+kind, scope, status, certainty, support, `verified by … (confirmed)`, evidence,
+dates, path and body — and `not-found` for an unknown key. `memory recall`
+carries the same two fields (`verifiedBy`, `confirmation`) per hit, in text and
+JSON.
 
 **Operator actions** (require `--operator-approved`, else `not-authorized`):
 `promote <key>` (proposed→active, `valid_from = today`; a superseded record
@@ -152,7 +167,10 @@ evidence sessions AND `kind: correction` AND an `operator:`-prefixed or
 
 **Doctor.** `retex memory doctor` validates every record, key uniqueness,
 key↔path match, supersession chains, and file/directory modes; non-zero exit
-on any issue.
+on any issue. Missing optional fields are **warnings**, not issues: the report
+carries `warnings` (aggregate counts of records without `verified_by` or
+`confirmation`), they never change `ok` or the exit code, and filling them in
+removes them.
 
 ## Safety
 

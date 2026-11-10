@@ -182,6 +182,33 @@ final class AgentMemoryCLITests: XCTestCase {
 
     // MARK: - Doctor exit code
 
+    func testShowAndDoctorWarningsSurfaceVerificationFields() throws {
+        XCTAssertEqual(try run(["memory", "init", "--lean"]).status, 0)
+        let file = try recordFile(key: "global/verified-rule", title: "Run the deploy script", body: "Run the deploy script.")
+        let proposed = try run([
+            "memory", "propose", "--op", "add", "--json-file", file,
+            "--evidence", "operator:2026-09-25",
+            "--verified-by", "operator run on 2026-09-25", "--confirmation", "confirmed", "--lean",
+        ])
+        XCTAssertEqual(proposed.status, 0, proposed.stderr)
+
+        let show = try run(["memory", "show", "global/verified-rule"])
+        XCTAssertEqual(show.status, 0, show.stderr)
+        XCTAssertTrue(show.stdout.contains("verified by operator run on 2026-09-25 (confirmed)"), show.stdout)
+        XCTAssertTrue(show.stdout.contains("Run the deploy script."), show.stdout)
+
+        let json = try run(["memory", "show", "global/verified-rule", "--json"])
+        XCTAssertTrue(json.stdout.contains("\"confirmation\":\"confirmed\""), json.stdout)
+
+        // Missing optional fields are warnings, never a failure.
+        let plain = try recordFile(key: "global/plain-rule", title: "Plain rule", body: "Do the plain thing.")
+        XCTAssertEqual(try run(["memory", "propose", "--op", "add", "--json-file", plain, "--lean"]).status, 0)
+        let doctor = try run(["memory", "doctor"])
+        XCTAssertEqual(doctor.status, 0, doctor.stdout + doctor.stderr)
+        XCTAssertTrue(doctor.stdout.contains("no verified_by"), doctor.stdout)
+        XCTAssertTrue(doctor.stdout.contains("Warnings (advisory, no failure)"), doctor.stdout)
+    }
+
     func testDoctorExitsNonZeroOnBrokenVault() throws {
         try propose("global/healthy", title: "Healthy record", body: "Fine.")
         var result = try run(["memory", "doctor"])

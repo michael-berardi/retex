@@ -459,6 +459,10 @@ public struct AgentMemory {
         public var certainty: String?
         public var scope: String?
         public var sourceHarness: String?
+        /// What established the rule (optional).
+        public var verifiedBy: String?
+        /// `confirmed` | `unconfirmed` (optional).
+        public var confirmation: String?
 
         public init(
             key: String? = nil,
@@ -470,7 +474,9 @@ public struct AgentMemory {
             confidence: String? = nil,
             certainty: String? = nil,
             scope: String? = nil,
-            sourceHarness: String? = nil
+            sourceHarness: String? = nil,
+            verifiedBy: String? = nil,
+            confirmation: String? = nil
         ) {
             self.key = key
             self.kind = kind
@@ -482,6 +488,8 @@ public struct AgentMemory {
             self.certainty = certainty
             self.scope = scope
             self.sourceHarness = sourceHarness
+            self.verifiedBy = verifiedBy
+            self.confirmation = confirmation
         }
     }
 
@@ -541,7 +549,9 @@ public struct AgentMemory {
             confidence: try numberOrString("confidence"),
             certainty: try string("certainty"),
             scope: try string("scope"),
-            sourceHarness: try string("source_harness")
+            sourceHarness: try string("source_harness"),
+            verifiedBy: try string("verified_by"),
+            confirmation: try string("confirmation")
         )
     }
 
@@ -632,8 +642,38 @@ public struct AgentMemory {
             }
         }
 
+        // An optional confirmation mark: `confirmed` must say what confirmed it.
+        if let confirmation = input.confirmation, !confirmation.isEmpty {
+            guard Confirmation(rawValue: confirmation) != nil else {
+                throw validation(
+                    "bad-confirmation",
+                    "confirmation must be one of \(Confirmation.allCases.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            if confirmation == Confirmation.confirmed.rawValue,
+               input.verifiedBy?.isEmpty ?? true {
+                throw validation(
+                    "missing-field:verified_by",
+                    "confirmation: confirmed requires verified_by (what established the rule)"
+                )
+            }
+        }
+        if let verifiedBy = input.verifiedBy, !verifiedBy.isEmpty {
+            guard verifiedBy.count <= 200 else {
+                throw validation("too-long:verified_by", "verified_by exceeds 200 characters")
+            }
+            guard !verifiedBy.contains(where: \.isNewline) else {
+                throw validation("bad-verified_by", "verified_by must be a single line")
+            }
+        }
+
         // Statements never speculate (design §4) and never carry secrets.
-        for (field, text) in [("title", title), ("body", body), ("applies_when", input.appliesWhen ?? "")] {
+        for (field, text) in [
+            ("title", title),
+            ("body", body),
+            ("applies_when", input.appliesWhen ?? ""),
+            ("verified_by", input.verifiedBy ?? ""),
+        ] {
             guard !text.isEmpty else { continue }
             if containsSpeculation(text) {
                 throw validation("speculation", "\(field) contains a speculation word")
@@ -871,12 +911,24 @@ public struct AgentMemory {
         reason: String?,
         sourceHarness: String?,
         ifHash: String?,
+        verifiedBy: String? = nil,
+        confirmation: String? = nil,
         now: Date = Date()
     ) throws -> MutationResult {
         switch op {
-        case "add": return try proposeAdd(vault: vault, recordJSON: recordJSON, evidence: evidence, sourceHarness: sourceHarness, now: now)
+        case "add":
+            return try proposeAdd(
+                vault: vault, recordJSON: recordJSON, evidence: evidence,
+                sourceHarness: sourceHarness, verifiedBy: verifiedBy,
+                confirmation: confirmation, now: now
+            )
         case "upvote": return try proposeUpvote(vault: vault, key: key, evidence: evidence, ifHash: ifHash, now: now)
-        case "edit": return try proposeEdit(vault: vault, key: key, recordJSON: recordJSON, evidence: evidence, sourceHarness: sourceHarness, now: now)
+        case "edit":
+            return try proposeEdit(
+                vault: vault, key: key, recordJSON: recordJSON, evidence: evidence,
+                sourceHarness: sourceHarness, verifiedBy: verifiedBy,
+                confirmation: confirmation, now: now
+            )
         case "retire": return try proposeRetire(vault: vault, key: key, reason: reason, ifHash: ifHash, now: now)
         default:
             throw Self.validation("bad-op", "op must be one of add, upvote, edit, retire")
@@ -897,11 +949,15 @@ public struct AgentMemory {
         recordJSON: Data?,
         evidence flags: [String],
         sourceHarness: String?,
+        verifiedBy: String? = nil,
+        confirmation: String? = nil,
         now: Date
     ) throws -> MutationResult {
         var input = try Self.recordInput(from: recordJSON)
         input.evidence = mergedEvidence(input.evidence, flags)
         if let sourceHarness, !sourceHarness.isEmpty { input.sourceHarness = sourceHarness }
+        if let verifiedBy, !verifiedBy.isEmpty { input.verifiedBy = verifiedBy }
+        if let confirmation, !confirmation.isEmpty { input.confirmation = confirmation }
         try Self.validate(input)
         guard let key = input.key else { throw Self.validation("missing-field:key", "key is required") }
         let url = try recordURL(vault: vault, key: key)
@@ -982,8 +1038,8 @@ public struct AgentMemory {
             lastUsed: nil,
             recurrences: 0,
             retireProposed: nil,
-            verifiedBy: nil,
-            confirmation: nil,
+            verifiedBy: (input.verifiedBy?.isEmpty ?? true) ? nil : input.verifiedBy,
+            confirmation: (input.confirmation?.isEmpty ?? true) ? nil : input.confirmation,
             contentHash: ""
         )
     }
@@ -1088,6 +1144,8 @@ public struct AgentMemory {
         recordJSON: Data?,
         evidence flags: [String],
         sourceHarness: String?,
+        verifiedBy: String? = nil,
+        confirmation: String? = nil,
         now: Date
     ) throws -> MutationResult {
         guard let key, !key.isEmpty else {
@@ -1110,6 +1168,10 @@ public struct AgentMemory {
         if input.evidence.isEmpty { input.evidence = current.evidence }
         if let sourceHarness, !sourceHarness.isEmpty { input.sourceHarness = sourceHarness }
         if input.sourceHarness?.isEmpty ?? true { input.sourceHarness = current.sourceHarness }
+        if let verifiedBy, !verifiedBy.isEmpty { input.verifiedBy = verifiedBy }
+        if input.verifiedBy?.isEmpty ?? true { input.verifiedBy = current.verifiedBy }
+        if let confirmation, !confirmation.isEmpty { input.confirmation = confirmation }
+        if input.confirmation?.isEmpty ?? true { input.confirmation = current.confirmation }
 
         try Self.validate(input)
 
@@ -1768,6 +1830,10 @@ public struct AgentMemory {
         public let status: String
         public let score: Int
         public let excerpt: String
+        /// What established the rule, when the record says.
+        public let verifiedBy: String?
+        /// `confirmed` | `unconfirmed`, when the record says.
+        public let confirmation: String?
     }
 
     public struct RecallResult: Encodable, Sendable {
@@ -1820,7 +1886,9 @@ public struct AgentMemory {
                 path: hit.note.url.path,
                 status: status,
                 score: hit.score,
-                excerpt: hit.excerpt
+                excerpt: hit.excerpt,
+                verifiedBy: Self.optionalMetadata(hit.note, "verified_by"),
+                confirmation: Self.optionalMetadata(hit.note, "confirmation")
             )
             guard let encoded = try? encoder.encode(item) else { continue }
             let candidateBytes = usedBytes + encoded.count + (items.isEmpty ? 0 : 1)
@@ -1904,6 +1972,9 @@ public struct AgentMemory {
         public let ok: Bool
         public let records: Int
         public let issues: [String]
+        /// Advisory only: never affects `ok` or the exit code. Absent
+        /// `verified_by` / `confirmation` land here, not in `issues`.
+        public let warnings: [String]
     }
 
     /// Validates every record (schema, key uniqueness, supersession chains,
@@ -2006,7 +2077,95 @@ public struct AgentMemory {
             )
         }
 
-        return DoctorReport(ok: issues.isEmpty, records: records.count, issues: issues.sorted())
+        // Advisory: the verification fields are optional, so their absence is a
+        // warning and never a failure. One aggregate line per field keeps the
+        // report readable on a 660-record vault.
+        var warnings: [String] = []
+        let missingVerifiedBy = records.filter { $0.verifiedBy?.isEmpty ?? true }.count
+        if missingVerifiedBy > 0 {
+            warnings.append(
+                "\(missingVerifiedBy) of \(records.count) records have no verified_by "
+                    + "(record what established each rule; optional)"
+            )
+        }
+        let missingConfirmation = records.filter { $0.confirmation?.isEmpty ?? true }.count
+        if missingConfirmation > 0 {
+            warnings.append(
+                "\(missingConfirmation) of \(records.count) records have no confirmation "
+                    + "(confirmed|unconfirmed; optional)"
+            )
+        }
+
+        return DoctorReport(
+            ok: issues.isEmpty,
+            records: records.count,
+            issues: issues.sorted(),
+            warnings: warnings
+        )
+    }
+
+    /// Everything `retex memory show <key>` prints about one record.
+    public struct RecordView: Encodable, Sendable {
+        public let key: String
+        public let title: String
+        public let kind: String
+        public let scope: String
+        public let status: String
+        public let certainty: String
+        public let confirmation: String?
+        public let verifiedBy: String?
+        public let support: Int
+        public let confidence: String
+        public let appliesWhen: String?
+        public let evidence: [String]
+        public let supersedes: String?
+        public let supersededBy: [String]
+        public let asOf: String
+        public let created: String
+        public let updated: String
+        public let recalled: Int
+        public let cited: Int
+        public let recallHits: Int
+        public let lastUsed: String?
+        public let path: String
+        public let body: String
+    }
+
+    /// One record for `memory show`; `not-found` for an unknown key.
+    public func show(vault: Vault, key: String) throws -> RecordView {
+        let record = try loadRecord(vault: vault, key: key)
+        return RecordView(
+            key: record.key,
+            title: record.title,
+            kind: record.kind,
+            scope: record.scope,
+            status: record.status,
+            certainty: record.certainty,
+            confirmation: record.confirmation,
+            verifiedBy: record.verifiedBy,
+            support: record.support,
+            confidence: record.confidence,
+            appliesWhen: record.appliesWhen,
+            evidence: record.evidence,
+            supersedes: record.supersedes,
+            supersededBy: record.supersededBy,
+            asOf: record.asOf,
+            created: record.created,
+            updated: record.updated,
+            recalled: record.recalled,
+            cited: record.cited,
+            recallHits: record.recallHits,
+            lastUsed: record.lastUsed,
+            path: record.url.path,
+            body: record.body
+        )
+    }
+
+    /// A metadata value that is absent when blank.
+    static func optionalMetadata(_ note: Note, _ field: String) -> String? {
+        guard let value = note.metadata[field] else { return nil }
+        let trimmed = MarkdownStore.trimmed(value, in: MarkdownStore.whitespaceCharacters)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func input(from record: MemoryRecord) -> RecordInput {
@@ -2020,7 +2179,9 @@ public struct AgentMemory {
             confidence: record.confidence,
             certainty: record.certainty,
             scope: record.scope,
-            sourceHarness: record.sourceHarness
+            sourceHarness: record.sourceHarness,
+            verifiedBy: record.verifiedBy,
+            confirmation: record.confirmation
         )
     }
 
