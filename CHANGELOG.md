@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.9.0 - 2026-11-09
+
+- Agent memory: the session pack is an index, not a wall of abstracts. The five
+  highest-support records are still emitted in full, then full entries use
+  `--full-share P` percent of the budget (default 25) and the rest of the bytes
+  become one-line index entries (title + key, no body) under
+  `Index (recall by key):`. At 6,000 bytes a real vault shows ~53 rules instead
+  of 21; `--full-share 100` restores the full-entries-only pack. JSON keeps
+  every existing field and adds `fullCount`, `indexCount`, `fullShare`,
+  `indexTitleWidth` and a per-record `mode`.
+- Agent memory: the index tail rotates deterministically per day over the
+  non-pinned records, so records that were never shown get their turn while the
+  top-support rules stay pinned. `memory context --day YYYY-MM-DD` renders a
+  chosen day; one day's pack is byte-identical for a given vault state, so
+  prompt caches stay warm.
+- Agent memory: emission is no longer usage. `memory context` writes nothing
+  (no counter, no `last_used`), and the score's usage term comes from real use
+  only — `cite`, or a `memory recall` hit the agent asked for (new optional
+  `recall_hits` field) — with at most one increment per record per day.
+  `recalled` is legacy emission telemetry and is no longer read by the score,
+  so records that were simply emitted often can no longer pin the pack.
+- Agent memory: optional `verified_by` (what established the rule) and
+  `confirmation: confirmed | unconfirmed` record fields, accepted by
+  `memory propose`, shown by the new `memory show` and by `memory recall`, and
+  reported by `memory doctor` as advisory warnings. `confirmed` requires
+  `verified_by`.
+- Agent memory: `memory doctor --json` adds `warnings` (advisory only; `ok` and
+  the exit code still depend on `issues` alone), and `memory recall` adds
+  `countersUpdated`, `verifiedBy` and `confirmation`.
+
 ## 1.8.3 - 2026-11-07
 
 - `init` creates a missing vault and its parent directories, and reports a
