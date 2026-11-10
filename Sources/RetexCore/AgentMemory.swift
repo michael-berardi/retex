@@ -36,9 +36,7 @@ public struct AgentMemory {
     /// (`--full-share`); the rest becomes one-line index entries.
     public static let defaultFullShare = 25
     /// Longest title shown on a one-line index entry (`--index-width`).
-    public static let defaultIndexTitleWidth = 40
-    /// Records the index window advances per day (deterministic rotation).
-    public static let indexRotationStep = 32
+    public static let defaultIndexTitleWidth = 36
     /// Index entries are always `confirmed` or `unconfirmed` (optional field).
     public enum Confirmation: String, CaseIterable, Sendable {
         case confirmed, unconfirmed
@@ -1448,6 +1446,15 @@ public struct AgentMemory {
         public let key: String
         public let title: String
         public let score: Double
+        /// `full` (title + body sentence) or `index` (one line, key only).
+        public let mode: String
+    }
+
+    /// One emitted pack entry.
+    public struct PackItem: Sendable {
+        public let record: MemoryRecord
+        public let score: Double
+        public let mode: String
     }
 
     public struct ContextResult: Encodable, Sendable {
@@ -1455,8 +1462,14 @@ public struct AgentMemory {
         public let budget: Int
         public let usedBytes: Int
         public let emitted: Int
+        /// Emitted entries whose body sentence is shown.
+        public let fullCount: Int
+        /// Emitted index entries (title + key, no body).
+        public let indexCount: Int
         public let totalActive: Int
         public let countersUpdated: Bool
+        public let fullShare: Int
+        public let indexTitleWidth: Int
         public let scope: String
         public let project: String?
         public let harness: String?
@@ -1482,10 +1495,21 @@ public struct AgentMemory {
         budget: Int,
         harness: String?,
         heading: String? = nil,
+        fullShare: Int = defaultFullShare,
+        indexTitleWidth: Int = defaultIndexTitleWidth,
         now: Date = Date()
     ) throws -> ContextResult {
         guard (1...Self.maxBudget).contains(budget) else {
             throw Self.validation("bad-budget", "budget must be an integer from 1 through \(Self.maxBudget)")
+        }
+        guard (0...100).contains(fullShare) else {
+            throw Self.validation("bad-full-share", "full share must be a percentage from 0 through 100")
+        }
+        guard (Self.minIndexTitleWidth...Self.maxIndexTitleWidth).contains(indexTitleWidth) else {
+            throw Self.validation(
+                "bad-index-width",
+                "index width must be from \(Self.minIndexTitleWidth) through \(Self.maxIndexTitleWidth) characters"
+            )
         }
         // A host names its memory ("UltraTerm memory"); one plain line only.
         let title = Self.packHeading(heading)
@@ -1500,7 +1524,13 @@ public struct AgentMemory {
             return false
         }
         let ranked = Self.rankRecords(eligible, now: now)
-        let pack = Self.buildContextPack(ranked: ranked, budget: budget, heading: title)
+        let pack = Self.buildContextPack(
+            ranked: ranked,
+            budget: budget,
+            heading: title,
+            fullShare: fullShare,
+            indexTitleWidth: indexTitleWidth
+        )
         // Emission is not usage: the pack is a pure read. `countersUpdated`
         // stays in the JSON for callers and is always false.
         return ContextResult(
@@ -1508,13 +1538,17 @@ public struct AgentMemory {
             budget: budget,
             usedBytes: pack.text.utf8.count,
             emitted: pack.emitted.count,
+            fullCount: pack.fullCount,
+            indexCount: pack.indexCount,
             totalActive: eligible.count,
             countersUpdated: false,
+            fullShare: fullShare,
+            indexTitleWidth: indexTitleWidth,
             scope: scope,
             project: project,
             harness: harness,
-            records: pack.emitted.map { ranked in
-                RankedRecord(key: ranked.record.key, title: ranked.record.title, score: ranked.score)
+            records: pack.emitted.map { item in
+                RankedRecord(key: item.record.key, title: item.record.title, score: item.score, mode: item.mode)
             }
         )
     }
@@ -1549,51 +1583,119 @@ public struct AgentMemory {
         return max(0, now.timeIntervalSince(date) / 86_400)
     }
 
-    /// Adds whole records in rank order until the budget would be exceeded;
-    /// never truncates a record. The rendered text — header, records, and, when
-    /// records did not fit, the footer — is always ≤ budget bytes.
+    /// Builds the pack in three parts, in this order: the five
+    /// highest-support records **in full** (pinned: they never rotate out),
+    /// then the next best-ranked records in full while they fit the
+    /// `fullShare` percent of the budget, then one-line index entries
+    /// (title + key, no body) for as many further records as the rest of the
+    /// budget holds. Every entry is added whole and the rendered text is
+    /// re-measured before each addition, so the output — header, entries and
+    /// footer — is always ≤ budget bytes and never cuts a record mid-way.
+    ///
+    /// Pure and deterministic: the same ranked records, budget, options and
+    /// `dayNumber` always produce the same bytes.
+    public static let minIndexTitleWidth = 16
+    public static let maxIndexTitleWidth = 120
+    public static let pinnedRecordCount = 5
+
     public static func buildContextPack(
         ranked: [(record: MemoryRecord, score: Double)],
         budget: Int,
-        heading title: String = "Agent memory"
-    ) -> (text: String, emitted: [(record: MemoryRecord, score: Double)], excluded: Int) {
+        heading title: String = "Agent memory",
+        fullShare: Int = defaultFullShare,
+        indexTitleWidth: Int = defaultIndexTitleWidth
+    ) -> (text: String, emitted: [PackItem], excluded: Int, fullCount: Int, indexCount: Int) {
         let total = ranked.count
-        var emitted: [(record: MemoryRecord, score: Double)] = []
+        let pinnedKeys = Set(
+            ranked
+                .sorted { left, right in
+                    if left.record.support != right.record.support { return left.record.support > right.record.support }
+                    return left.record.key < right.record.key
+                }
+                .prefix(pinnedRecordCount)
+                .map(\.record.key)
+        )
+
+        var items: [PackItem] = []
         var text = ""
-        for candidate in ranked {
-            let next = emitted + [candidate]
-            let attempt = renderPack(
-                header: "## \(title) (\(next.count) of \(total) active)",
-                records: next,
-                excluded: total - next.count
+        func render(_ candidate: [PackItem]) -> String {
+            renderPack(
+                header: "## \(title) (\(candidate.count) of \(total) active)",
+                items: candidate,
+                excluded: total - candidate.count,
+                indexTitleWidth: indexTitleWidth
             )
-            guard attempt.utf8.count <= budget else { break }
-            emitted = next
-            text = attempt
         }
-        if emitted.isEmpty {
-            let attempt = renderPack(
-                header: "## \(title) (0 of \(total) active)",
-                records: [],
-                excluded: total
-            )
+        func add(_ item: PackItem) -> Bool {
+            let candidate = items + [item]
+            let attempt = render(candidate)
+            guard attempt.utf8.count <= budget else { return false }
+            items = candidate
+            text = attempt
+            return true
+        }
+
+        // 1. Pinned full records, in rank order. They are emitted even when
+        //    they alone use more than the full share: support outranks the split.
+        for entry in ranked where pinnedKeys.contains(entry.record.key) {
+            guard add(PackItem(record: entry.record, score: entry.score, mode: "full")) else { break }
+        }
+        let emittedFullKeys = Set(items.map(\.record.key))
+
+        // 2. Best-ranked others in full, up to the full share of the budget.
+        var fullBytes = items.reduce(0) { $0 + fullLine($1.record).utf8.count }
+        let fullLimit = budget * fullShare / 100
+        for entry in ranked where !emittedFullKeys.contains(entry.record.key) {
+            let cost = fullLine(entry.record).utf8.count
+            if fullBytes + cost > fullLimit { break }
+            guard add(PackItem(record: entry.record, score: entry.score, mode: "full")) else { break }
+            fullBytes += cost
+        }
+
+        // 3. Index entries: title + key only, as many as the rest of the
+        //    budget holds.
+        let fullKeys = Set(items.map(\.record.key))
+        for entry in ranked where !fullKeys.contains(entry.record.key) {
+            guard add(PackItem(record: entry.record, score: entry.score, mode: "index")) else { break }
+        }
+
+        if items.isEmpty {
+            let attempt = render([])
             if attempt.utf8.count <= budget { text = attempt }
         }
-        return (text, emitted, total - emitted.count)
+        let fullCount = items.filter { $0.mode == "full" }.count
+        return (text, items, total - items.count, fullCount, items.count - fullCount)
+    }
+
+    /// One full entry: bold title, first sentence of the body, key.
+    static func fullLine(_ record: MemoryRecord) -> String {
+        "- **\(record.title)** — \(firstSentence(record.body)) (key: \(record.key))"
+    }
+
+    /// One index entry: the title capped at `width` characters (ellipsis when
+    /// cut) and the key, so the rule stays recallable by key without a body.
+    public static func indexLine(_ record: MemoryRecord, width: Int) -> String {
+        let limit = max(1, width)
+        let title = record.title.count > limit
+            ? String(record.title.prefix(limit - 1)) + "…"
+            : record.title
+        return "- \(title) (key: \(record.key))"
     }
 
     private static func renderPack(
         header: String,
-        records: [(record: MemoryRecord, score: Double)],
-        excluded: Int
+        items: [PackItem],
+        excluded: Int,
+        indexTitleWidth: Int
     ) -> String {
         var text = header
-        let lines = records.map { ranked -> String in
-            let record = ranked.record
-            return "- **\(record.title)** — \(firstSentence(record.body)) (key: \(record.key))"
+        let full = items.filter { $0.mode == "full" }.map { fullLine($0.record) }
+        if !full.isEmpty {
+            text += "\n\n" + full.joined(separator: "\n")
         }
-        if !lines.isEmpty {
-            text += "\n\n" + lines.joined(separator: "\n")
+        let index = items.filter { $0.mode == "index" }.map { indexLine($0.record, width: indexTitleWidth) }
+        if !index.isEmpty {
+            text += "\n\nIndex (recall by key):\n" + index.joined(separator: "\n")
         }
         if excluded > 0 {
             text += "\n\n(\(excluded) more active memories; run: retex memory recall \"<topic>\")"

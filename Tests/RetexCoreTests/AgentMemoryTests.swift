@@ -594,16 +594,104 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertEqual(first.text, second.text)
         XCTAssertEqual(first.emitted.map(\.record.key), second.emitted.map(\.record.key))
 
-        // Records are never cut mid-way: every emitted key appears in full.
-        for ranked in first.emitted {
-            XCTAssertTrue(first.text.contains("(key: \(ranked.record.key))"))
-            XCTAssertTrue(first.text.contains("- **\(ranked.record.title)** — "))
+        // Records are never cut mid-way: every emitted key appears with its
+        // key, and a full entry also carries the bold title and a body sentence.
+        for item in first.emitted {
+            XCTAssertTrue(first.text.contains("(key: \(item.record.key))"))
+            switch item.mode {
+            case "full":
+                XCTAssertTrue(first.text.contains("- **\(item.record.title)** — "))
+            case "index":
+                XCTAssertFalse(first.text.contains("**\(item.record.title)**"), "index entries carry no body")
+            default:
+                XCTFail("unexpected mode \(item.mode)")
+            }
         }
         // Ties break by key.
         XCTAssertEqual(
             AgentMemory.rankRecords(records, now: fixedNow).map(\.record.key),
             ranked.map(\.record.key)
         )
+    }
+
+    // The split: pinned rules in full, then index lines for the rest.
+    func testPackIsPinnedFullPlusIndexAndAlwaysWithinBudget() throws {
+        let records = seededRandom(120)
+        let ranked = AgentMemory.rankRecords(records, now: fixedNow)
+        let budget = 2000
+        let pack = AgentMemory.buildContextPack(ranked: ranked, budget: budget)
+        XCTAssertLessThanOrEqual(pack.text.utf8.count, budget)
+
+        // The five highest-support records (ties by key) are always full.
+        let top = records.sorted {
+            if $0.support != $1.support { return $0.support > $1.support }
+            return $0.key < $1.key
+        }.prefix(AgentMemory.pinnedRecordCount)
+        for record in top {
+            XCTAssertTrue(
+                pack.emitted.contains { $0.record.key == record.key && $0.mode == "full" },
+                "pinned \(record.key) is not in full: \(pack.text)"
+            )
+        }
+
+        XCTAssertGreaterThan(pack.indexCount, 0, "no index entries at budget \(budget): \(pack.text)")
+        XCTAssertGreaterThan(pack.emitted.count, pack.fullCount)
+        XCTAssertTrue(pack.text.contains("Index (recall by key):"))
+        // Index entries never carry a body sentence: the line is title + key.
+        for item in pack.emitted where item.mode == "index" {
+            let line = AgentMemory.indexLine(item.record, width: AgentMemory.defaultIndexTitleWidth)
+            XCTAssertTrue(line.hasSuffix("(key: \(item.record.key))"))
+            XCTAssertFalse(line.contains(" — "))
+            XCTAssertFalse(line.contains("**"))
+        }
+        // Full entries stay inside the full share of the budget (the pinned
+        // set is exempt: support outranks the split).
+        let fullBytes = pack.emitted.filter { $0.mode == "full" }
+            .reduce(0) { $0 + AgentMemory.fullLine($1.record).utf8.count }
+        XCTAssertLessThanOrEqual(fullBytes, budget * AgentMemory.defaultFullShare / 100 + 600)
+        XCTAssertEqual(pack.excluded, ranked.count - pack.emitted.count)
+        XCTAssertTrue(pack.text.contains("(\(pack.excluded) more active memories"), pack.text)
+        XCTAssertTrue(pack.text.hasSuffix("\n"))
+    }
+
+    func testFullShareChangesTheSplitAndIsDocumentedAsAnOption() throws {
+        let ranked = AgentMemory.rankRecords(seededRandom(120), now: fixedNow)
+        let budget = 1500
+        let indexOnly = AgentMemory.buildContextPack(ranked: ranked, budget: budget, fullShare: 0)
+        let shared = AgentMemory.buildContextPack(ranked: ranked, budget: budget)
+        let fullOnly = AgentMemory.buildContextPack(ranked: ranked, budget: budget, fullShare: 100)
+
+        // Share 0: the pinned rules stay full, everything else is indexed, so
+        // the most rules are visible.
+        XCTAssertEqual(indexOnly.fullCount, AgentMemory.pinnedRecordCount)
+        XCTAssertEqual(indexOnly.indexCount, indexOnly.emitted.count - indexOnly.fullCount)
+        XCTAssertGreaterThanOrEqual(indexOnly.emitted.count, shared.emitted.count)
+        // Share 100: the pre-1.9 pack — full entries only, no index section.
+        XCTAssertEqual(fullOnly.fullCount, fullOnly.emitted.count)
+        XCTAssertFalse(fullOnly.text.contains("Index (recall by key):"))
+        XCTAssertLessThan(fullOnly.emitted.count, indexOnly.emitted.count)
+        // Every variant respects the budget.
+        for pack in [indexOnly, shared, fullOnly] {
+            XCTAssertLessThanOrEqual(pack.text.utf8.count, budget)
+        }
+        // The index title cap is honoured.
+        let narrow = AgentMemory.buildContextPack(ranked: ranked, budget: budget, indexTitleWidth: 20)
+        for item in narrow.emitted where item.mode == "index" {
+            let line = AgentMemory.indexLine(item.record, width: 20)
+            let title = line.dropFirst(2).split(separator: "(").first ?? ""
+            XCTAssertLessThanOrEqual(title.utf8.count, 20 + 3)
+        }
+    }
+
+    func testPackOptionsAreValidated() {
+        expectReason("bad-full-share") {
+            try memory.context(vault: vault, scope: "global", project: nil, budget: 6000,
+                               harness: nil, fullShare: 101)
+        }
+        expectReason("bad-index-width") {
+            try memory.context(vault: vault, scope: "global", project: nil, budget: 6000,
+                               harness: nil, indexTitleWidth: 4)
+        }
     }
 
     func testContextExcludesProposedAndRespectsScope() throws {

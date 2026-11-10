@@ -72,14 +72,25 @@ record's status), `not-found`, `hash-mismatch`, `not-authorized`, `bad-budget`,
 ## Read/write protocol
 
 **Session pack.** `retex memory context [--scope global] [--project NAME]
-[--budget N] [--harness H] [--heading NAME] [--json]` prints a deterministic Markdown pack of
+[--budget N] [--harness H] [--heading NAME] [--full-share P] [--index-width N]
+[--json]` prints a deterministic Markdown pack of
 ACTIVE records in `global` + `project:<NAME>` scope:
 
-- header `## Agent memory (N of M active)`;
-- `- **title** — body-first-sentence (key: K)` lines, ranked by
+- header `## Agent memory (N of M active)`, where N counts every visible
+  record: full entries **and** index entries;
+- the five highest-support records (ties by key) are always full: they pin the
+  pack and never rotate out;
+- `- **title** — body-first-sentence (key: K)` lines (full entries), ranked by
   `0.35·kind + 0.25·min(support,4)/4 + 0.2·usage + 0.2·recency`, where
   `usage = min(1, (recall_hits + cited)/3) · 0.5^(daysSince(last_used)/60)` and
   `recency = 0.5^(daysSince(updated)/90)`; ties break by key;
+- **index mode.** Full entries may use `--full-share P` percent of the budget
+  (0-100, default 25); the rest of the budget becomes one-line index entries
+  `- title… (key: K)` (title, no body) under the marker
+  `Index (recall by key):`, so many more rules are visible for the same bytes.
+  `--index-width N` caps the index title (16-120 characters, default 36).
+  `--full-share 100` reproduces the pre-1.9 full-entry-only pack;
+  `--full-share 0` indexes everything except the pinned rules;
 - records are added whole until the budget would be exceeded; a record is
   never cut mid-way;
 - footer `(N more active memories; run: retex memory recall "<topic>")` when

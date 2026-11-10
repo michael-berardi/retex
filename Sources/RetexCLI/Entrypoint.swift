@@ -549,7 +549,14 @@ enum RetexCLI {
                 project: invocation.option("project"),
                 budget: budget,
                 harness: invocation.option("harness"),
-                heading: invocation.option("heading")
+                heading: invocation.option("heading"),
+                fullShare: try invocation.intOption("full-share", from: 0, through: 100)
+                    ?? AgentMemory.defaultFullShare,
+                indexTitleWidth: try invocation.intOption(
+                    "index-width",
+                    from: AgentMemory.minIndexTitleWidth,
+                    through: AgentMemory.maxIndexTitleWidth
+                ) ?? AgentMemory.defaultIndexTitleWidth
             )
             try output(result, json: invocation.isJSON) { $0.pack }
 
@@ -1154,7 +1161,13 @@ enum RetexCLI {
 
     Agents may run:
       recall "<topic>" [--budget N]          Search approved memory (--include-proposed for pending)
-      context [--heading H]                  Print the active memory pack
+      context [--heading H] [--full-share P] [--index-width N]
+                                             Print the active memory pack:
+                                             --full-share  = % of the budget for
+                                             full entries (default 25; 100 = the
+                                             pre-1.9 full-only pack, 0 = index
+                                             only), --index-width = title cap on
+                                             index lines (default 36)
       propose --op add --json '<record>'     Propose a new lesson (lands as proposed)
       propose --op upvote --key K --evidence LOC
                                              Reinforce an existing record
@@ -1350,6 +1363,16 @@ private struct Invocation {
 
     func requiredOption(_ name: String) throws -> String {
         guard let value = option(name) else { throw UsageError("--\(name) is required") }
+        return value
+    }
+
+    /// An integer option anywhere in `from...through` (0 is valid, unlike
+    /// `positiveIntOption`).
+    func intOption(_ name: String, from minimum: Int, through maximum: Int) throws -> Int? {
+        guard let raw = option(name) else { return nil }
+        guard let value = Int(raw), value >= minimum, value <= maximum else {
+            throw UsageError("--\(name) must be an integer from \(minimum) through \(maximum)")
+        }
         return value
     }
 

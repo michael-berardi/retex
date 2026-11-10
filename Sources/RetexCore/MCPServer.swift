@@ -609,18 +609,26 @@ public struct MCPServer {
             }
             let budget = try positiveInteger(arg("budget"), name: "budget", maximum: AgentMemory.maxBudget)
                 ?? AgentMemory.defaultBudget
+            let fullShare = try nonNegativeInteger(arg("full_share"), name: "full_share", maximum: 100)
+                ?? AgentMemory.defaultFullShare
+            let indexWidth = try nonNegativeInteger(arg("index_width"), name: "index_width", maximum: AgentMemory.maxIndexTitleWidth)
+                ?? AgentMemory.defaultIndexTitleWidth
             let result = try agentMemory.context(
                 vault: try memoryVaultOrThrow(),
                 scope: arg("scope") ?? "global",
                 project: arg("project"),
                 budget: budget,
-                harness: arg("harness")
+                harness: arg("harness"),
+                fullShare: fullShare,
+                indexTitleWidth: max(AgentMemory.minIndexTitleWidth, indexWidth)
             )
             return .object([
                 "pack": .string(result.pack),
                 "budget": .string(String(result.budget)),
                 "usedBytes": .string(String(result.usedBytes)),
                 "emitted": .string(String(result.emitted)),
+                "fullCount": .string(String(result.fullCount)),
+                "indexCount": .string(String(result.indexCount)),
                 "totalActive": .string(String(result.totalActive)),
                 "countersUpdated": .string(result.countersUpdated ? "true" : "false"),
             ])
@@ -636,6 +644,7 @@ public struct MCPServer {
                 includeProposed: (arg("include_proposed") ?? "false").lowercased() == "true"
             )
             return .object([
+                "countersUpdated": .string(result.countersUpdated ? "true" : "false"),
                 "query": .string(result.query),
                 "budgetBytes": .string(String(result.budgetBytes)),
                 "usedBytes": .string(String(result.usedBytes)),
@@ -736,6 +745,19 @@ public struct MCPServer {
         guard let raw else { return nil }
         guard let value = Int(raw), (1...maximum).contains(value) else {
             throw ToolError(message: "\(name) must be an integer from 1 through \(maximum)")
+        }
+        return value
+    }
+
+    /// Like `positiveInteger` but accepts 0 (`full_share: 0` is meaningful).
+    private func nonNegativeInteger(
+        _ raw: String?,
+        name: String,
+        maximum: Int
+    ) throws -> Int? {
+        guard let raw else { return nil }
+        guard let value = Int(raw), (0...maximum).contains(value) else {
+            throw ToolError(message: "\(name) must be an integer from 0 through \(maximum)")
         }
         return value
     }
