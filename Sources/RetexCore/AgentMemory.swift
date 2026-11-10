@@ -33,14 +33,28 @@ public struct AgentMemory {
     /// Default on-demand recall budget in bytes (design §5).
     public static let defaultRecallBudget = 4000
     /// Percent of the session-pack budget that full records may use
-    /// (`--full-share`); the rest becomes one-line index entries.
-    public static let defaultFullShare = 25
-    /// Index-window positions the rotation advances per day. Every non-pinned
-    /// record therefore enters the index once per cycle, and a day's pack
-    /// stays byte-identical for a given vault state.
+    /// (`--full-share`); the rest becomes one-line index entries. The default
+    /// keeps the highest-ranked rules in full for the majority of the pack.
+    public static let defaultFullShare = 60
+    /// Readability floor: whenever any full share is asked for, this many
+    /// highest-ranked records are shown in full when the budget holds them,
+    /// even if the share alone would buy fewer. Twelve full rules keep the
+    /// pack useful before the index starts; a share of 0 still means index
+    /// only.
+    public static let minimumFullRecords = 12
+    /// Fallback rotation advance for callers that do not pass one. The pack
+    /// passes its own index-window size instead, so each day's window starts
+    /// where the previous one ended and every non-pinned record gets a turn
+    /// within one cycle.
     public static let indexRotationStep = 32
-    /// Longest title shown on a one-line index entry (`--index-width`).
-    public static let defaultIndexTitleWidth = 36
+    /// Longest title shown on a one-line index entry (`--index-width`) before
+    /// it is cut at a word boundary. The default prints real titles whole:
+    /// active global titles run to about 120 characters, and a cut line shows
+    /// the key slug as well.
+    public static let defaultIndexTitleWidth = 200
+    /// A cut index title keeps at least this many words, so the line still
+    /// says what the rule is.
+    public static let minimumIndexTitleWords = 10
     /// Index entries are always `confirmed` or `unconfirmed` (optional field).
     public enum Confirmation: String, CaseIterable, Sendable {
         case confirmed, unconfirmed
@@ -1530,7 +1544,7 @@ public struct AgentMemory {
         public let emitted: Int
         /// Emitted entries whose body sentence is shown.
         public let fullCount: Int
-        /// Emitted index entries (title + key, no body).
+        /// Emitted index entries (the rule's own title, no body).
         public let indexCount: Int
         public let totalActive: Int
         public let countersUpdated: Bool
@@ -1653,16 +1667,18 @@ public struct AgentMemory {
     /// Builds the pack in three parts, in this order: the five
     /// highest-support records **in full** (pinned: they never rotate out),
     /// then the next best-ranked records in full while they fit the
-    /// `fullShare` percent of the budget, then one-line index entries
-    /// (title + key, no body) for as many further records as the rest of the
-    /// budget holds. Every entry is added whole and the rendered text is
-    /// re-measured before each addition, so the output — header, entries and
-    /// footer — is always ≤ budget bytes and never cuts a record mid-way.
+    /// `fullShare` percent of the budget, but never fewer than
+    /// `minimumFullRecords` while the budget holds them, and finally one
+    /// readable line per rule (its whole title, no body) for as many further
+    /// records as the rest of the budget holds. Every entry is added whole and
+    /// the rendered text is re-measured before each addition, so the output —
+    /// header, entries and footer — is always <= budget bytes and never cuts a
+    /// record mid-way.
     ///
     /// Pure and deterministic: the same ranked records, budget, options and
     /// `dayNumber` always produce the same bytes.
     public static let minIndexTitleWidth = 16
-    public static let maxIndexTitleWidth = 120
+    public static let maxIndexTitleWidth = 200
     public static let pinnedRecordCount = 5
 
     public static func buildContextPack(
@@ -1710,22 +1726,65 @@ public struct AgentMemory {
         }
         let emittedFullKeys = Set(items.map(\.record.key))
 
-        // 2. Best-ranked others in full, up to the full share of the budget.
+        // 2. Best-ranked others in full, up to the full share of the budget,
+        //    but never fewer than `minimumFullRecords` while the budget holds
+        //    them: the top rules are what the pack is for. A share of 0 keeps
+        //    its meaning — pinned full rules only, everything else indexed.
         var fullBytes = items.reduce(0) { $0 + fullLine($1.record).utf8.count }
+        var fullShown = items.count
         let fullLimit = budget * fullShare / 100
+        let fullFloor = fullShare == 0 ? 0 : max(minimumFullRecords, pinnedRecordCount)
         for entry in ranked where !emittedFullKeys.contains(entry.record.key) {
             let cost = fullLine(entry.record).utf8.count
-            if fullBytes + cost > fullLimit { break }
+            if fullBytes + cost > fullLimit, fullShown >= fullFloor { break }
             guard add(PackItem(record: entry.record, score: entry.score, mode: "full")) else { break }
             fullBytes += cost
+            fullShown += 1
         }
 
-        // 3. Index entries: title + key only, in the deterministic daily
-        //    rotation order, as many as the rest of the budget holds.
+        // 3. Index entries: one readable line per rule (no body), in the
+        //    deterministic daily rotation order, as many as the rest of the
+        //    budget holds. The rotation advance is the size of this day's
+        //    index window, so windows tile the pool instead of leaving gaps:
+        //    every non-pinned record gets a turn within one cycle. The window
+        //    size depends on which lines fit, so it is measured, then applied.
         let fullKeys = Set(items.map(\.record.key))
         let pool = ranked.filter { !fullKeys.contains($0.record.key) }
-        for entry in rotated(pool, dayNumber: dayNumber) {
-            guard add(PackItem(record: entry.record, score: entry.score, mode: "index")) else { break }
+        let fullPart = items
+        // The walk is over a key-ordered copy of the ranked list. Rank order
+        // drifts as recency decays, so a window measured in rank positions
+        // would skip records between days; key order gives every record one
+        // fixed position, so consecutive days take consecutive windows and
+        // nothing is skipped. Records already shown in full today are passed
+        // over (they are visible anyway), and each day's window is then shown
+        // best-ranked first.
+        let stable = ranked.sorted { $0.record.key < $1.record.key }
+        let fullKeySet = Set(fullPart.map(\.record.key))
+        func indexPhase(window: Int, step: Int) -> [PackItem] {
+            let dayWindow = rotated(stable, dayNumber: dayNumber, step: step)
+                .prefix(max(0, window))
+                .filter { !fullKeySet.contains($0.record.key) }
+                .sorted { left, right in
+                    if left.score != right.score { return left.score > right.score }
+                    return left.record.key < right.record.key
+                }
+            var kept = fullPart
+            for entry in dayWindow {
+                let candidate = kept + [PackItem(record: entry.record, score: entry.score, mode: "index")]
+                let attempt = render(candidate)
+                guard attempt.utf8.count <= budget else { continue }
+                kept = candidate
+            }
+            return Array(kept.dropFirst(fullPart.count))
+        }
+        // How many index lines a day holds at all, then use that as the walk
+        // step: the window a day shows is exactly one step of the cycle.
+        let capacity = indexPhase(window: ranked.count, step: 1).count
+        var step = max(1, min(pool.count, capacity))
+        var index = indexPhase(window: step, step: step)
+        if !index.isEmpty {
+            items += index
+            text = render(items)
         }
 
         if items.isEmpty {
@@ -1743,36 +1802,65 @@ public struct AgentMemory {
     }
 
     /// Deterministic daily rotation for the index tail. The pool keeps rank
-    /// order; the window starts at `(dayNumber · indexRotationStep) mod count`
-    /// and wraps, so every non-pinned record gets a turn (a record that has
-    /// never been shown is reached within `ceil(count / step)` days) while the
-    /// pinned top-support rules stay in full every day. Within one day the
-    /// order — and therefore the whole pack — is byte-identical, so prompt
+    /// order; the window starts at `(dayNumber * step) mod count` and wraps, so
+    /// consecutive days show consecutive slices of the pool and nothing is
+    /// skipped between them. The pack passes its own index capacity as `step`,
+    /// so `ceil(count / step)` consecutive days show every non-pinned record
+    /// once while the pinned top-support rules stay in full every day. Within
+    /// one day the order (and so the whole pack) is byte-identical, so prompt
     /// caches stay warm.
     public static func rotated(
         _ pool: [(record: MemoryRecord, score: Double)],
-        dayNumber: Int
+        dayNumber: Int,
+        step: Int = indexRotationStep
     ) -> [(record: MemoryRecord, score: Double)] {
         guard pool.count > 1 else { return pool }
         let count = pool.count
-        let offset = ((dayNumber * indexRotationStep) % count + count) % count
+        let advance = max(1, min(step, count - 1))
+        let offset = ((dayNumber * advance) % count + count) % count
         let start = pool.index(pool.startIndex, offsetBy: offset)
         return Array(pool[start...]) + Array(pool[..<start])
     }
-
     /// One full entry: bold title, first sentence of the body, key.
     static func fullLine(_ record: MemoryRecord) -> String {
         "- **\(record.title)** — \(firstSentence(record.body)) (key: \(record.key))"
     }
 
-    /// One index entry: the title capped at `width` characters (ellipsis when
-    /// cut) and the key, so the rule stays recallable by key without a body.
+    /// One index entry: the rule's own title, whole whenever it fits `width`.
+    /// The key is a slug of the title's first words, so printing it beside the
+    /// title repeats the line; a whole title is left bare and `retex memory
+    /// recall "<that line>"` finds the record (its key comes back in the hit).
+    /// Only a title that had to be cut — where the words no longer identify the
+    /// record on their own — carries the scope-less key slug as a handle.
     public static func indexLine(_ record: MemoryRecord, width: Int) -> String {
-        let limit = max(1, width)
-        let title = record.title.count > limit
-            ? String(record.title.prefix(limit - 1)) + "…"
-            : record.title
-        return "- \(title) (key: \(record.key))"
+        guard let cut = cutIndexTitle(record.title, width: max(1, width)) else {
+            return "- \(record.title)"
+        }
+        return "- \(cut)… (\(scopeLessSlug(record.key)))"
+    }
+
+    /// The title cut at a word boundary to fit `width`, keeping at least
+    /// `minimumIndexTitleWords` words; nil when the whole title already fits
+    /// (or is too short to cut).
+    static func cutIndexTitle(_ title: String, width: Int) -> String? {
+        guard title.count > width else { return nil }
+        let words = title.split(separator: " ")
+        var kept: [Substring] = []
+        var length = 0
+        for word in words {
+            let addition = word.count + (kept.isEmpty ? 0 : 1)
+            if length + addition > width, kept.count >= minimumIndexTitleWords { break }
+            kept.append(word)
+            length += addition
+        }
+        guard kept.count < words.count else { return nil }
+        return kept.joined(separator: " ")
+    }
+
+    /// The key without its scope prefix: the pack runs in one scope, so the
+    /// slug is the part that names the record.
+    public static func scopeLessSlug(_ key: String) -> String {
+        key.split(separator: "/", maxSplits: 1).last.map(String.init) ?? key
     }
 
     private static func renderPack(
@@ -1788,7 +1876,7 @@ public struct AgentMemory {
         }
         let index = items.filter { $0.mode == "index" }.map { indexLine($0.record, width: indexTitleWidth) }
         if !index.isEmpty {
-            text += "\n\nIndex (recall by key):\n" + index.joined(separator: "\n")
+            text += "\n\nIndex (recall a line's words to load it):\n" + index.joined(separator: "\n")
         }
         if excluded > 0 {
             text += "\n\n(\(excluded) more active memories; run: retex memory recall \"<topic>\")"

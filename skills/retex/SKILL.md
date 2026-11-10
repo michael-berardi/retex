@@ -129,6 +129,7 @@ it the same way and writes it the same way:
 ```bash
 retex memory context --project "$PROJECT" --budget 6000 --lean   # session pack, ≤ 6,000 chars
 retex memory recall "how do we deploy" --budget 4000 --lean      # on-demand, provenance
+retex memory recall "<a line from the pack's index>" --lean       # load one indexed rule
 retex memory show global/deploy-lds --lean                       # one record, in full
 cite what you use:  retex memory cite global/deploy-lds --lean   # [mem: scope/slug]
 retex memory propose --op add --json-file record.json --evidence pi:2026-09-25-s3#12 --lean
@@ -149,6 +150,14 @@ and `stale` are operator actions and require `--operator-approved`. Only
 `retex undo <path>` restores byte-exact content; counter bumps are telemetry
 and never create undo entries. Full schema, scoring, and budgets:
 `docs/AGENT-MEMORY.md`.
+
+Reading the pack: the entries at the top are full rules (`- **title** — first
+sentence (key: K)`); after `Index (recall a line's words to load it):` each line
+is one rule's own whole title, with no key, so load it by recalling its words —
+the hit returns the record and its key, which is what `show` and `cite` take.
+A line ending in `… (slug)` was longer than `--index-width` and was cut at a
+word boundary; its slug is the key without the scope prefix. The ruled lines
+rotate daily, so a rule you saw yesterday may be indexed on another day.
 
 Evidence (2026-08-30, disposable-vault A/B, two runs): consumers of freeform
 memory entries scored 0/6 on hazard answers (inference propagated as fact,

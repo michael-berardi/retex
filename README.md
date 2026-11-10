@@ -289,9 +289,12 @@ retex memory context --project my-app --budget 6000 --heading "Team memory" --va
 
 `context` prints a deterministic pack of *active* records that never exceeds the
 budget (default 6,000 bytes, max 8,000); proposals are never included. The five
-highest-support records are shown in full, then the rest of the budget becomes
-one-line index entries (title + key, no body) in a daily rotation, so many more
-rules are visible for the same tokens — `--full-share 100` restores a
+highest-support records are shown in full, the best-ranked rules after them
+follow in full for the majority of the budget (at least 12 at 6,000 bytes), and
+the rest of the budget becomes one readable line per rule — its own whole title,
+no body and no duplicated key — in a daily rotation, so more rules are visible
+for the same tokens without turning them into unreadable fragments. Each line
+loads with `retex memory recall "<the line>"`; `--full-share 100` restores a
 full-entries-only pack, and `--day YYYY-MM-DD` renders a chosen day.
 Agents may propose; promotion, rejection and retirement need
 `--operator-approved`. Every change is journaled for `retex undo`. Schema,

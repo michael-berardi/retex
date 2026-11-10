@@ -88,21 +88,35 @@ ACTIVE records in `global` + `project:<NAME>` scope:
   `0.35·kind + 0.25·min(support,4)/4 + 0.2·usage + 0.2·recency`, where
   `usage = min(1, (recall_hits + cited)/3) · 0.5^(daysSince(last_used)/60)` and
   `recency = 0.5^(daysSince(updated)/90)`; ties break by key;
-- **index mode.** Full entries may use `--full-share P` percent of the budget
-  (0-100, default 25); the rest of the budget becomes one-line index entries
-  `- title… (key: K)` (title, no body) under the marker
-  `Index (recall by key):`, so many more rules are visible for the same bytes.
-  `--index-width N` caps the index title (16-120 characters, default 36).
-  `--full-share 100` reproduces the pre-1.9 full-entry-only pack;
-  `--full-share 0` indexes everything except the pinned rules;
+- **full entries.** After the pinned rules, full entries continue in rank
+  order while they fit `--full-share P` percent of the budget (0-100, default
+  **60**), but never fewer than **12** while the budget holds them: the
+  highest-ranked rules are the point of the pack, so a share alone never
+  starves them. `--full-share 100` reproduces the pre-1.9 full-entry-only
+  pack; `--full-share 0` indexes everything except the pinned rules;
+- **index mode.** The rest of the budget becomes one index line per rule under
+  the marker `Index (recall a line's words to load it):`. A line is the rule's
+  own title and nothing else — no body, no bold, and no key, because the key is
+  a slug of the title's first words and printing it beside an intact title just
+  says the same thing twice. To load one, recall its words:
+  `retex memory recall "<the line>"` returns the record (with its key) as the
+  first hit. `--index-width N` (16-200, default **200**, i.e. whole titles)
+  caps the line: a title that does not fit is cut at a word boundary, keeps at
+  least 10 words, ends in `…`, and then carries the scope-less key slug —
+  `- First ten or more words of the rule… (slug)` — so a cut line still names
+  its record. A title is never cut inside a word, and `…` appears only when
+  something was cut;
 - **daily rotation.** Index entries come from a deterministic daily window
-  over the non-pinned records in rank order: it starts at
-  `(dayNumber · 32) mod count` (whole UTC days since the epoch) and wraps, so
-  every non-pinned record reaches the index once per cycle — records that have
-  never been shown get their turn — while the pinned top-support rules stay in
-  full every day. Within one day the pack is byte-identical, so prompt caches
-  stay warm; `--day 2026-11-11` renders the pack for a chosen day (the day is
-  both the rotation seed and the recency reference);
+  over the non-pinned records: the pool is held in key order (rank order drifts
+  as recency decays, which would skip records between days), the window starts
+  at `(dayNumber · step) mod count` (whole UTC days since the epoch) and wraps,
+  where `step` is that pack's index capacity. Consecutive days therefore take
+  consecutive windows, so every non-pinned record reaches the index once per
+  cycle — `ceil(pool / step)` days, about 17 on a 350-record vault at 6,000
+  bytes — while the pinned top-support rules stay in full every day. Within one
+  day the pack is byte-identical, so prompt caches stay warm; `--day
+  2026-11-11` renders the pack for a chosen day (the day is both the rotation
+  seed and the recency reference);
 - records are added whole until the budget would be exceeded; a record is
   never cut mid-way;
 - footer `(N more active memories; run: retex memory recall "<topic>")` when

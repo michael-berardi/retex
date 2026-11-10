@@ -2,17 +2,27 @@
 
 ## 1.9.0 - 2026-11-09
 
-- Agent memory: the session pack is an index, not a wall of abstracts. The five
-  highest-support records are still emitted in full, then full entries use
-  `--full-share P` percent of the budget (default 25) and the rest of the bytes
-  become one-line index entries (title + key, no body) under
-  `Index (recall by key):`. At 6,000 bytes a real vault shows ~53 rules instead
-  of 21; `--full-share 100` restores the full-entries-only pack. JSON keeps
-  every existing field and adds `fullCount`, `indexCount`, `fullShare`,
+- Agent memory: the session pack is readable rules first and a readable index
+  after them. The five highest-support records are emitted in full, the
+  best-ranked rules follow in full for the majority of the budget
+  (`--full-share P`, default 60, and never fewer than 12 while the budget holds
+  them), and the rest of the bytes become one line per rule under
+  `Index (recall a line's words to load it):`. A line is the rule's own whole
+  title — no body, no bold, no key duplicating the title — and
+  `retex memory recall "<the line>"` returns that record first (measured on a
+  350-record vault: 350/350 first hits). `--index-width N` (default 200, i.e.
+  whole titles) caps a line; a longer title is cut at a word boundary after at
+  least 10 words, ends in `…`, and then carries the scope-less key slug. At
+  6,000 bytes a real vault shows 12 full rules plus ~20 index lines instead of
+  21 abstracts; `--full-share 100` restores the full-entries-only pack. JSON
+  keeps every existing field and adds `fullCount`, `indexCount`, `fullShare`,
   `indexTitleWidth` and a per-record `mode`.
 - Agent memory: the index tail rotates deterministically per day over the
-  non-pinned records, so records that were never shown get their turn while the
-  top-support rules stay pinned. `memory context --day YYYY-MM-DD` renders a
+  non-pinned records — the pool in key order, a window that starts at
+  `(day · step) mod count` with `step` the pack's index capacity — so
+  consecutive days take consecutive windows and every non-pinned record gets
+  its turn once per cycle (~17 days at 6,000 bytes on a 350-record vault) while
+  the top-support rules stay pinned. `memory context --day YYYY-MM-DD` renders a
   chosen day; one day's pack is byte-identical for a given vault state, so
   prompt caches stay warm.
 - Agent memory: emission is no longer usage. `memory context` writes nothing

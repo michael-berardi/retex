@@ -1237,10 +1237,14 @@ enum RetexCLI {
       context [--heading H] [--full-share P] [--index-width N] [--day D]
                                              Print the active memory pack:
                                              --full-share  = % of the budget for
-                                             full entries (default 25; 100 = the
-                                             pre-1.9 full-only pack, 0 = index
-                                             only), --index-width = title cap on
-                                             index lines (default 36),
+                                             full entries (default 60, and never
+                                             fewer than 12 while the budget holds
+                                             them; 100 = the pre-1.9 full-only
+                                             pack, 0 = index only),
+                                             --index-width = title cap on index
+                                             lines (default 200: whole titles; a
+                                             longer title is cut at a word
+                                             boundary and keeps its key slug),
                                              --day = evaluate the pack as of
                                              YYYY-MM-DD (same day = same bytes)
       propose --op add --json '<record>'     Propose a new lesson (lands as proposed)

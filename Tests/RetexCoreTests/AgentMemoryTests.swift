@@ -604,14 +604,19 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertEqual(first.text, second.text)
         XCTAssertEqual(first.emitted.map(\.record.key), second.emitted.map(\.record.key))
 
-        // Records are never cut mid-way: every emitted key appears with its
-        // key, and a full entry also carries the bold title and a body sentence.
+        // Records are never cut mid-way: a full entry carries the bold title,
+        // a body sentence and the key; an index entry is one readable line —
+        // the rule's own whole title, no body, and no key repeating it.
         for item in first.emitted {
-            XCTAssertTrue(first.text.contains("(key: \(item.record.key))"))
             switch item.mode {
             case "full":
                 XCTAssertTrue(first.text.contains("- **\(item.record.title)** — "))
+                XCTAssertTrue(first.text.contains("(key: \(item.record.key))"))
             case "index":
+                XCTAssertTrue(
+                    first.text.contains("\n- \(item.record.title)\n") || first.text.contains("\n- \(item.record.title)\n\n"),
+                    "index entry is not the record's whole title"
+                )
                 XCTAssertFalse(first.text.contains("**\(item.record.title)**"), "index entries carry no body")
             default:
                 XCTFail("unexpected mode \(item.mode)")
@@ -646,19 +651,27 @@ final class AgentMemoryTests: XCTestCase {
 
         XCTAssertGreaterThan(pack.indexCount, 0, "no index entries at budget \(budget): \(pack.text)")
         XCTAssertGreaterThan(pack.emitted.count, pack.fullCount)
-        XCTAssertTrue(pack.text.contains("Index (recall by key):"))
-        // Index entries never carry a body sentence: the line is title + key.
+        XCTAssertTrue(pack.text.contains("Index (recall a line's words to load it):"))
+        // Index entries never carry a body sentence and never repeat the key:
+        // the line is the rule's own title, whole at the default width.
         for item in pack.emitted where item.mode == "index" {
             let line = AgentMemory.indexLine(item.record, width: AgentMemory.defaultIndexTitleWidth)
-            XCTAssertTrue(line.hasSuffix("(key: \(item.record.key))"))
+            XCTAssertEqual(line, "- \(item.record.title)")
             XCTAssertFalse(line.contains(" — "))
             XCTAssertFalse(line.contains("**"))
+            XCTAssertFalse(line.contains("(key:"))
         }
-        // Full entries stay inside the full share of the budget (the pinned
-        // set is exempt: support outranks the split).
-        let fullBytes = pack.emitted.filter { $0.mode == "full" }
-            .reduce(0) { $0 + AgentMemory.fullLine($1.record).utf8.count }
-        XCTAssertLessThanOrEqual(fullBytes, budget * AgentMemory.defaultFullShare / 100 + 600)
+        // The top rules are shown in full: at least `minimumFullRecords` while
+        // the budget holds them, and anything past that floor stays inside the
+        // full share of the budget (the pinned set is exempt: support outranks
+        // the split).
+        XCTAssertGreaterThanOrEqual(pack.fullCount, AgentMemory.minimumFullRecords)
+        let fullLines = pack.emitted.filter { $0.mode == "full" }
+            .map { AgentMemory.fullLine($0.record).utf8.count }
+        let fullBytes = fullLines.reduce(0, +)
+        if pack.fullCount > AgentMemory.minimumFullRecords {
+            XCTAssertLessThanOrEqual(fullBytes, budget * AgentMemory.defaultFullShare / 100)
+        }
         XCTAssertEqual(pack.excluded, ranked.count - pack.emitted.count)
         XCTAssertTrue(pack.text.contains("(\(pack.excluded) more active memories"), pack.text)
         XCTAssertTrue(pack.text.hasSuffix("\n"))
@@ -678,18 +691,27 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(indexOnly.emitted.count, shared.emitted.count)
         // Share 100: the pre-1.9 pack — full entries only, no index section.
         XCTAssertEqual(fullOnly.fullCount, fullOnly.emitted.count)
-        XCTAssertFalse(fullOnly.text.contains("Index (recall by key):"))
+        XCTAssertFalse(fullOnly.text.contains("Index (recall a line's words to load it):"))
         XCTAssertLessThan(fullOnly.emitted.count, indexOnly.emitted.count)
         // Every variant respects the budget.
         for pack in [indexOnly, shared, fullOnly] {
             XCTAssertLessThanOrEqual(pack.text.utf8.count, budget)
         }
-        // The index title cap is honoured.
+        // The index title cap is honoured: a title that has to be cut stops at
+        // a word boundary inside the cap, keeps at least
+        // `minimumIndexTitleWords` words, ends in an ellipsis and carries the
+        // scope-less key slug so the line still names its record.
         let narrow = AgentMemory.buildContextPack(ranked: ranked, budget: budget, indexTitleWidth: 20)
         for item in narrow.emitted where item.mode == "index" {
             let line = AgentMemory.indexLine(item.record, width: 20)
-            let title = line.dropFirst(2).split(separator: "(").first ?? ""
-            XCTAssertLessThanOrEqual(title.utf8.count, 20 + 3)
+            XCTAssertFalse(line.contains("**"))
+            if line != "- \(item.record.title)" {
+                XCTAssertTrue(line.hasSuffix("(\(AgentMemory.scopeLessSlug(item.record.key)))"), line)
+                let shown = line.dropFirst(2).split(separator: "(").first.map(String.init) ?? ""
+                XCTAssertTrue(shown.hasSuffix("…"), shown)
+                XCTAssertLessThanOrEqual(shown.utf8.count, 20 + 4)
+                XCTAssertGreaterThanOrEqual(shown.split(separator: " ").count, AgentMemory.minimumIndexTitleWords)
+            }
         }
     }
 
@@ -713,8 +735,10 @@ final class AgentMemoryTests: XCTestCase {
             if $0.support != $1.support { return $0.support > $1.support }
             return $0.key < $1.key
         }.prefix(AgentMemory.pinnedRecordCount)
+        // One cycle is the pool over the index capacity; two cycles of days
+        // must therefore show every record (in full or in the index).
         var seen = Set<String>()
-        for offset in 0..<20 {
+        for offset in 0..<40 {
             let pack = AgentMemory.buildContextPack(ranked: ranked, budget: 2000, dayNumber: day + offset)
             XCTAssertLessThanOrEqual(pack.text.utf8.count, 2000)
             for record in top {
@@ -723,14 +747,13 @@ final class AgentMemoryTests: XCTestCase {
                     "day +\(offset): pinned \(record.key) not in full"
                 )
             }
-            for item in pack.emitted where item.mode == "index" {
+            for item in pack.emitted {
                 seen.insert(item.record.key)
             }
         }
-        // Every non-pinned record enters the index within one cycle.
         let nonPinned = Set(records.map(\.key)).subtracting(top.map(\.key))
-        XCTAssertEqual(seen.union(top.map(\.key)), Set(records.map(\.key)))
-        XCTAssertEqual(nonPinned.subtracting(seen), [], "\(nonPinned.subtracting(seen).count) never indexed")
+        XCTAssertEqual(seen, Set(records.map(\.key)))
+        XCTAssertEqual(nonPinned.subtracting(seen), [], "\(nonPinned.subtracting(seen).count) never shown")
     }
 
     func testRotationVectorKeepsRankOrderAndWraps() throws {
@@ -740,11 +763,73 @@ final class AgentMemoryTests: XCTestCase {
         let one = AgentMemory.rotated(ranked, dayNumber: 1).map(\.record.key)
         XCTAssertEqual(one.count, ranked.count)
         XCTAssertEqual(Set(one), Set(zero))
-        let step = AgentMemory.indexRotationStep % ranked.count
+        // The window advances by the step for each day, clamped so a pool
+        // smaller than the step still moves.
+        let step = min(AgentMemory.indexRotationStep, ranked.count - 1)
         let expected = Array(zero[step...]) + Array(zero[..<step])
         XCTAssertEqual(one, expected)
         // The seed is the UTC day of the reference date, not the clock time.
         XCTAssertEqual(AgentMemory.dayNumber(fixedNow), AgentMemory.dayNumber(fixedNow.addingTimeInterval(3_600)))
+    }
+
+    // The index line carries the rule's own title: whole at the default
+    // width, and only a cut title (word boundary, at least ten words, with an
+    // ellipsis) carries the scope-less key slug — never a duplicated key
+    // beside an intact title.
+    func testIndexLineIsTheWholeTitleWithoutADuplicatedKey() throws {
+        let records = seededRandom(40)
+        for record in records {
+            let line = AgentMemory.indexLine(record, width: AgentMemory.defaultIndexTitleWidth)
+            XCTAssertEqual(line, "- \(record.title)")
+            XCTAssertFalse(line.contains("(key:"))
+            XCTAssertFalse(line.contains("**"))
+        }
+        let long = AgentMemory.MemoryRecord(
+            url: globalDir.appendingPathComponent("long.md"),
+            key: "global/an-importantly-long-rule-about-deployments-and-rollbacks",
+            kind: "procedure",
+            scope: "global",
+            title: "An importantly long rule about deployments and rollbacks that keeps going past every sensible width so it has to be cut",
+            body: "Body.",
+            appliesWhen: nil,
+            evidence: ["pi:s#1"],
+            support: 1,
+            confidence: "0.7",
+            certainty: "observed",
+            sourceHarness: "agent",
+            status: "active",
+            validFrom: nil,
+            validUntil: nil,
+            supersedes: nil,
+            supersededBy: [],
+            asOf: AgentMemory.isoDay(fixedNow),
+            created: AgentMemory.isoDateTime(fixedNow),
+            updated: AgentMemory.isoDateTime(fixedNow),
+            recalled: 0,
+            cited: 0,
+            recallHits: 0,
+            lastUsed: nil,
+            recurrences: 0,
+            retireProposed: nil,
+            verifiedBy: nil,
+            confirmation: nil,
+            contentHash: ""
+        )
+        let cut = AgentMemory.indexLine(long, width: 60)
+        XCTAssertTrue(cut.hasPrefix("- An importantly long rule about deployments "))
+        XCTAssertTrue(cut.hasSuffix("… (\(AgentMemory.scopeLessSlug(long.key)))"), cut)
+        let shown = cut.dropFirst(2).split(separator: "(").first.map(String.init) ?? ""
+        // The ten-word floor wins over the width when both cannot hold: a cut
+        // line is never shorter than the rule's first ten words.
+        let tenWords = long.title.split(separator: " ").prefix(AgentMemory.minimumIndexTitleWords)
+            .joined(separator: " ")
+        XCTAssertLessThanOrEqual(shown.utf8.count, max(60, tenWords.utf8.count) + 4)
+        XCTAssertGreaterThanOrEqual(shown.split(separator: " ").count, AgentMemory.minimumIndexTitleWords)
+        XCTAssertNil(AgentMemory.cutIndexTitle(record0Title(records), width: 200))
+    }
+
+    private func record0Title(_ records: [AgentMemory.MemoryRecord]) -> String {
+        records.first?.title ?? ""
     }
 
     func testDayOptionMakesThePackStablePerDay() throws {
