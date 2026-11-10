@@ -683,6 +683,74 @@ final class AgentMemoryTests: XCTestCase {
         }
     }
 
+    // Deterministic daily rotation: one day = one pack, and every non-pinned
+    // record gets a turn within a cycle.
+    func testIndexRotationIsDeterministicPerDayAndCoversEveryRecord() throws {
+        let records = seededRandom(160)
+        let ranked = AgentMemory.rankRecords(records, now: fixedNow)
+        let day = 20_474 // 2026-01-21 in whole UTC days
+
+        // Same day, same bytes; the next day differs.
+        let first = AgentMemory.buildContextPack(ranked: ranked, budget: 2000, dayNumber: day)
+        let again = AgentMemory.buildContextPack(ranked: ranked, budget: 2000, dayNumber: day)
+        XCTAssertEqual(first.text, again.text)
+        XCTAssertEqual(first.emitted.map(\.record.key), again.emitted.map(\.record.key))
+        let next = AgentMemory.buildContextPack(ranked: ranked, budget: 2000, dayNumber: day + 1)
+        XCTAssertNotEqual(first.emitted.map(\.record.key), next.emitted.map(\.record.key))
+
+        // The five highest-support records are pinned in full every day.
+        let top = records.sorted {
+            if $0.support != $1.support { return $0.support > $1.support }
+            return $0.key < $1.key
+        }.prefix(AgentMemory.pinnedRecordCount)
+        var seen = Set<String>()
+        for offset in 0..<20 {
+            let pack = AgentMemory.buildContextPack(ranked: ranked, budget: 2000, dayNumber: day + offset)
+            XCTAssertLessThanOrEqual(pack.text.utf8.count, 2000)
+            for record in top {
+                XCTAssertTrue(
+                    pack.emitted.contains { $0.record.key == record.key && $0.mode == "full" },
+                    "day +\(offset): pinned \(record.key) not in full"
+                )
+            }
+            for item in pack.emitted where item.mode == "index" {
+                seen.insert(item.record.key)
+            }
+        }
+        // Every non-pinned record enters the index within one cycle.
+        let nonPinned = Set(records.map(\.key)).subtracting(top.map(\.key))
+        XCTAssertEqual(seen.union(top.map(\.key)), Set(records.map(\.key)))
+        XCTAssertEqual(nonPinned.subtracting(seen), [], "\(nonPinned.subtracting(seen).count) never indexed")
+    }
+
+    func testRotationVectorKeepsRankOrderAndWraps() throws {
+        let ranked = AgentMemory.rankRecords(seededRandom(12), now: fixedNow)
+        let zero = AgentMemory.rotated(ranked, dayNumber: 0).map(\.record.key)
+        XCTAssertEqual(zero, ranked.map(\.record.key))
+        let one = AgentMemory.rotated(ranked, dayNumber: 1).map(\.record.key)
+        XCTAssertEqual(one.count, ranked.count)
+        XCTAssertEqual(Set(one), Set(zero))
+        let step = AgentMemory.indexRotationStep % ranked.count
+        let expected = Array(zero[step...]) + Array(zero[..<step])
+        XCTAssertEqual(one, expected)
+        // The seed is the UTC day of the reference date, not the clock time.
+        XCTAssertEqual(AgentMemory.dayNumber(fixedNow), AgentMemory.dayNumber(fixedNow.addingTimeInterval(3_600)))
+    }
+
+    func testDayOptionMakesThePackStablePerDay() throws {
+        _ = try propose(json: try recordJSON(key: "global/day-one", title: "Day one rule", body: "Do the thing."))
+        _ = try memory.promote(vault: vault, key: "global/day-one", operatorApproved: true, ifHash: nil)
+        let day = Date(timeIntervalSince1970: 1_769_000_000)
+        let morning = try memory.context(
+            vault: vault, scope: "global", project: nil, budget: 6000, harness: nil, now: day
+        )
+        let evening = try memory.context(
+            vault: vault, scope: "global", project: nil, budget: 6000, harness: nil,
+            now: day.addingTimeInterval(8 * 3_600)
+        )
+        XCTAssertEqual(morning.pack, evening.pack, "the same UTC day must produce the same pack")
+    }
+
     func testPackOptionsAreValidated() {
         expectReason("bad-full-share") {
             try memory.context(vault: vault, scope: "global", project: nil, budget: 6000,

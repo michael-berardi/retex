@@ -67,13 +67,13 @@ tokens, `sk-ant-`/`sk-…` keys (word-shaped lookalikes kept), `ghp_`-family,
 `AKIA…`, `AIza…`, secret assignments such as `AWS_SECRET_ACCESS_KEY=…`, URL
 userinfo, high-entropy blobs), `key-conflict` (message carries the existing
 record's status), `not-found`, `hash-mismatch`, `not-authorized`, `bad-budget`,
-`bad-op`.
+`bad-op`, `bad-full-share`, `bad-index-width`.
 
 ## Read/write protocol
 
 **Session pack.** `retex memory context [--scope global] [--project NAME]
 [--budget N] [--harness H] [--heading NAME] [--full-share P] [--index-width N]
-[--json]` prints a deterministic Markdown pack of
+[--day YYYY-MM-DD] [--json]` prints a deterministic Markdown pack of
 ACTIVE records in `global` + `project:<NAME>` scope:
 
 - header `## Agent memory (N of M active)`, where N counts every visible
@@ -91,6 +91,14 @@ ACTIVE records in `global` + `project:<NAME>` scope:
   `--index-width N` caps the index title (16-120 characters, default 36).
   `--full-share 100` reproduces the pre-1.9 full-entry-only pack;
   `--full-share 0` indexes everything except the pinned rules;
+- **daily rotation.** Index entries come from a deterministic daily window
+  over the non-pinned records in rank order: it starts at
+  `(dayNumber · 32) mod count` (whole UTC days since the epoch) and wraps, so
+  every non-pinned record reaches the index once per cycle — records that have
+  never been shown get their turn — while the pinned top-support rules stay in
+  full every day. Within one day the pack is byte-identical, so prompt caches
+  stay warm; `--day 2026-11-11` renders the pack for a chosen day (the day is
+  both the rotation seed and the recency reference);
 - records are added whole until the budget would be exceeded; a record is
   never cut mid-way;
 - footer `(N more active memories; run: retex memory recall "<topic>")` when

@@ -620,7 +620,8 @@ public struct MCPServer {
                 budget: budget,
                 harness: arg("harness"),
                 fullShare: fullShare,
-                indexTitleWidth: max(AgentMemory.minIndexTitleWidth, indexWidth)
+                indexTitleWidth: max(AgentMemory.minIndexTitleWidth, indexWidth),
+                now: try memoryDay(arg("day"))
             )
             return .object([
                 "pack": .string(result.pack),
@@ -747,6 +748,23 @@ public struct MCPServer {
             throw ToolError(message: "\(name) must be an integer from 1 through \(maximum)")
         }
         return value
+    }
+
+    /// `day: "YYYY-MM-DD"` evaluates the pack as of that UTC day (rotation
+    /// seed and recency reference); absent means today.
+    private func memoryDay(_ raw: String?) throws -> Date {
+        guard let raw, !raw.isEmpty else { return Date() }
+        guard AgentMemory.isValidISODay(raw) else {
+            throw ToolError(message: "day must be a calendar day in YYYY-MM-DD form")
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        guard let day = formatter.date(from: raw + " 12:00") else {
+            throw ToolError(message: "day must be a calendar day in YYYY-MM-DD form")
+        }
+        return day
     }
 
     /// Like `positiveInteger` but accepts 0 (`full_share: 0` is meaningful).

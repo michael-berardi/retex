@@ -543,6 +543,7 @@ enum RetexCLI {
             }
             let budget = try invocation.positiveIntOption("budget", maximum: AgentMemory.maxBudget)
                 ?? AgentMemory.defaultBudget
+            let asOf = try memoryDayOption(invocation)
             let result = try memory.context(
                 vault: vault,
                 scope: invocation.option("scope") ?? "global",
@@ -556,7 +557,8 @@ enum RetexCLI {
                     "index-width",
                     from: AgentMemory.minIndexTitleWidth,
                     through: AgentMemory.maxIndexTitleWidth
-                ) ?? AgentMemory.defaultIndexTitleWidth
+                ) ?? AgentMemory.defaultIndexTitleWidth,
+                now: asOf ?? Date()
             )
             try output(result, json: invocation.isJSON) { $0.pack }
 
@@ -673,6 +675,26 @@ enum RetexCLI {
                 "Unknown memory subcommand: \(subcommand) (use init, context, recall, propose, promote, reject, retire, stale, review, cite, or doctor)"
             )
         }
+    }
+
+    /// `--day YYYY-MM-DD`: evaluate the pack as of that UTC day. The day is
+    /// the rotation seed and the recency reference, so the same vault state and
+    /// the same day always produce the same bytes (prompt caches stay warm).
+    private static func memoryDayOption(_ invocation: Invocation) throws -> Date? {
+        guard let raw = invocation.option("day") else { return nil }
+        guard AgentMemory.isValidISODay(raw) else {
+            throw UsageError("--day must be a calendar day in YYYY-MM-DD form")
+        }
+        // Midday UTC keeps the seed stable across every timezone offset a host
+        // might format the day in.
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        guard let day = formatter.date(from: raw + " 12:00") else {
+            throw UsageError("--day must be a calendar day in YYYY-MM-DD form")
+        }
+        return day
     }
 
     /// `--json <record>` (inline), `--json=<record>`, or `--json-file <path>`.
@@ -1161,13 +1183,15 @@ enum RetexCLI {
 
     Agents may run:
       recall "<topic>" [--budget N]          Search approved memory (--include-proposed for pending)
-      context [--heading H] [--full-share P] [--index-width N]
+      context [--heading H] [--full-share P] [--index-width N] [--day D]
                                              Print the active memory pack:
                                              --full-share  = % of the budget for
                                              full entries (default 25; 100 = the
                                              pre-1.9 full-only pack, 0 = index
                                              only), --index-width = title cap on
-                                             index lines (default 36)
+                                             index lines (default 36),
+                                             --day = evaluate the pack as of
+                                             YYYY-MM-DD (same day = same bytes)
       propose --op add --json '<record>'     Propose a new lesson (lands as proposed)
       propose --op upvote --key K --evidence LOC
                                              Reinforce an existing record

@@ -35,6 +35,10 @@ public struct AgentMemory {
     /// Percent of the session-pack budget that full records may use
     /// (`--full-share`); the rest becomes one-line index entries.
     public static let defaultFullShare = 25
+    /// Index-window positions the rotation advances per day. Every non-pinned
+    /// record therefore enters the index once per cycle, and a day's pack
+    /// stays byte-identical for a given vault state.
+    public static let indexRotationStep = 32
     /// Longest title shown on a one-line index entry (`--index-width`).
     public static let defaultIndexTitleWidth = 36
     /// Index entries are always `confirmed` or `unconfirmed` (optional field).
@@ -1529,7 +1533,8 @@ public struct AgentMemory {
             budget: budget,
             heading: title,
             fullShare: fullShare,
-            indexTitleWidth: indexTitleWidth
+            indexTitleWidth: indexTitleWidth,
+            dayNumber: Self.dayNumber(now)
         )
         // Emission is not usage: the pack is a pure read. `countersUpdated`
         // stays in the JSON for callers and is always false.
@@ -1603,7 +1608,8 @@ public struct AgentMemory {
         budget: Int,
         heading title: String = "Agent memory",
         fullShare: Int = defaultFullShare,
-        indexTitleWidth: Int = defaultIndexTitleWidth
+        indexTitleWidth: Int = defaultIndexTitleWidth,
+        dayNumber: Int = 0
     ) -> (text: String, emitted: [PackItem], excluded: Int, fullCount: Int, indexCount: Int) {
         let total = ranked.count
         let pinnedKeys = Set(
@@ -1652,10 +1658,11 @@ public struct AgentMemory {
             fullBytes += cost
         }
 
-        // 3. Index entries: title + key only, as many as the rest of the
-        //    budget holds.
+        // 3. Index entries: title + key only, in the deterministic daily
+        //    rotation order, as many as the rest of the budget holds.
         let fullKeys = Set(items.map(\.record.key))
-        for entry in ranked where !fullKeys.contains(entry.record.key) {
+        let pool = ranked.filter { !fullKeys.contains($0.record.key) }
+        for entry in rotated(pool, dayNumber: dayNumber) {
             guard add(PackItem(record: entry.record, score: entry.score, mode: "index")) else { break }
         }
 
@@ -1665,6 +1672,30 @@ public struct AgentMemory {
         }
         let fullCount = items.filter { $0.mode == "full" }.count
         return (text, items, total - items.count, fullCount, items.count - fullCount)
+    }
+
+    /// Determines the day seed of the rotation: whole UTC days since the
+    /// epoch, so a pack is a pure function of (vault state, day).
+    public static func dayNumber(_ date: Date) -> Int {
+        Int((date.timeIntervalSince1970 / 86_400).rounded(.down))
+    }
+
+    /// Deterministic daily rotation for the index tail. The pool keeps rank
+    /// order; the window starts at `(dayNumber · indexRotationStep) mod count`
+    /// and wraps, so every non-pinned record gets a turn (a record that has
+    /// never been shown is reached within `ceil(count / step)` days) while the
+    /// pinned top-support rules stay in full every day. Within one day the
+    /// order — and therefore the whole pack — is byte-identical, so prompt
+    /// caches stay warm.
+    public static func rotated(
+        _ pool: [(record: MemoryRecord, score: Double)],
+        dayNumber: Int
+    ) -> [(record: MemoryRecord, score: Double)] {
+        guard pool.count > 1 else { return pool }
+        let count = pool.count
+        let offset = ((dayNumber * indexRotationStep) % count + count) % count
+        let start = pool.index(pool.startIndex, offsetBy: offset)
+        return Array(pool[start...]) + Array(pool[..<start])
     }
 
     /// One full entry: bold title, first sentence of the body, key.
