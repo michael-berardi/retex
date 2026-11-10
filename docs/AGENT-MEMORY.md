@@ -50,7 +50,10 @@ context until an operator promotes it with `--operator-approved`.
 | `valid_from` / `valid_until` | ISO date | set by promote / retire / supersede |
 | `supersedes` / `superseded_by` | `[[key]]` wiki links | chain visible via `retex links` |
 | `as_of`, `created`, `updated` | ISO | |
-| `recalled`, `cited`, `last_used` | int, int, ISO | usage telemetry |
+| `recalled` | int | **legacy** emission counter (retired): it counted packs a record appeared in before 1.9.0 and is **not** read by the score; the value stays in old files, nothing rewrites it |
+| `cited` | int | real uses an agent reported with `cite`; at most one increment per record per day |
+| `recall_hits` | int, optional | real `memory recall` hits, same one-per-day cap; absent means 0 |
+| `last_used` | ISO | time of the last real use (the day key for the once-a-day cap) |
 | `recurrences` | int | mistakes matching this key after activation |
 | `retire_proposed` | text | set by `propose --op retire --reason R`; status unchanged |
 
@@ -75,7 +78,7 @@ ACTIVE records in `global` + `project:<NAME>` scope:
 - header `## Agent memory (N of M active)`;
 - `- **title** — body-first-sentence (key: K)` lines, ranked by
   `0.35·kind + 0.25·min(support,4)/4 + 0.2·usage + 0.2·recency`, where
-  `usage = min(1, recalled/10 + cited/3) · 0.5^(daysSince(last_used)/60)` and
+  `usage = min(1, (recall_hits + cited)/3) · 0.5^(daysSince(last_used)/60)` and
   `recency = 0.5^(daysSince(updated)/90)`; ties break by key;
 - records are added whole until the budget would be exceeded; a record is
   never cut mid-way;
@@ -83,9 +86,10 @@ ACTIVE records in `global` + `project:<NAME>` scope:
   records did not fit;
 - budget default 6,000 bytes, hard ceiling 8,000 (`--budget 8001` errors);
   the emitted bytes — header and footer included — are always ≤ budget;
-- after emitting, the command bumps `recalled` and refreshes `last_used`
-  under a **non-blocking** try-lock on the vault journal lock: a busy lock
-  skips the update and reports `countersUpdated: false` in `--json`.
+- **emission is not usage**: `context` writes nothing — no counter, no
+  `last_used`, no undo entry — so repeating it (a session start, a 100-run
+  loop) can never move a record up the ranking. `countersUpdated` stays in
+  `--json` for older callers and is always `false`.
 
 **On demand.** `retex memory recall "<q>" [--budget 4000]
 [--include-proposed] [--json]` runs Retex's ranked recall restricted to active
@@ -95,6 +99,13 @@ ACTIVE records in `global` + `project:<NAME>` scope:
 **Citation.** When an agent acts on a memory it names the key (`[mem:
 scope/slug]`); `retex memory cite <key>` counts it (`cited += 1`,
 `last_used = now`). `cite` is telemetry: try-lock, no undo entry.
+
+**Real use only.** The usage term is fed by exactly two signals — a `cite`,
+and a `memory recall` hit the agent asked for (`recall_hits += 1`). Both take
+the same **one increment per record per day** cap: the day of `last_used` is
+the key, and a second use on the same UTC day is skipped (no write at all), so
+a chatty session cannot saturate the term. A record whose first use of the day
+was a citation does not also gain a recall hit that day, and vice versa.
 
 **Writes.** `retex memory propose --op add|upvote|edit|retire [--key K]
 [--json RECORD_JSON | --json-file F] [--evidence L]... [--reason R]
@@ -135,7 +146,7 @@ on any issue.
 - Creation entries journal the created source itself, so the undo chain always
   ends at a coherent, byte-exact state: undoing the create re-writes the
   proposal (use `retire`/`reject` to take a proposal out of circulation).
-- Counter updates (`context`, `cite`) are **telemetry**: they use a
+- Counter updates (`cite`, `recall`) are **telemetry**: they use a
   non-blocking try-lock and create **no** undo entries, so `retex undo` only
   ever reverts content mutations, never recall counters.
 
@@ -151,7 +162,9 @@ exposed over MCP.
 
 - Pack budget: default 6,000 bytes, max 8,000. Recall budget: default 4,000.
 - Score: `0.35·kind + 0.25·min(support,4)/4 + 0.2·usage + 0.2·recency`.
-- Memory never recalled or cited decays out of the pack; it is not deleted.
+- Usage: `min(1, (recall_hits + cited)/3) · 0.5^(daysSince(last_used)/60)`.
+  `recalled` is legacy emission telemetry and never affects rank.
+- Memory nothing really uses decays out of the pack; it is not deleted.
 
 **Heading.** A host names its memory in the pack heading with `--heading`
 (for example `--heading "UltraTerm memory"` renders `## UltraTerm memory (N of M active)`).

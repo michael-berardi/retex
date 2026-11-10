@@ -97,6 +97,7 @@ final class AgentMemoryTests: XCTestCase {
         support: Int = 1,
         recalled: Int = 0,
         cited: Int = 0,
+        recallHits: Int = 0,
         created: Date,
         updated: Date,
         lastUsed: Date? = nil,
@@ -126,9 +127,10 @@ final class AgentMemoryTests: XCTestCase {
             asOf: AgentMemory.isoDay(created),
             created: AgentMemory.isoDateTime(created),
             updated: AgentMemory.isoDateTime(updated),
-            recalled: recalled, cited: cited,
+            recalled: recalled, cited: cited, recallHits: recallHits,
             lastUsed: lastUsed.map(AgentMemory.isoDateTime),
-            recurrences: 0, retireProposed: nil, contentHash: ""
+            recurrences: 0, retireProposed: nil,
+            verifiedBy: nil, confirmation: nil, contentHash: ""
         )
         try memory.serialize(record).write(to: url, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -549,9 +551,12 @@ final class AgentMemoryTests: XCTestCase {
                 updated: AgentMemory.isoDateTime(updated),
                 recalled: next(30),
                 cited: next(10),
+                recallHits: next(6),
                 lastUsed: AgentMemory.isoDateTime(lastUsed),
                 recurrences: 0,
                 retireProposed: nil,
+                verifiedBy: nil,
+                confirmation: nil,
                 contentHash: ""
             )
         }
@@ -628,42 +633,109 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertTrue(withProject.pack.contains("## Agent memory (2 of 2 active)"))
     }
 
-    func testContextCounterUpdateUnderTryLock() throws {
+    // Emission is not usage: a pack read must leave the vault byte-identical.
+    func testContextIsAPureReadAndNeverFeedsTheScore() throws {
         _ = try propose(json: try recordJSON(key: "global/counted"))
         _ = try memory.promote(vault: vault, key: "global/counted", operatorApproved: true, ifHash: nil)
+        let url = try memory.recordURL(vault: vault, key: "global/counted")
+        let before = try Data(contentsOf: url)
 
-        let lockPath = UndoHistory.journalURL(for: vault).path + ".lock"
-        let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
-        XCTAssertGreaterThanOrEqual(fd, 0)
-        defer {
-            flock(fd, LOCK_UN)
-            close(fd)
+        let first = try memory.context(
+            vault: vault, scope: "global", project: nil, budget: 6000, harness: nil, now: fixedNow
+        )
+        XCTAssertEqual(first.emitted, 1)
+        XCTAssertFalse(first.countersUpdated, "context must not report a counter update")
+
+        // 100 runs change nothing: same pack bytes, same record bytes.
+        var last = first.pack
+        for _ in 0..<99 {
+            let again = try memory.context(
+                vault: vault, scope: "global", project: nil, budget: 6000, harness: nil, now: fixedNow
+            )
+            XCTAssertEqual(again.pack, last)
+            last = again.pack
         }
-        XCTAssertEqual(flock(fd, LOCK_EX), 0, errno_descr())
+        XCTAssertEqual(try Data(contentsOf: url), before, "context rewrote a record file")
 
-        // A busy lock skips the counter update instead of blocking.
-        let skipped = try memory.context(
-            vault: vault, scope: "global", project: nil, budget: 6000, harness: nil, now: fixedNow
-        )
-        XCTAssertFalse(skipped.countersUpdated)
-        XCTAssertEqual(skipped.emitted, 1)
-        var record = try memory.loadRecord(vault: vault, key: "global/counted")
+        let record = try memory.loadRecord(vault: vault, key: "global/counted")
         XCTAssertEqual(record.recalled, 0)
+        XCTAssertEqual(record.cited, 0)
+        XCTAssertEqual(record.recallHits, 0)
         XCTAssertNil(record.lastUsed)
+        XCTAssertEqual(try UndoHistory().entries(for: record.url.path).count, 2) // create + promote
+    }
 
-        // With the lock released the update lands.
-        XCTAssertEqual(flock(fd, LOCK_UN), 0)
-        let updated = try memory.context(
-            vault: vault, scope: "global", project: nil, budget: 6000, harness: nil, now: fixedNow
+    // Legacy `recalled` counted emissions, so it must not create an unearned
+    // rank advantage over a record nobody has used.
+    func testLegacyEmissionCountersDoNotChangeRank() throws {
+        let stale = try directRecord(
+            key: "global/never-used", kind: "gotcha", recalled: 37_578, cited: 0,
+            created: fixedNow, updated: fixedNow, lastUsed: fixedNow
         )
-        XCTAssertTrue(updated.countersUpdated)
-        record = try memory.loadRecord(vault: vault, key: "global/counted")
-        XCTAssertEqual(record.recalled, 1)
-        XCTAssertNotNil(record.lastUsed)
+        let fresh = try directRecord(
+            key: "global/used-today", kind: "gotcha", recalled: 0, cited: 3,
+            created: fixedNow, updated: fixedNow, lastUsed: fixedNow
+        )
+        let records = [AgentMemory.parse(note: try MarkdownStore().load(stale)),
+                       AgentMemory.parse(note: try MarkdownStore().load(fresh))]
+        let ranked = AgentMemory.rankRecords(records, now: fixedNow)
+        XCTAssertEqual(ranked.first?.record.key, "global/used-today", "\(ranked.map { ($0.record.key, $0.score) })")
+        // The legacy value reads as zero use: both scores differ only by cited.
+        XCTAssertEqual(ranked.map(\.score).max()! - ranked.map(\.score).min()!, 0.2, accuracy: 1e-9)
+    }
 
-        // Telemetry leaves no undo entries.
-        let entries = try UndoHistory().entries(for: record.url.path)
-        XCTAssertEqual(entries.count, 2) // create + promote only
+    // Real use counts once per record per day, whatever the session volume,
+    // and the two real-use signals share that one increment.
+    func testRealUseCountsAtMostOncePerRecordPerDay() throws {
+        _ = try propose(json: try recordJSON(key: "global/cited", title: "Deploy rule", body: "Run the deploy script."))
+        _ = try memory.promote(vault: vault, key: "global/cited", operatorApproved: true, ifHash: nil)
+        _ = try propose(json: try recordJSON(key: "global/recalled", title: "Deploy checklist", body: "Run the deploy script."))
+        _ = try memory.promote(vault: vault, key: "global/recalled", operatorApproved: true, ifHash: nil)
+        let morning = fixedNow
+        let evening = fixedNow.addingTimeInterval(6 * 3_600)
+        let tomorrow = fixedNow.addingTimeInterval(26 * 3_600)
+
+        // Citations: three in one morning count once; a new day counts again.
+        for _ in 0..<3 {
+            _ = try memory.cite(vault: vault, key: "global/cited", now: morning)
+        }
+        var cited = try memory.loadRecord(vault: vault, key: "global/cited")
+        XCTAssertEqual(cited.cited, 1)
+        XCTAssertEqual(cited.recallHits, 0)
+        _ = try memory.cite(vault: vault, key: "global/cited", now: evening)
+        cited = try memory.loadRecord(vault: vault, key: "global/cited")
+        XCTAssertEqual(cited.cited, 1, "a second use on the same day must not count")
+        _ = try memory.cite(vault: vault, key: "global/cited", now: tomorrow)
+        cited = try memory.loadRecord(vault: vault, key: "global/cited")
+        XCTAssertEqual(cited.cited, 2)
+
+        // Recall hits: the same one-per-day cap.
+        for _ in 0..<3 {
+            _ = try memory.recall(vault: vault, query: "deploy", budget: 4000, includeProposed: false, now: morning)
+        }
+        var recalled = try memory.loadRecord(vault: vault, key: "global/recalled")
+        XCTAssertEqual(recalled.recallHits, 1)
+        XCTAssertEqual(recalled.cited, 0)
+        _ = try memory.recall(vault: vault, query: "deploy", budget: 4000, includeProposed: false, now: evening)
+        recalled = try memory.loadRecord(vault: vault, key: "global/recalled")
+        XCTAssertEqual(recalled.recallHits, 1)
+        _ = try memory.recall(vault: vault, query: "deploy", budget: 4000, includeProposed: false, now: tomorrow)
+        recalled = try memory.loadRecord(vault: vault, key: "global/recalled")
+        XCTAssertEqual(recalled.recallHits, 2)
+
+        // A day's first real use is the one that counts, whichever it is: the
+        // recalls above also hit the cited record once per day, so a citation
+        // on a day it was already recalled adds nothing.
+        var used = try memory.loadRecord(vault: vault, key: "global/cited")
+        XCTAssertEqual(used.recallHits, 2) // day 22 (the recalls above) and day 23 (below)
+        let citedBefore = used.cited
+        _ = try memory.cite(vault: vault, key: "global/cited", now: tomorrow)
+        used = try memory.loadRecord(vault: vault, key: "global/cited")
+        XCTAssertEqual(used.cited, citedBefore)
+
+        // Telemetry still leaves no undo entries.
+        XCTAssertEqual(try UndoHistory().entries(for: used.url.path).count, 2)
+        XCTAssertEqual(try UndoHistory().entries(for: recalled.url.path).count, 2)
     }
 
     private func errno_descr() -> String { String(describing: errno) }
@@ -752,6 +824,7 @@ final class AgentMemoryTests: XCTestCase {
         let record = try memory.loadRecord(vault: vault, key: "global/cited")
         XCTAssertEqual(record.cited, 1)
         XCTAssertEqual(record.recalled, 0)
+        XCTAssertEqual(record.recallHits, 0)
         XCTAssertNotNil(record.lastUsed)
         // No undo entry for telemetry.
         XCTAssertEqual(try UndoHistory().entries(for: record.url.path).count, 2)
@@ -789,8 +862,8 @@ final class AgentMemoryTests: XCTestCase {
             status: "active", validFrom: nil, validUntil: nil,
             supersedes: "global/missing-target", supersededBy: [],
             asOf: "2026-01-01", created: "2026-01-01T00:00:00Z", updated: "2026-01-01T00:00:00Z",
-            recalled: 0, cited: 0, lastUsed: nil, recurrences: 0,
-            retireProposed: nil, contentHash: ""
+            recalled: 0, cited: 0, recallHits: 0, lastUsed: nil, recurrences: 0,
+            retireProposed: nil, verifiedBy: nil, confirmation: nil, contentHash: ""
         )
         try memory.serialize(record).write(to: record.url, atomically: true, encoding: .utf8)
 

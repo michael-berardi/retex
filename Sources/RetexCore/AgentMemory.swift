@@ -32,6 +32,17 @@ public struct AgentMemory {
     public static let maxBudget = 8000
     /// Default on-demand recall budget in bytes (design §5).
     public static let defaultRecallBudget = 4000
+    /// Percent of the session-pack budget that full records may use
+    /// (`--full-share`); the rest becomes one-line index entries.
+    public static let defaultFullShare = 25
+    /// Longest title shown on a one-line index entry (`--index-width`).
+    public static let defaultIndexTitleWidth = 40
+    /// Records the index window advances per day (deterministic rotation).
+    public static let indexRotationStep = 32
+    /// Index entries are always `confirmed` or `unconfirmed` (optional field).
+    public enum Confirmation: String, CaseIterable, Sendable {
+        case confirmed, unconfirmed
+    }
 
     private let store: MarkdownStore
     private let history = UndoHistory()
@@ -264,9 +275,15 @@ public struct AgentMemory {
         public var updated: String
         public var recalled: Int
         public var cited: Int
+        /// Real `memory recall` hits (`recall_hits`). Optional: absent means 0.
+        public var recallHits: Int
         public var lastUsed: String?
         public var recurrences: Int
         public var retireProposed: String?
+        /// What established the rule (optional; `verified_by`).
+        public var verifiedBy: String?
+        /// `confirmed` | `unconfirmed` (optional; `confirmation`).
+        public var confirmation: String?
         public var contentHash: String
 
         var scopeDirectory: String? { AgentMemory.scopeKey(from: key)?.directory }
@@ -305,9 +322,12 @@ public struct AgentMemory {
             updated: metadata["updated"] ?? "",
             recalled: Int(metadata["recalled"] ?? "") ?? 0,
             cited: Int(metadata["cited"] ?? "") ?? 0,
+            recallHits: Int(metadata["recall_hits"] ?? "") ?? 0,
             lastUsed: metadata["last_used"],
             recurrences: Int(metadata["recurrences"] ?? "") ?? 0,
             retireProposed: metadata["retire_proposed"],
+            verifiedBy: metadata["verified_by"],
+            confirmation: metadata["confirmation"],
             contentHash: note.contentHash
         )
     }
@@ -389,10 +409,19 @@ public struct AgentMemory {
         lines.append("updated: \(record.updated)")
         lines.append("recalled: \(record.recalled)")
         lines.append("cited: \(record.cited)")
+        // Only written once a real recall hit exists, so legacy records keep
+        // their bytes when another field changes.
+        if record.recallHits > 0 { lines.append("recall_hits: \(record.recallHits)") }
         if let lastUsed = record.lastUsed, !lastUsed.isEmpty { lines.append("last_used: \(lastUsed)") }
         lines.append("recurrences: \(record.recurrences)")
         if let retireProposed = record.retireProposed, !retireProposed.isEmpty {
             lines.append("retire_proposed: \(Self.scalar(retireProposed))")
+        }
+        if let verifiedBy = record.verifiedBy, !verifiedBy.isEmpty {
+            lines.append("verified_by: \(Self.scalar(verifiedBy))")
+        }
+        if let confirmation = record.confirmation, !confirmation.isEmpty {
+            lines.append("confirmation: \(Self.scalar(confirmation))")
         }
         lines.append("---")
         lines.append("")
@@ -947,9 +976,12 @@ public struct AgentMemory {
             updated: Self.isoDateTime(now),
             recalled: 0,
             cited: 0,
+            recallHits: 0,
             lastUsed: nil,
             recurrences: 0,
             retireProposed: nil,
+            verifiedBy: nil,
+            confirmation: nil,
             contentHash: ""
         )
     }
@@ -1351,7 +1383,9 @@ public struct AgentMemory {
         )
     }
 
-    private enum TelemetryMode { case context, cite }
+    /// Real-use telemetry only. Emission is not usage: `context` writes
+    /// nothing, so a record cannot rank higher merely because it was shown.
+    private enum TelemetryMode { case cite, recallHit }
 
     /// Non-blocking try-lock on the vault journal lock. Returns nil when the
     /// lock is busy — callers treat that as "skip the counter update".
@@ -1374,20 +1408,28 @@ public struct AgentMemory {
 
     /// Rewrites counter fields under the try-lock. No undo entry: counters
     /// are telemetry, not content (documented in docs/AGENT-MEMORY.md).
+    /// At most one increment per record per day: a record already used today
+    /// (same ISO day in `last_used`) is left untouched, so a chatty session
+    /// cannot saturate the usage term.
     private func performTelemetryUpdate(vault: Vault, keys: [String], mode: TelemetryMode, now: Date) throws -> Bool {
         guard !keys.isEmpty else { return true }
         let timestamp = Self.isoDateTime(now)
+        let today = Self.isoDay(now)
         return try withTelemetryLock(vault: vault) {
             for key in keys {
                 guard let url = try? recordURL(vault: vault, key: key),
                       let note = try? store.load(url)
                 else { continue }
                 var record = Self.parse(note: note)
+                if let lastUsed = record.lastUsed, let previous = Self.parseTimestamp(lastUsed),
+                   Self.isoDay(previous) == today {
+                    continue
+                }
                 switch mode {
-                case .context:
-                    record.recalled += 1
                 case .cite:
                     record.cited += 1
+                case .recallHit:
+                    record.recallHits += 1
                 }
                 record.lastUsed = timestamp
                 let source = serialize(record)
@@ -1459,19 +1501,15 @@ public struct AgentMemory {
         }
         let ranked = Self.rankRecords(eligible, now: now)
         let pack = Self.buildContextPack(ranked: ranked, budget: budget, heading: title)
-        let countersUpdated = (try? performTelemetryUpdate(
-            vault: vault,
-            keys: pack.emitted.map(\.record.key),
-            mode: .context,
-            now: now
-        )) ?? false
+        // Emission is not usage: the pack is a pure read. `countersUpdated`
+        // stays in the JSON for callers and is always false.
         return ContextResult(
             pack: pack.text,
             budget: budget,
             usedBytes: pack.text.utf8.count,
             emitted: pack.emitted.count,
             totalActive: eligible.count,
-            countersUpdated: countersUpdated,
+            countersUpdated: false,
             scope: scope,
             project: project,
             harness: harness,
@@ -1483,13 +1521,18 @@ public struct AgentMemory {
 
     /// Pack ranking (design §5):
     /// `0.35·kind + 0.25·min(support,4)/4 + 0.2·usage + 0.2·recency`, where
-    /// usage = min(1, recalled/10 + cited/3) · 0.5^(daysSince(last_used)/60)
+    /// usage = min(1, (recall_hits + cited)/3) · 0.5^(daysSince(last_used)/60)
     /// and recency = 0.5^(daysSince(updated)/90). Ties break by key.
+    ///
+    /// `recalled` is deliberately not read: it counted *emissions* before 1.9.0
+    /// (legacy records carry tens of thousands of them), so it is legacy
+    /// telemetry with no bearing on rank. Usage comes from real use only: an
+    /// agent `cite` or a `memory recall` hit it actually asked for.
     public static func rankRecords(_ records: [MemoryRecord], now: Date) -> [(record: MemoryRecord, score: Double)] {
         records.map { record -> (record: MemoryRecord, score: Double) in
             let kindWeight = Kind(rawValue: record.kind)?.weight ?? 0
             let supportComponent = Double(min(record.support, 4)) / 4.0
-            let usage = min(1, Double(record.recalled) / 10.0 + Double(record.cited) / 3.0)
+            let usage = min(1, Double(record.recallHits + record.cited) / 3.0)
                 * pow(0.5, daysSince(record.lastUsed ?? record.updated, before: now) / 60.0)
             let recency = pow(0.5, daysSince(record.updated, before: now) / 90.0)
             let score = 0.35 * kindWeight + 0.25 * supportComponent + 0.2 * usage + 0.2 * recency
@@ -1599,18 +1642,24 @@ public struct AgentMemory {
         public let budgetBytes: Int
         public let usedBytes: Int
         public let truncated: Bool
+        public let countersUpdated: Bool
         public let records: [RecallItem]
     }
 
     /// Ranked lexical recall restricted to active Memory/ records (plus
     /// labelled proposals with `includeProposed`). Records are packed whole
     /// under the byte budget using the same accounting as `retex recall`.
+    /// A recall hit is real use (the agent asked for it), so it is the one
+    /// path besides `cite` that feeds the usage term: `recall_hits += 1` and
+    /// `last_used = now`, at most once per record per day. Telemetry: try-lock
+    /// and no undo entry; a busy lock reports `countersUpdated: false`.
     public func recall(
         vault: Vault,
         query: String,
         budget: Int,
         includeProposed: Bool,
-        limit: Int = 200
+        limit: Int = 200,
+        now: Date = Date()
     ) throws -> RecallResult {
         guard (1...1_000_000).contains(budget) else {
             throw Self.validation("bad-budget", "budget must be an integer from 1 through 1000000")
@@ -1646,11 +1695,18 @@ public struct AgentMemory {
             items.append(item)
             usedBytes = candidateBytes
         }
+        let countersUpdated = (try? performTelemetryUpdate(
+            vault: vault,
+            keys: items.map(\.key),
+            mode: .recallHit,
+            now: now
+        )) ?? false
         return RecallResult(
             query: query,
             budgetBytes: budget,
             usedBytes: usedBytes,
             truncated: items.count < filtered.count,
+            countersUpdated: countersUpdated,
             records: items
         )
     }
