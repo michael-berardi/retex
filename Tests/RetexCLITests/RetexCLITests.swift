@@ -616,10 +616,24 @@ final class RetexCLITests: XCTestCase {
         try process.run()
         defer { process.terminate(); process.waitUntilExit() }
 
-        Thread.sleep(forTimeInterval: 1.0)
-        try "# Watched\n".write(to: vaultDir.appendingPathComponent("watched.md"), atomically: true, encoding: .utf8)
+        // Startup time and FSEvents arming vary under load, so keep touching
+        // the file until the first line reaches the pipe. Each write is a
+        // real change; the test still fails if output is buffered, because
+        // firstLine returns only once a newline-terminated line is readable.
+        let watched = vaultDir.appendingPathComponent("watched.md")
+        let keepWriting = StopFlag()
+        let writer = DispatchQueue(label: "retex.watch.cli.writer")
+        writer.async {
+            var attempt = 0
+            while !keepWriting.isStopped {
+                attempt += 1
+                try? "# Watched \(attempt)\n".write(to: watched, atomically: true, encoding: .utf8)
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+        }
         let received = LineReader(stdout.fileHandleForReading)
-        let line = received.firstLine(timeout: 10)
+        let line = received.firstLine(timeout: 20)
+        keepWriting.stop()
         XCTAssertEqual(line.flatMap { $0.contains("watched.md") }, true, "watch output was buffered: \(line ?? "nil")")
     }
 
@@ -650,6 +664,15 @@ final class RetexCLITests: XCTestCase {
         let (status, _, stderr) = try run(["import", "--from", archive, "--into", target], stdin: " correct horse battery \n")
         XCTAssertEqual(status, 0, stderr)
     }
+}
+
+/// Thread-safe stop flag for background writers in these tests.
+private final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+    func stop() { lock.lock(); stopped = true; lock.unlock() }
 }
 
 /// Reads the first newline-terminated line from a pipe with a deadline.

@@ -141,25 +141,45 @@ final class VaultWatcherTests: XCTestCase {
         try FileManager.default.createDirectory(at: vaultDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: vaultDir) }
 
-        let expectation = expectation(description: "change batch delivered")
+        // FSEvents only reports changes made after the stream is armed, and
+        // arming time varies with fseventsd load. The test therefore waits
+        // for a probe write to come back before making the real change,
+        // instead of sleeping for a fixed time.
+        let armed = expectation(description: "watcher armed by probe")
+        armed.assertForOverFulfill = false
+        let delivered = expectation(description: "change batch delivered")
+        delivered.assertForOverFulfill = false
         let received = LockedBox([[String]]())
 
         let watcher = VaultWatcher(vault: Vault(url: vaultDir), debounce: 0.2, queue: .main) { paths in
             received.with { $0.append(paths) }
-            expectation.fulfill()
+            if paths.contains(where: { $0.hasSuffix("probe.md") }) { armed.fulfill() }
+            if paths.contains(where: { $0.hasSuffix("new-note.md") }) { delivered.fulfill() }
         }
         try watcher.start()
         defer { watcher.stop() }
 
-        // Give FSEvents a moment to arm, then mutate.
-        Thread.sleep(forTimeInterval: 0.3)
+        let probeURL = vaultDir.appendingPathComponent("probe.md")
+        let keepProbing = LockedBox(true)
+        let probing = DispatchQueue(label: "retex.watch.test.probe")
+        probing.async {
+            var attempt = 0
+            while keepProbing.with({ $0 }) {
+                attempt += 1
+                try? "probe \(attempt)".write(to: probeURL, atomically: true, encoding: .utf8)
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        wait(for: [armed], timeout: 60)
+        keepProbing.with { $0 = false }
+
         try "hello".write(
             to: vaultDir.appendingPathComponent("new-note.md"),
             atomically: true,
             encoding: .utf8
         )
 
-        wait(for: [expectation], timeout: 10)
+        wait(for: [delivered], timeout: 60)
 
         let flattened = received.with { $0.flatMap { $0 } }
         XCTAssertTrue(

@@ -29,10 +29,20 @@ public final class VaultWatcher: @unchecked Sendable {
         queue: DispatchQueue = .main,
         onChange: @escaping @Sendable ([String]) -> Void
     ) {
-        self.vaultURL = vault.url.standardizedFileURL
+        self.vaultURL = Self.canonicalURL(for: vault.url)
         self.debounce = debounce
         self.onChange = onChange
         callbackQueue = queue
+    }
+
+    /// FSEvents reports realpaths (for example `/private/var/...` for a path
+    /// under `/var`) and misses changes when subscribed through a symlink.
+    /// The stream and the relative-path prefix both use this canonical form.
+    private static func canonicalURL(for url: URL) -> URL {
+        let standard = url.standardizedFileURL
+        guard let resolved = realpath(standard.path, nil) else { return standard }
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
     }
 
     public func start() throws {
@@ -133,10 +143,12 @@ public final class VaultWatcher: @unchecked Sendable {
         pendingPaths = []
         stateLock.unlock()
         guard !batch.isEmpty else { return }
+        // Standardize both sides the same way so /private prefixes match.
+        let root = vaultURL.standardizedFileURL.path
         onChange(batch.map { path in
             let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
-            if standardized.hasPrefix(vaultURL.path + "/") {
-                return String(standardized.dropFirst(vaultURL.path.count + 1))
+            if standardized.hasPrefix(root + "/") {
+                return String(standardized.dropFirst(root.count + 1))
             }
             return path
         })
