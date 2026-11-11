@@ -1,26 +1,37 @@
 #!/bin/zsh
 # Retex release builder. Environment-driven; no personal defaults.
 #
-# Required:
+# Required (full release):
 #   RETEX_VERSION            stable semver matching RetexCore/RetexVersion.swift
 #   RETEX_SIGNING_IDENTITY   macOS Developer ID Application identity
 #   NOTARY_PROFILE           notarytool Keychain profile for the macOS archive
+# Required (RETEX_LINUX_ONLY=1):
+#   RETEX_VERSION only. Builds and checks the Linux archives on this host and
+#   skips the macOS build, signing, notarization and the test run.
 # Optional:
 #   RETEX_LINUX_SDK          installed Swift static Linux SDK ID
 #   RETEX_LINUX_SWIFT        Swift executable matching RETEX_LINUX_SDK (auto-detected on macOS)
 #   RETEX_LLVM_STRIP         LLVM strip executable for Linux ELF binaries
+#   RETEX_LINUX_ARCHES       space-separated subset of "aarch64 x86_64" (default: both)
 #
 # The official static SDK currently omits target-named compiler-rt symlinks;
 # this script repairs those links inside the user-owned SDK before building.
 #   RETEX_WINDOWS_BINARY     verified Windows retex.exe built on Windows
 #   RETEX_OUT                output directory (default: ./release)
+#
+# Linux archives ship twice. retex-linux-<arch>.tar.xz is the small download
+# (xz -9e, about 40% smaller than gzip on the static binary). The .tar.gz is
+# kept only because the in-app updater on 1.8.x looks for that name.
 set -euo pipefail
 # Release artifacts must be reproducible: always link the pinned binary
 # target from the release service, never a developer's local engine build.
 
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
-IDENTITY="${RETEX_SIGNING_IDENTITY:?Set RETEX_SIGNING_IDENTITY to a Developer ID Application identity}"
-NOTARY_PROFILE="${NOTARY_PROFILE:?Set NOTARY_PROFILE to a notarytool Keychain profile}"
+LINUX_ONLY="${RETEX_LINUX_ONLY:-}"
+if [[ -z "$LINUX_ONLY" ]]; then
+  IDENTITY="${RETEX_SIGNING_IDENTITY:?Set RETEX_SIGNING_IDENTITY to a Developer ID Application identity}"
+  NOTARY_PROFILE="${NOTARY_PROFILE:?Set NOTARY_PROFILE to a notarytool Keychain profile}"
+fi
 LINUX_SDK="${RETEX_LINUX_SDK:-swift-6.3.3-RELEASE_static-linux-0.1.0}"
 SDK_SWIFT_VERSION="${LINUX_SDK#swift-}"
 SDK_SWIFT_VERSION="${SDK_SWIFT_VERSION%%-RELEASE*}"
@@ -33,6 +44,7 @@ else
   LINUX_SWIFT="swift"
 fi
 LLVM_STRIP="${RETEX_LLVM_STRIP:-llvm-strip}"
+LINUX_ARCHES="${RETEX_LINUX_ARCHES:-aarch64 x86_64}"
 # The swift.org toolchain compiles package manifests against the host macOS SDK.
 # A macOS SDK newer than the toolchain (e.g. MacOSX27.2 with Swift 6.3.3) makes
 # the manifest compile crash (signal 11, unknown -target-arch-variant). Use the
@@ -74,6 +86,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 command -v "$LLVM_STRIP" >/dev/null || { echo "FAIL: RETEX_LLVM_STRIP is unavailable"; exit 1; }
 command -v "$LINUX_SWIFT" >/dev/null || { echo "FAIL: RETEX_LINUX_SWIFT is unavailable"; exit 1; }
+command -v xz >/dev/null || { echo "FAIL: xz is unavailable"; exit 1; }
 if ! "$LINUX_SWIFT" --version | grep -q "Swift version $SDK_SWIFT_VERSION"; then
   echo "FAIL: RETEX_LINUX_SWIFT must match SDK Swift $SDK_SWIFT_VERSION"; exit 1
 fi
@@ -84,36 +97,40 @@ if ! grep -q "^ARG RETEX_REF=v$VERSION$" deploy/readonly-mcp/Dockerfile; then
   echo "FAIL: hosted Dockerfile does not default to v$VERSION"; exit 1
 fi
 
-swift test >/dev/null
 rm -rf "$BUILD"
-mkdir -p "$BUILD/macos-arm64" "$BUILD/macos-x86_64" "$BUILD/bin"
-swift build -c release --arch arm64 --product retex --scratch-path "$BUILD/macos-arm64" >/dev/null
-swift build -c release --arch x86_64 --product retex --scratch-path "$BUILD/macos-x86_64" >/dev/null
-lipo -create \
-  "$BUILD/macos-arm64/release/retex" \
-  "$BUILD/macos-x86_64/release/retex" \
-  -output "$BUILD/bin/retex"
-strip -x "$BUILD/bin/retex"
-codesign --force --sign "$IDENTITY" --options runtime --timestamp "$BUILD/bin/retex"
-codesign --verify --strict --verbose=1 \
-  -R '=identifier "retex" and anchor apple generic and certificate leaf[subject.OU] = "T63VT9UAY2"' \
-  "$BUILD/bin/retex"
-stage_support "$BUILD/bin"
-MAC_ARCHIVE="$OUT/retex-universal.zip"
-(cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
+mkdir -p "$BUILD/bin"
+if [[ -z "$LINUX_ONLY" ]]; then
+  swift test >/dev/null
+  mkdir -p "$BUILD/macos-arm64" "$BUILD/macos-x86_64"
+  swift build -c release --arch arm64 --product retex --scratch-path "$BUILD/macos-arm64" >/dev/null
+  swift build -c release --arch x86_64 --product retex --scratch-path "$BUILD/macos-x86_64" >/dev/null
+  lipo -create \
+    "$BUILD/macos-arm64/release/retex" \
+    "$BUILD/macos-x86_64/release/retex" \
+    -output "$BUILD/bin/retex"
+  strip -x "$BUILD/bin/retex"
+  codesign --force --sign "$IDENTITY" --options runtime --timestamp "$BUILD/bin/retex"
+  codesign --verify --strict --verbose=1 \
+    -R '=identifier "retex" and anchor apple generic and certificate leaf[subject.OU] = "T63VT9UAY2"' \
+    "$BUILD/bin/retex"
+  stage_support "$BUILD/bin"
+  MAC_ARCHIVE="$OUT/retex-universal.zip"
+  (cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
 
-xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
-STAGE="$BUILD/macos-stage"
-mkdir -p "$STAGE"
-ditto -x -k "$MAC_ARCHIVE" "$STAGE"
-xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
-spctl -a -t install -vv "$STAGE/retex"
-rm -f "$MAC_ARCHIVE"
-(cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
+  xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
+  STAGE="$BUILD/macos-stage"
+  mkdir -p "$STAGE"
+  ditto -x -k "$MAC_ARCHIVE" "$STAGE"
+  xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
+  spctl -a -t install -vv "$STAGE/retex"
+  rm -f "$MAC_ARCHIVE"
+  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE deploy)
+fi
 
 for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl"; do
   ARCH="${spec%%:*}"
   TRIPLE="${spec#*:}"
+  [[ " $LINUX_ARCHES " == *" $ARCH "* ]] || continue
   CONFIG="$("$LINUX_SWIFT" sdk configure --show-configuration "$LINUX_SDK" "$TRIPLE")"
   SDK_ROOT="$(print -r -- "$CONFIG" | sed -n 's/^sdkRootPath: //p')"
   STATIC_ROOT="$(print -r -- "$CONFIG" | sed -n 's/^swiftStaticResourcesPath: //p')"
@@ -143,6 +160,8 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   stage_support "$STAGE"
   COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" \
     retex README.md LICENSE deploy
+  COPYFILE_DISABLE=1 tar -cf - -C "$STAGE" retex README.md LICENSE deploy \
+    | xz -9e > "$OUT/retex-linux-$ARCH.tar.xz"
 done
 
 if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
@@ -156,8 +175,14 @@ if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
 fi
 
 : > "$OUT/SHA256SUMS"
-for asset in retex-universal.zip retex-linux-aarch64.tar.gz retex-linux-x86_64.tar.gz \
-  ${RETEX_WINDOWS_BINARY:+retex-windows-x86_64.zip}; do
+ASSETS=()
+[[ -z "$LINUX_ONLY" ]] && ASSETS+=(retex-universal.zip)
+for spec in "aarch64" "x86_64"; do
+  [[ " $LINUX_ARCHES " == *" $spec "* ]] || continue
+  ASSETS+=(retex-linux-$spec.tar.xz retex-linux-$spec.tar.gz)
+done
+[[ -n "${RETEX_WINDOWS_BINARY:-}" ]] && ASSETS+=(retex-windows-x86_64.zip)
+for asset in "${ASSETS[@]}"; do
   hash="$(shasum -a 256 "$OUT/$asset" | awk '{print $1}')"
   print "$hash  $asset" >> "$OUT/SHA256SUMS"
 done
