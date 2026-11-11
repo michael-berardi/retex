@@ -3,9 +3,10 @@ import CoreServices
 import Foundation
 
 /// Watches a vault directory with FSEvents and delivers debounced change
-/// batches on a caller-provided callback queue. Internal Retex state under
-/// `.retex/` never triggers events, so mutations recorded by this library do
-/// not echo back.
+/// batches on a caller-provided callback queue. Only Markdown notes outside
+/// hidden directories are reported: internal Retex state under `.retex/`
+/// (journal, memory usage sidecar) and atomic-save temp files never trigger
+/// a callback, so this library's own writes do not echo back.
 public final class VaultWatcher: @unchecked Sendable {
     private let vaultURL: URL
     private let debounce: TimeInterval
@@ -17,6 +18,11 @@ public final class VaultWatcher: @unchecked Sendable {
     private let stateLock = NSLock()
     private var pendingPaths: Set<String> = []
     private var flushWorkItem: DispatchWorkItem?
+    /// When the oldest unflushed change arrived. A steady stream of writes
+    /// keeps resetting the debounce, so the flush is never pushed past
+    /// `maxLatency` after it; otherwise continuous writes starve the callback.
+    private var pendingSince: DispatchTime?
+    private var maxLatency: TimeInterval { max(1.0, debounce * 4) }
 
     /// - Parameters:
     ///   - vault: vault root to watch (recursive).
@@ -97,6 +103,7 @@ public final class VaultWatcher: @unchecked Sendable {
         flushWorkItem?.cancel()
         flushWorkItem = nil
         pendingPaths = []
+        pendingSince = nil
         guard let existing = stream else {
             stateLock.unlock()
             return
@@ -114,13 +121,27 @@ public final class VaultWatcher: @unchecked Sendable {
 
     deinit { stop() }
 
+    /// A vault-relative path the watcher reports: a `.md` file with no
+    /// hidden component.
+    static func isReportable(relativePath: String) -> Bool {
+        let components = relativePath.split(separator: "/")
+        guard let last = components.last, !components.contains(where: { $0.hasPrefix(".") }) else { return false }
+        return last.lowercased().hasSuffix(".md")
+    }
+
     fileprivate func handleEvents(paths: [String], numEvents: Int, flags: [UInt32]) {
         var fresh: Set<String> = []
+        let root = vaultURL.path
         for index in 0..<numEvents {
             for path in paths[index < paths.count ? index : 0].split(separator: "\0") {
                 let changed = String(path)
-                // Skip internal state; skip directories (events may name parents).
-                if changed.hasSuffix("/.retex") || changed.contains("/.retex/") { continue }
+                guard changed.hasPrefix(root + "/") else { continue }
+                // Only Markdown notes outside hidden directories, matching the
+                // polling watcher: internal state (`.retex/`, including the
+                // memory usage sidecar) and atomic-save temp files
+                // (`note.md.sb-<hash>-<rand>`) never reach the callback.
+                guard Self.isReportable(relativePath: String(changed.dropFirst(root.count + 1))) else { continue }
+                // Skip directories (events may name parents).
                 if (try? FileManager.default.contentsOfDirectory(atPath: changed)) != nil { continue }
                 fresh.insert(changed)
             }
@@ -132,15 +153,20 @@ public final class VaultWatcher: @unchecked Sendable {
         guard stream != nil else { return } // stopped between callback and schedule
         pendingPaths.formUnion(fresh)
         flushWorkItem?.cancel()
+        let now = DispatchTime.now()
+        let since = pendingSince ?? now
+        pendingSince = since
+        let deadline = min(now + debounce, since + maxLatency)
         let workItem = DispatchWorkItem { [weak self] in self?.flush() }
         flushWorkItem = workItem
-        callbackQueue.asyncAfter(deadline: .now() + debounce, execute: workItem)
+        callbackQueue.asyncAfter(deadline: deadline, execute: workItem)
     }
 
     private func flush() {
         stateLock.lock()
         let batch = Array(pendingPaths).sorted()
         pendingPaths = []
+        pendingSince = nil
         stateLock.unlock()
         guard !batch.isEmpty else { return }
         // Standardize both sides the same way so /private prefixes match.

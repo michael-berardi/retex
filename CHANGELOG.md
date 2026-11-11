@@ -2,6 +2,22 @@
 
 ## 1.9.0 - 2026-11-09
 
+- Agent memory: reads never write record files. Usage from `cite` and
+  `memory recall` hits now goes to one sidecar per vault,
+  `.retex/memory-usage.json`, written at most once per call and only when a
+  record gets its first use of the day; record Markdown is left alone.
+  Earlier releases rewrote every emitted record on every `memory context`
+  call. With a pack built on every agent turn in every pane, that came to
+  ~1,900 file events a minute on a 617-record vault and kept macOS
+  `fseventsd` at 100% CPU for days. Existing `cited` / `recall_hits` /
+  `last_used` frontmatter is the baseline; the sidecar adds to it, and
+  nothing is rewritten on upgrade.
+- `retex watch` (macOS) reports only Markdown notes outside hidden
+  directories, matching the Linux/Windows poller, so atomic-save temp files
+  (`note.md.sb-…`) and Retex's own `.retex/` state never reach the callback.
+  Its debounce now flushes at most `max(1 s, 4 × debounce)` after the first
+  pending change, so a steady stream of writes can no longer hold back every
+  callback.
 - Release packaging: the Linux download is `retex-linux-<arch>.tar.xz`, about
   15.7 MB for aarch64 (the `.tar.gz` was 25.3 MB). The `.tar.gz` is still
   published because the in-app updater of 1.8.x looks for that name. The

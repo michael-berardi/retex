@@ -53,9 +53,9 @@ context until an operator promotes it with `--operator-approved`.
 | `supersedes` / `superseded_by` | `[[key]]` wiki links | chain visible via `retex links` |
 | `as_of`, `created`, `updated` | ISO | |
 | `recalled` | int | **legacy** emission counter (retired): it counted packs a record appeared in before 1.9.0 and is **not** read by the score; the value stays in old files, nothing rewrites it |
-| `cited` | int | real uses an agent reported with `cite`; at most one increment per record per day |
-| `recall_hits` | int, optional | real `memory recall` hits, same one-per-day cap; absent means 0 |
-| `last_used` | ISO | time of the last real use (the day key for the once-a-day cap) |
+| `cited` | int | real uses an agent reported with `cite`; at most one increment per record per day. Since 1.9.0 the file value is the **baseline**: new uses go to the usage sidecar (below) |
+| `recall_hits` | int, optional | real `memory recall` hits, same one-per-day cap; absent means 0. Baseline, like `cited` |
+| `last_used` | ISO | time of the last real use (the day key for the once-a-day cap); the later of this and the sidecar's value counts |
 | `recurrences` | int | mistakes matching this key after activation |
 | `retire_proposed` | text | set by `propose --op retire --reason R`; status unchanged |
 
@@ -144,6 +144,26 @@ the key, and a second use on the same UTC day is skipped (no write at all), so
 a chatty session cannot saturate the term. A record whose first use of the day
 was a citation does not also gain a recall hit that day, and vice versa.
 
+**Usage sidecar (reads never write records).** Real use is recorded in one
+file per vault, `.retex/memory-usage.json` (mode 0600), never in the record
+Markdown: `{"version":1,"records":{"<key>":{"cited":N,"recall_hits":N,"last_used":"ISO"}}}`.
+Effective counters are the frontmatter values plus the sidecar's deltas, and
+`last_used` is the later of the two; ranking, `memory show` and `--json` all
+report the effective values. A call writes the sidecar at most once (one
+atomic replace inside `.retex/`), and only when some record gains its first use
+of the UTC day, so repeated `recall`/`cite` calls on a day write nothing.
+`context` reads the sidecar and never writes anything.
+
+Why: before 1.9.0 `memory context` rewrote every emitted record on every call
+(a temp file plus rename, a new inode per record). With a pack run on every
+agent turn in every pane, a 617-record vault produced ~1,900 file events a
+minute and kept macOS `fseventsd` at 100% CPU for days.
+
+Migration: none needed and none performed. Existing `cited`, `recall_hits`
+and `last_used` frontmatter is the baseline and is read as before; nothing
+rewrites records on upgrade. A missing or unreadable sidecar reads as "no use
+since the baseline". Entries for keys that no longer exist are ignored.
+
 **Writes.** `retex memory propose --op add|upvote|edit|retire [--key K]
 [--json RECORD_JSON | --json-file F] [--evidence L]... [--reason R]
 [--source-harness H] [--verified-by X] [--confirmation confirmed|unconfirmed]
@@ -198,8 +218,9 @@ removes them.
   ends at a coherent, byte-exact state: undoing the create re-writes the
   proposal (use `retire`/`reject` to take a proposal out of circulation).
 - Counter updates (`cite`, `recall`) are **telemetry**: they use a
-  non-blocking try-lock and create **no** undo entries, so `retex undo` only
-  ever reverts content mutations, never recall counters.
+  non-blocking try-lock, write only the usage sidecar, and create **no** undo
+  entries, so `retex undo` only ever reverts content mutations, never recall
+  counters.
 
 ## MCP
 

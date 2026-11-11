@@ -364,9 +364,13 @@ public struct AgentMemory {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// One record with its effective usage counters (frontmatter baseline
+    /// plus the vault's usage sidecar). Mutations parse the file directly, so
+    /// sidecar values are never folded back into the Markdown.
     public func loadRecord(vault: Vault, key: String) throws -> MemoryRecord {
         let url = try existingURL(vault: vault, key: key)
-        return Self.parse(note: try store.load(url))
+        let record = Self.parse(note: try store.load(url))
+        return Self.applyingUsage(Self.loadUsage(vault: vault)[record.key], to: record)
     }
 
     /// Every memory record in the vault, sorted by key for determinism.
@@ -380,10 +384,12 @@ public struct AgentMemory {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
+        let usage = Self.loadUsage(vault: vault)
         var records: [MemoryRecord] = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
             guard let note = try? store.load(url) else { continue }
-            records.append(Self.parse(note: note))
+            let record = Self.parse(note: note)
+            records.append(Self.applyingUsage(usage[record.key], to: record))
         }
         return records.sorted { $0.key < $1.key }
     }
@@ -1484,40 +1490,122 @@ public struct AgentMemory {
         #endif
     }
 
-    /// Rewrites counter fields under the try-lock. No undo entry: counters
-    /// are telemetry, not content (documented in docs/AGENT-MEMORY.md).
-    /// At most one increment per record per day: a record already used today
-    /// (same ISO day in `last_used`) is left untouched, so a chatty session
-    /// cannot saturate the usage term.
+    /// Records real use in the vault's usage sidecar under the try-lock.
+    /// Record Markdown is never written here: before 1.9.0 every read
+    /// rewrote each emitted record file (a new inode per record per call),
+    /// and with many agents calling `context` that write storm pinned
+    /// macOS fseventsd. No undo entry: counters are telemetry, not content.
+    ///
+    /// Coalesced at day granularity: a record already used today (same ISO
+    /// day in its effective `last_used`) is left untouched, so a chatty
+    /// session cannot saturate the usage term, and a call that changes
+    /// nothing writes nothing. At most one sidecar write per call.
     private func performTelemetryUpdate(vault: Vault, keys: [String], mode: TelemetryMode, now: Date) throws -> Bool {
         guard !keys.isEmpty else { return true }
         let timestamp = Self.isoDateTime(now)
         let today = Self.isoDay(now)
         return try withTelemetryLock(vault: vault) {
-            for key in keys {
+            var usage = Self.loadUsage(vault: vault)
+            var changed = false
+            var seen = Set<String>()
+            for key in keys where seen.insert(key).inserted {
                 guard let url = try? recordURL(vault: vault, key: key),
                       let note = try? store.load(url)
                 else { continue }
-                var record = Self.parse(note: note)
-                if let lastUsed = record.lastUsed, let previous = Self.parseTimestamp(lastUsed),
-                   Self.isoDay(previous) == today {
+                let record = Self.parse(note: note)
+                var entry = usage[record.key] ?? UsageEntry()
+                let lastUsed = Self.laterTimestamp(record.lastUsed, entry.lastUsed)
+                if let lastUsed, let previous = Self.parseTimestamp(lastUsed), Self.isoDay(previous) == today {
                     continue
                 }
                 switch mode {
                 case .cite:
-                    record.cited += 1
+                    entry.cited += 1
                 case .recallHit:
-                    record.recallHits += 1
+                    entry.recallHits += 1
                 }
-                record.lastUsed = timestamp
-                let source = serialize(record)
-                try source.write(to: record.url, atomically: true, encoding: .utf8)
-                #if !os(Windows)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: record.url.path)
-                #endif
+                entry.lastUsed = timestamp
+                usage[record.key] = entry
+                changed = true
             }
+            if changed { try Self.writeUsage(usage, vault: vault) }
             return true
         } ?? false
+    }
+
+    // MARK: - Usage sidecar
+
+    /// Usage recorded since the record's frontmatter was last written. The
+    /// effective counters are frontmatter + these deltas; `last_used` is the
+    /// later of the two.
+    struct UsageEntry: Codable, Equatable, Sendable {
+        var recallHits = 0
+        var cited = 0
+        var lastUsed: String?
+
+        enum CodingKeys: String, CodingKey {
+            case recallHits = "recall_hits"
+            case cited
+            case lastUsed = "last_used"
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            recallHits = max(0, (try? container.decode(Int.self, forKey: .recallHits)) ?? 0)
+            cited = max(0, (try? container.decode(Int.self, forKey: .cited)) ?? 0)
+            lastUsed = try? container.decode(String.self, forKey: .lastUsed)
+        }
+    }
+
+    private struct UsageFile: Codable {
+        var version: Int
+        var records: [String: UsageEntry]
+    }
+
+    /// One usage file per vault, inside the `.retex` state directory that
+    /// watchers and the snapshot cache already ignore.
+    public static func usageURL(for vault: Vault) -> URL {
+        vault.url.standardizedFileURL
+            .appendingPathComponent(".retex", isDirectory: true)
+            .appendingPathComponent("memory-usage.json")
+    }
+
+    /// Missing or unreadable sidecar reads as "no usage since upgrade".
+    static func loadUsage(vault: Vault) -> [String: UsageEntry] {
+        guard let data = try? Data(contentsOf: usageURL(for: vault)),
+              let file = try? JSONDecoder().decode(UsageFile.self, from: data)
+        else { return [:] }
+        return file.records
+    }
+
+    private static func writeUsage(_ records: [String: UsageEntry], vault: Vault) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(UsageFile(version: 1, records: records))
+        let url = usageURL(for: vault)
+        try data.write(to: url, options: .atomic)
+        #if !os(Windows)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        #endif
+    }
+
+    static func applyingUsage(_ entry: UsageEntry?, to record: MemoryRecord) -> MemoryRecord {
+        guard let entry else { return record }
+        var effective = record
+        effective.recallHits += entry.recallHits
+        effective.cited += entry.cited
+        effective.lastUsed = laterTimestamp(record.lastUsed, entry.lastUsed)
+        return effective
+    }
+
+    private static func laterTimestamp(_ left: String?, _ right: String?) -> String? {
+        guard let left, !left.isEmpty else { return right }
+        guard let right, !right.isEmpty else { return left }
+        guard let leftDate = parseTimestamp(left) else { return right }
+        guard let rightDate = parseTimestamp(right) else { return left }
+        return rightDate > leftDate ? right : left
     }
 
     // MARK: - Session pack (design §5)
@@ -1938,8 +2026,9 @@ public struct AgentMemory {
     /// under the byte budget using the same accounting as `retex recall`.
     /// A recall hit is real use (the agent asked for it), so it is the one
     /// path besides `cite` that feeds the usage term: `recall_hits += 1` and
-    /// `last_used = now`, at most once per record per day. Telemetry: try-lock
-    /// and no undo entry; a busy lock reports `countersUpdated: false`.
+    /// `last_used = now` in the vault's usage sidecar (never the record file),
+    /// at most once per record per day. Telemetry: try-lock and no undo entry;
+    /// a busy lock reports `countersUpdated: false`.
     public func recall(
         vault: Vault,
         query: String,
