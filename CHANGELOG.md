@@ -2,6 +2,11 @@
 
 ## 1.9.0 - 2026-11-09
 
+- Release packaging: the Linux download is `retex-linux-<arch>.tar.xz`, about
+  15.7 MB for aarch64 (the `.tar.gz` was 25.3 MB). The `.tar.gz` is still
+  published because the in-app updater of 1.8.x looks for that name. The
+  static binary itself is unchanged in size; its bulk is bundled Foundation
+  and ICU data.
 - Agent memory: the session pack is readable rules first and a readable index
   after them. The five highest-support records are emitted in full, the
   best-ranked rules follow in full for the majority of the budget

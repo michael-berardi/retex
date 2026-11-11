@@ -104,10 +104,10 @@ retex --help
 Linux (static, `x86_64` or `aarch64`):
 
 ```bash
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-linux-x86_64.tar.gz
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-linux-x86_64.tar.xz
 curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
-grep ' retex-linux-x86_64.tar.gz$' SHA256SUMS | sha256sum -c -
-tar -xzf retex-linux-x86_64.tar.gz
+grep ' retex-linux-x86_64.tar.xz$' SHA256SUMS | sha256sum -c -
+tar -xJf retex-linux-x86_64.tar.xz
 ```
 
 ### Build from source
