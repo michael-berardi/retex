@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.9.0 - 2026-11-09
+## 1.9.0 - 2026-11-11
 
 - Agent memory: reads never write record files. Usage from `cite` and
   `memory recall` hits now goes to one sidecar per vault,
