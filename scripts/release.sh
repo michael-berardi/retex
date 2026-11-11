@@ -43,7 +43,16 @@ elif [[ -x "$DEFAULT_LINUX_SWIFT" ]]; then
 else
   LINUX_SWIFT="swift"
 fi
-LLVM_STRIP="${RETEX_LLVM_STRIP:-llvm-strip}"
+# Homebrew's llvm is keg-only, so llvm-strip is never on PATH by default; find it
+# there before failing (2026-11-11: the 1.9.0 release stopped on a bare PATH).
+default_llvm_strip() {
+  local candidate
+  for candidate in llvm-strip /opt/homebrew/opt/llvm/bin/llvm-strip /usr/local/opt/llvm/bin/llvm-strip; do
+    if command -v "$candidate" >/dev/null 2>&1; then print -r -- "$candidate"; return; fi
+  done
+  print -r -- llvm-strip
+}
+LLVM_STRIP="${RETEX_LLVM_STRIP:-$(default_llvm_strip)}"
 LINUX_ARCHES="${RETEX_LINUX_ARCHES:-aarch64 x86_64}"
 # The swift.org toolchain compiles package manifests against the host macOS SDK.
 # A macOS SDK newer than the toolchain (e.g. MacOSX27.2 with Swift 6.3.3) makes
