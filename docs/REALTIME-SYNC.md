@@ -18,10 +18,12 @@ The gateway process runs a background poller (`refresh_vault.py`):
    minimum 5), run one `git ls-remote <repo> <ref>` round trip (a few hundred
    bytes, no clone) and compare the remote SHA against the revision currently
    served.
-2. **On change** — shallow-clone (`--depth 1 --single-branch --branch <ref>`),
-   take `RETEX_VAULT_SUBDIR` if set, delete `.git`, run the fail-closed
-   validator (`validate_vault.validate`: shareable frontmatter required,
-   Markdown only, no symlinks/hidden paths, secret-pattern scan).
+2. **On change** — shallow-clone blobless with `--no-checkout`, then compare
+   the served subdirectory's Git tree ID. If unchanged, record the revision
+   without replacing the vault. Otherwise sparse-checkout the selected
+   subdirectory, delete `.git`, and run the fail-closed validator
+   (shareable frontmatter required, Markdown only, no symlinks/hidden paths,
+   secret-pattern scan).
 3. **Publish** — copy the validated tree to `$RETEX_DATA_DIR/volumes/<sha>/`,
    run idempotent `retex init` so MCP tools index it, make everything
    read-only except `.retex/` (Retex keeps per-note state there and must be
@@ -30,8 +32,9 @@ The gateway process runs a background poller (`refresh_vault.py`):
    directory** so path confinement and atomic publication remain explicit.
    The window where the serving path does not exist is one `rename(2)` wide;
    a request landing exactly inside it fails once and succeeds on retry.
-4. **Zero-restart visibility** — Retex re-scans the vault directory on each
-   MCP request, so active sessions see the new revision on their next tool call.
+4. **Zero-restart visibility** — Retex checks its vault snapshot for changes on
+   each MCP request, so active sessions can see published revisions without
+   restarting the server.
 
 Failure policy: validation or git failures never touch the currently-served
 revision. Errors are written to `vault-sync.json` (surfaced as `"status":

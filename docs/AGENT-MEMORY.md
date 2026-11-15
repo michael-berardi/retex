@@ -1,24 +1,9 @@
 # Agent memory (Retex `memory` command group)
 
-Canonical agent memory for every harness, per
-`ultraterm-dream/docs/design/agent-memory-and-dream.md` §3–§5. One store, one
-protocol: memory lives in a dedicated private Retex vault of typed `memory`
-records. Any harness able to run the CLI or speak MCP reads it the same way (a
-budgeted session pack plus on-demand recall) and writes it the same way
-(`propose` — validated, locked, journaled, undoable). No harness edits memory
-files directly.
-
-```
-session start:  retex memory context  → ≤ 6,000 chars injected
-during work:    retex memory recall "<q>"        retex memory cite <key>
-writes:         retex memory propose --op add|upvote|edit|retire
-turn end:       ultradream tick → propose (status: proposed)
-operator:       retex memory review | promote | reject | retire | stale
-safety:         retex memory doctor · retex undo <path>
-```
-
-Dreams propose, people promote. Nothing a dream writes reaches an agent's
-context until an operator promotes it with `--operator-approved`.
+Agent memory lives in a dedicated private vault of typed `memory` records.
+CLI and MCP clients read budgeted context packs and propose changes. Only an
+operator can promote a proposal into active context with `--operator-approved`.
+Use an explicit `--vault` when trying commands on disposable data.
 
 ## The vault
 
@@ -64,8 +49,7 @@ Validation rejects with a stable reason code, never silently: `missing-field:<f>
 `bad-certainty`, `bad-confirmation` (`confirmation` must be `confirmed` or
 `unconfirmed`), `bad-verified_by` (must be one line), `too-long:verified_by`
 (> 200 chars), `bad-evidence`, `bad-status`, `speculation` (maybe, probably,
-i think, might be, possibly, seems like), `secret:<pattern>` (scanner ported
-from `ultraterm-dream/src/sanitize.js`: private key blocks, JWTs, bearer
+i think, might be, possibly, seems like), `secret:<pattern>` (private key blocks, JWTs, bearer
 tokens, `sk-ant-`/`sk-…` keys (word-shaped lookalikes kept), `ghp_`-family,
 `github_pat_`, `glpat-`, `sk_live_`/`rk_live`/`…_test_`, `xox…-`, `xapp-`,
 `AKIA…`, `AIza…`, secret assignments such as `AWS_SECRET_ACCESS_KEY=…`, URL
@@ -239,6 +223,6 @@ exposed over MCP.
 - Memory nothing really uses decays out of the pack; it is not deleted.
 
 **Heading.** A host names its memory in the pack heading with `--heading`
-(for example `--heading "UltraTerm memory"` renders `## UltraTerm memory (N of M active)`).
+(for example `--heading "Team memory"` renders `## Team memory (N of M active)`).
 The name must be one line of at most 60 characters with no Markdown control characters;
 anything else falls back to `Agent memory`.

@@ -1,676 +1,83 @@
 # Retex
 
-<p align="center">
-  <strong>A local-first Markdown vault engine and machine-readable CLI for people and agents.</strong><br />
-  <a href="#install-and-run">Install</a> ·
-  <a href="#cli">CLI</a> ·
-  <a href="#mcp-server">MCP</a> ·
-  <a href="#import-existing-knowledge">Import</a> ·
-  <a href="#encrypted-export">Encrypted export</a> ·
-  <a href="#encrypted-sync">Sync</a> ·
-  <a href="#updates">Updates</a>
-</p>
+Retex is a Markdown vault CLI for people and agents. Query notes and custom
+records, follow wiki links, and edit properties without moving your files into
+a database. Agents can use compact JSON or the built-in, read-only-by-default
+MCP server. Your Markdown stays readable in any editor.
 
-<p align="center">
-  <a href="https://github.com/michael-berardi/retex/releases/latest"><img src="https://img.shields.io/github/v/release/michael-berardi/retex?label=release" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/michael-berardi/retex" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="macOS, Linux and Windows" />
-  <img src="https://img.shields.io/badge/MCP-server-8A2BE2" alt="MCP server" />
-</p>
+## Install
 
-Your notes, CRM, tasks and agent memory can all live in one ordinary folder of
-Markdown files. Retex gives that folder a fast, structured query surface — exact search, agent recall, privacy-safe vocabulary extraction, arbitrary record types,
-property filters, backlinks, boards, saved views, undo, watching, and MCP —
-without locking files in a database.
+Build from source with Swift 6.0+ (macOS 14+, Linux, or Windows):
 
-Retex is intentionally headless. There is no bundled reader UI; the vault
-format and the CLI are the product, and any reader consumes the same
-`RetexCore` package. Retex has no account system, remote database, or network
-telemetry; note content never leaves the machine.
-
-## Quick look
-
-```bash
-retex init --vault ~/Documents/CRM --lean
-retex create --vault ~/Documents/CRM --type invoice --title "Acme August" --set amount=11500 --set owner=Sam --lean
-retex query --vault ~/Documents/CRM --type invoice --where owner=Sam --lean
-retex recall "what changed in the release" --vault ~/Documents/CRM --budget 12000 --lean
-retex mcp --vault ~/Documents/CRM        # read-only MCP server for any agent
-```
-
-`init` creates the vault directory and any missing parent directories. Other
-commands require the vault directory to already exist.
-
-`--lean` prints a compact, token-efficient format for agents and `--raw-json`
-prints plain JSON; either way the notes stay ordinary Markdown you can open in
-any editor.
-
-## Features
-
-- Model any Markdown collection with arbitrary record types and properties:
-  CRM contacts and deals, invoices, tasks, agent memories, runbooks, or custom data.
-- Query type, status, tag, and repeated `key=value` property filters.
-- Recall natural-language questions with filler-word removal, partial-match
-  ranking, evidence excerpts, provenance, and a strict context-byte budget.
-- Resolve `[[wiki links]]`, backlinks, and unresolved targets without an editor.
-- Navigate and query multiple Markdown vaults from one CLI.
-- Preserve unknown YAML properties and edit notes atomically.
-- Create, filter, rank, move, and archive Kanban cards without deleting files.
-- Validate optional per-type folders, properties, and required fields.
-- Undo any mutation (`retex undo`), inspect history (`retex log`).
-- Watch vaults for external changes with native FSEvents on macOS and a
-  lightweight polling fallback on Linux and Windows.
-- Custom board columns and named saved views per vault.
-- Give AI agents a shared, reviewable memory (`retex memory`): budgeted packs
-  at session start, recall on demand, validated proposals, operator-approved
-  promotion, and byte-exact undo.
-- Drive a vault directly from any MCP host with the built-in MCP server.
-- Import Notion Markdown/CSV ZIP exports, Obsidian vaults, and ordinary
-  Markdown directories while preserving attachments and rejecting symlinks.
-- Encrypted, checksummed vault-and-attachment export/import on every platform.
-- Optional encrypted sync (`retex sync`): push and pull a vault through a
-  server that only ever stores ciphertext.
-- Opt-in fleet updates verify disposable clones before changing the binary or
-  initializing registered live vaults; rollback remains automatic on failure.
-- Audit agent-facing `memory`, `report`, and `audit` metadata with the bundled,
-  read-only `scripts/contract_scan.py`.
-
-## Requirements
-
-- macOS 14 or later, Linux, or Windows 10/11.
-- Building from source requires a Swift 6.0+ toolchain. Xcode 16+ supplies it
-  on macOS; Swift.org publishes Linux and Windows toolchains.
-- Releases provide a signed universal macOS archive and static Linux archives.
-  Windows source builds are supported; self-update requires a matching Windows
-  release asset, which is not currently published.
-
-## Install and run
-
-Download the latest release from the
-[Releases](https://github.com/michael-berardi/retex/releases/latest) page and
-verify it against `SHA256SUMS`.
-
-macOS (universal, Developer ID signed and notarized):
-
-```bash
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
-grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
-unzip retex-universal.zip        # retex binary + docs
-sudo mv retex /usr/local/bin/
-retex --help
-```
-
-Linux (static, `x86_64` or `aarch64`):
-
-```bash
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-linux-x86_64.tar.xz
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
-grep ' retex-linux-x86_64.tar.xz$' SHA256SUMS | sha256sum -c -
-tar -xJf retex-linux-x86_64.tar.xz
-```
-
-### Build from source
-
-```bash
-git clone https://github.com/michael-berardi/retex.git
-cd retex
-swift build -c release
+```sh
+git clone https://github.com/michael-berardi/retex.git && cd retex && swift build -c release -j 4
 .build/release/retex --help
 ```
 
-On Windows, run `.build\release\retex.exe --help`.
+On Windows, run `.build\release\retex.exe --help`. Put the built executable
+on your `PATH` to use `retex` below.
 
-Retex is pure MIT: nothing proprietary is fetched or linked, in source builds
-and official binaries alike, and machine output is canonical JSON.
+Prefer a binary? [Releases](https://github.com/michael-berardi/retex/releases/latest)
+provide macOS universal and Linux archives with `SHA256SUMS`.
+For macOS, download and verify in an empty directory:
 
-### Agent skill
-
-Retex includes a provider-neutral agent skill with CLI, MCP, security, and
-live-vault safety instructions:
-
-```bash
-mkdir -p ~/.config/agents/skills
-ln -sfn "$(pwd)/skills/retex" ~/.config/agents/skills/retex
+```sh
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
+grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
+unzip retex-universal.zip
+codesign --verify --strict --verbose=2 retex
 ```
 
-The skill contains no organization-specific paths, credentials, client rules,
-or deployment workflow.
+Only install after both verification commands succeed. Linux assets are
+`retex-linux-x86_64.tar.gz` and `retex-linux-aarch64.tar.gz`; verify the matching
+checksum with `sha256sum -c` before extracting. Windows requires a source build.
 
-## CLI
+## First vault
 
-```bash
-retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --lean
-retex query --vault ~/Documents/CRM --on-or-before review_after=2026-08-28 --lean
-retex vocabulary --vault ~/Documents/CRM --limit 256 --lean
-retex search "website rebuild" --vault ~/Documents/CRM --lean
-retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --lean
-retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --lean
-retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --lean
-retex create --vault ./CRM --type invoice --title "Acme August" --folder Invoices --set amount=11500 --lean
-retex set ./CRM/Invoices/acme-august.md due=2026-09-01 'client=Acme' --lean
-retex set ./CRM/Invoices/acme-august.md status=Approved --if-hash <sha256-from-show> --lean
-retex board --vault ./CRM --view pipeline --lean
+Use a new directory for this example:
+
+```sh
+retex init --vault ./demo-vault --lean
+retex create --vault ./demo-vault --type invoice --title "Example invoice" --set amount=120 --lean
+retex query --vault ./demo-vault --type invoice --lean
+retex recall "invoice" --vault ./demo-vault --budget 12000 --lean
+retex mcp --vault ./demo-vault
 ```
 
-Use `list` and `search` for their stable v0.5-compatible output contracts.
-Use `query` for structured records with exact arbitrary types and metadata.
-Use `vocabulary` for deterministic, read-only extraction of a bounded names-and-terms list. It scans local record text but returns only terms, occurrence/source counts, and the aggregate record count—never note bodies, excerpts, or paths. This is the privacy boundary used by UltraVox Pro.
-Use `recall` for natural agent questions: it removes common filler, ranks
-partial matches, returns source paths plus evidence excerpts, and keeps the
-encoded record array within `--budget` UTF-8 bytes. This is **not a token or
-whole-response budget**: query/provenance fields, the CLI envelope (unless
-`--lean`), and MCP transport wrappers add overhead. `usedBytes` measures that
-record array only. `list`, `query`, `search`,
-`recall`, and `count` accept arbitrary `--type`, `--status`, `--tag`, repeated
-`--where key=value`, and inclusive `--on-or-before key=YYYY-MM-DD` /
-`--on-or-after key=YYYY-MM-DD` filters. Date filters match only records with a
-valid ISO date for that property.
+The last command serves MCP over stdio until you stop it. Writes require
+`--allow-write`. `--lean` returns the payload as compact JSON; `--json` adds a
+versioned response envelope. Recall budgets count UTF-8 bytes, not tokens.
 
-`show` returns a SHA-256 `contentHash`. Pass it back as `--if-hash` to `set`,
-`move`, or `archive` to reject stale agent writes without changing the default
-workflow. Retex holds the vault journal lock across the comparison, undo record,
-and atomic file write. Wiki links in front matter are part of the derived graph,
-so optional properties such as `supersedes: "[[Older Decision]]"` and
-`related: "[[Project Brief]]"` appear in `links` and backlinks without a new
-storage format.
+Retex also supports boards, saved views, undo, typed agent memory, Notion and
+Obsidian imports, encrypted exports, and optional encrypted sync. Network
+access is explicit through sync, updates, or hosted serving; ordinary local
+vault commands need no account.
 
-Commands: `list`, `query`, `vocabulary`, `search`, `recall`, `links`, `show`, `create`,
-`set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
-`doctor`, `memory`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
-`retex schema --vault ...` to discover built-in, configured, and existing
-record types and properties.
+Keep `.retex/` when backing up a vault: it holds configuration, undo history,
+and sync state. Encrypted exports preserve portable content but exclude that
+state. Never point an untrusted agent at notes it should not read.
 
-### Machine-readable output
+## Reference
 
-The `--json` and `--raw-json` modes retain their logical
-response envelope (`schema_version` is bumped when that contract changes):
-
-```json
-{
-  "ok": true,
-  "schema_version": 1,
-  "data": {}
-}
-```
-
-`--lean` is an additive machine-output modifier for agents. It can be used by
-itself and emits the command payload directly, without `ok`, `data`, or
-`schema_version`. Both `--lean` and `--json` emit compact JSON with sorted
-keys on all platforms. `--lean --raw-json` emits the same directly parseable
-payload. `--raw-json` without `--lean` keeps the pretty-printed enveloped JSON
-compatibility-gate mode.
-
-CLI and MCP share deterministic compact-JSON fallback and the same packet
-selection. The linked engine selects readable packets against compact JSON
-using its default **o200k** tokenizer; Retex additionally requires fewer UTF-8
-bytes before emitting a packet. Ties, unavailable engines, and unsuccessful
-encoding pass through as compact JSON. No explanatory text is appended to
-payload string values. This avoids known local representation overhead, but
-does not guarantee savings for every tokenizer or whole model conversation.
-Measure the complete visible text, including host wrappers and any decode
-round trip, rather than comparing only with pretty-printed JSON. See the
-[1.2.2 reproducible output-efficiency checks](docs/AGENT-OUTPUT-EFFICIENCY.md).
-
-Invalid machine-readable invocations exit with code 64; file or storage
-failures exit with code 74. Existing modes retain the failure envelope and
-`schema_version`; lean failures emit a compact direct `{code,message}` object
-to stderr and rely on the exit status instead of an `ok` field. `doctor
---strict` emits its normal report and exits nonzero when it finds an unreadable
-note, invalid config, or corrupt journal.
-
-Exit codes: `0` success, `2` failed strict health gate, `64` invalid usage,
-`74` file or storage failure.
-
-### Undo, views, and doctor
-
-Initialize a vault once before its first mutation:
-
-```bash
-retex init --vault ~/Documents/CRM --lean
-```
-
-- **Undo** — every mutation records the file's previous content in
-  `<vault>/.retex/history.jsonl` (capped at 50 entries per file, so total
-  journal size scales with how many distinct files a vault touches).
-  Mutations append one line, so their cost does not grow with the journal;
-  the per-file cap is compacted on disk as the journal grows. POSIX
-  state is mode `0700` with `0600` files; Windows uses the current user's
-  directory ACL. Cross-process locks serialize journal updates. `retex undo
-  <file>` restores the prior Markdown; `retex log <file>` lists history.
-- **Schemas and views** — `<vault>/.retex/config.json` can define board
-  columns, named views with arbitrary property filters, and optional record
-  schemas. Schemas choose the default folder, advertise properties to agents,
-  and let `doctor --strict` enforce required fields:
-
-```json
-{
-  "columns": [{ "title": "Backlog", "statuses": ["Inbox", "New"] }],
-  "views": [{
-    "name": "my-pipeline",
-    "type": "deal",
-    "status": "Proposal",
-    "properties": { "owner": "Sam" }
-  }],
-  "recordTypes": [{
-    "name": "invoice",
-    "folder": "Invoices",
-    "required": ["client", "amount"],
-    "properties": ["client", "amount", "currency", "due"]
-  }]
-}
-```
-
-Configuration is optional. Ad-hoc types retain the v0.5-compatible `Notes/`
-default; use `--folder` or a record schema for intentional collections.
-Existing built-in folders remain unchanged. Use `retex schema --vault ...`,
-`retex views`, and `retex doctor --strict` to discover and validate the
-contract.
-
-### Watching
-
-`retex watch --vault ./CRM` streams change batches until Ctrl-C. With
-`--lean` (or the existing `--json`), each batch is one line:
-`{"changed":["Notes/foo.md", ...]}`.
-Internal `.retex/` state never appears in the stream.
-
-### Agent memory
-
-`retex memory` keeps typed memory records (corrections, gotchas, decisions,
-procedures, preferences) in a private vault that several agents share:
-
-```bash
-retex memory init --vault ~/agent-memory
-retex memory propose --op add --json-file record.json --vault ~/agent-memory --lean
-retex memory review --vault ~/agent-memory --lean
-retex memory promote global/deploy-with-npm --operator-approved --vault ~/agent-memory --lean
-retex memory context --project my-app --budget 6000 --heading "Team memory" --vault ~/agent-memory
-```
-
-`context` prints a deterministic pack of *active* records that never exceeds the
-budget (default 6,000 bytes, max 8,000); proposals are never included. The five
-highest-support records are shown in full, the best-ranked rules after them
-follow in full for the majority of the budget (at least 12 at 6,000 bytes), and
-the rest of the budget becomes one readable line per rule — its own whole title,
-no body and no duplicated key — in a daily rotation, so more rules are visible
-for the same tokens without turning them into unreadable fragments. Each line
-loads with `retex memory recall "<the line>"`; `--full-share 100` restores a
-full-entries-only pack, and `--day YYYY-MM-DD` renders a chosen day.
-Agents may propose; promotion, rejection and retirement need
-`--operator-approved`. Every change is journaled for `retex undo`. Schema,
-reason codes and protocol: [docs/AGENT-MEMORY.md](docs/AGENT-MEMORY.md).
-
-## MCP server
-
-Retex ships a zero-dependency MCP (Model Context Protocol) server so any MCP
-host can query a vault directly over stdio. MCP is read-only by default:
-
-```bash
-retex mcp --vault ./CRM
-```
-
-The server preserves `list_notes`, `search_notes`, `read_note`, `get_board`,
-and `get_stats`, and adds structured `query_records`, budgeted
-`recall_context`, `get_links`, and `get_schema`, plus read-only
-`memory_context`, `memory_recall` and `memory_review` (`memory_propose` only
-with `--allow-write`). `read_note` returns
-`contentHash`; write tools accept optional `expected_hash`; and query/recall
-accept semicolon-separated `on_or_before` and `on_or_after` date filters.
-Mutation tools are rejected even when invoked directly, and note paths are
-confined to the selected vault after resolving symlinks. A trusted local host
-can explicitly opt into `create_note`, `set_property`, `move_card`, and
-`archive_note` with `--allow-write`; the hosted helper never enables it.
-Responses use newline-delimited JSON-RPC 2.0; diagnostics go to stderr only.
-
-A running server keeps the vault's parsed notes in memory and re-reads only
-the files that changed, so repeated calls on a large vault answer in
-milliseconds instead of re-reading every file. On macOS it uses file events
-and confirms them before each request, so a note written just before a call is
-always visible; on other platforms, or if events are late or missing (reported
-on stderr), it checks every file's size and timestamps instead. Set
-`RETEX_MCP_CACHE=0` to read every file on each call, or `RETEX_CACHE_TRACE=1`
-to log how each request was served.
-
-Example host configuration (placeholders, no credentials):
-
-```json
-{
-  "mcpServers": {
-    "retex": {
-      "command": "/usr/local/bin/retex",
-      "args": ["mcp", "--vault", "/path/to/vault"]
-    }
-  }
-}
-```
-
-### Hosted read-only helper
-
-`deploy/readonly-mcp/` is the secure default for connecting authenticated
-agents to a curated repository knowledge folder. Copy its `Dockerfile` to
-`.retex/Dockerfile`, add explicitly shareable Markdown under
-`.retex/knowledge/`, and deploy only that directory as the build context:
-
-```bash
-docker build -t retex-project .retex
-docker run -d --restart unless-stopped -p 8080:8080 --env-file retex.env retex-project
-```
-
-Any container host works the same way; keep the bearer token in the host's secret store,
-never in the image.
-
-Every note must opt in through front matter:
-
-```yaml
----
-shareable: true
-type: note
----
-```
-
-The image refuses symlinks, hidden files, non-Markdown files, oversized notes,
-notes without the opt-in marker, and common credential patterns. It copies no
-other repository content, runs as a non-root user against a non-writable vault,
-and leaves Retex in its default read-only mode.
-
-Set a random token of at least 32 characters in `RETEX_MCP_TOKEN`. For
-per-agent tokens or rotation, `RETEX_MCP_TOKENS_JSON` accepts a JSON object
-whose values are tokens. Clients send
-`Authorization: Bearer <token>`; tokens are compared in constant time, never
-logged, and every route is denied when authentication is missing or invalid.
-
-`deploy/readonly-mcp/` ships in source and every release archive.
-`verify_fleet.py` provides the matching live fleet gate without storing or
-printing credentials. Keep the private inventory outside the repository with
-mode `0600`; token values come from an environment variable or a command
-executed directly without a shell:
-
-```json
-{
-  "version": 1,
-  "services": [
-    {
-      "name": "canary",
-      "url": "https://retex-canary.example.com/mcp",
-      "token_env": "RETEX_CANARY_TOKEN"
-    },
-    {
-      "name": "tenant-b",
-      "url": "https://retex-tenant-b.example.com/mcp",
-      "token_command": ["secret-cli", "read", "tenant-b"],
-      "token_json_key": "token"
-    }
-  ]
-}
-```
-
-```bash
-chmod 600 ~/.config/retex/hosted-fleet.json
-uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
-  --config ~/.config/retex/hosted-fleet.json --service canary
-# Deploy the remaining services only after the canary passes.
-uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
-  --config ~/.config/retex/hosted-fleet.json
-```
-
-The verifier discovers a live probe record, checks authentication, the exact
-read-only tool surface, bounded search and recall, path confinement, and write
-denial. Selected services run concurrently. Provider-specific service names,
-URLs, token bindings, and deploy commands remain in the private inventory.
-
-## Import existing knowledge
-
-Import a Notion **Markdown & CSV** export directly from its ZIP:
-
-```bash
-retex import --from ~/Downloads/notion-export.zip \
-  --into ~/Vaults/Notion --format notion --lean
-```
-
-Retex strips Notion's opaque page IDs from names, rewrites local Markdown
-links, preserves attachments, and converts CSV databases into readable
-Markdown tables while retaining the source CSV.
-
-Import an Obsidian or generic Markdown vault from an extracted directory:
-
-```bash
-retex import --from ~/Documents/Obsidian \
-  --into ~/Vaults/Imported --format obsidian --lean
-```
-
-Imports require a new or empty destination, reject symlinks and path escapes,
-skip hidden editor/VCS state, cap individual files at 64 MiB and total input at
-1 GiB, and initialize private Retex state only after content succeeds.
-
-## Encrypted export
-
-Vault contents stay plain Markdown on disk; when you need to move a vault
-through a third-party channel (iCloud, Dropbox, git, email), export it
-encrypted:
-
-```bash
-read -s RETEX_PASS
-export RETEX_PASS
-retex export --vault ~/Vaults/CRM --out crm.retex --passphrase-env RETEX_PASS
-retex import --from crm.retex --into ~/Vaults/CRM-restored --passphrase-env RETEX_PASS
-unset RETEX_PASS
-```
-
-Restores require a new or empty destination and accept only the paths an
-export can contain: no hidden components and only portable extensions.
-
-The single `RETEXENC1` envelope uses PBKDF2-HMAC-SHA256 (600,000 iterations)
-and AES-GCM authenticated encryption. Its versioned inner manifest preserves
-Markdown plus portable document/media attachments with a SHA-256 per file;
-v0.7 still reads Markdown-only v1 archives. Source code, hidden editor/VCS
-state, and Retex-derived state remain excluded. Export passphrases require at
-least 12 characters and come from an interactive prompt or named environment
-variable, never a process-list-visible argument.
-
-## Encrypted sync
-
-Sync is optional and off until you run it. Your vault is archived and
-encrypted on your machine with the same `RETEXENC1` envelope as export, so the
-server stores one opaque blob per vault and never sees a passphrase or note.
-
-```bash
-export RETEX_SYNC_TOKEN=...   # bearer token for the server
-read -s RETEX_PASS; export RETEX_PASS
-retex sync push --vault ~/Vaults/CRM --server https://sync.example.com \
-  --vault-id crm --passphrase-env RETEX_PASS      # server and id are saved
-retex sync pull --vault ~/Vaults/CRM --passphrase-env RETEX_PASS   # other machine
-retex sync status --vault ~/Vaults/CRM --lean
-```
-
-- Writes are optimistic: a push made from an out-of-date copy is refused with
-  a conflict instead of overwriting the other machine. Pull, then push.
-- A pull decrypts and validates the whole archive before touching the vault,
-  mirrors remote deletions, and refuses to overwrite unsynced local changes
-  unless you pass `--force`. A wrong passphrase leaves the vault unchanged.
-- The server must be `https` (plain `http` only for localhost). The token is
-  read from `RETEX_SYNC_TOKEN` or the variable named by `--token-env`, never
-  from an argument. State lives in `<vault>/.retex/sync.json`.
-- Same scope as export: Markdown and portable attachments; hidden and
-  Retex-derived state stay local. Last pull wins per vault, with no merging.
-
-A reference server (Python standard library, no dependencies) is in
-`deploy/sync-server/server.py`:
-
-```bash
-RETEX_SYNC_TOKEN=<24+ random characters> RETEX_SYNC_DIR=/var/lib/retex-sync \
-  python3 deploy/sync-server/server.py     # serve behind TLS
-```
-
-It implements `GET`, `HEAD` and `PUT /v1/vaults/<id>` with `ETag` and
-`If-Match` / `If-None-Match` preconditions, so any storage service that honors
-those can stand in.
+- [CLI, output formats, vault format, import/export, sync and updates](docs/REFERENCE.md)
+- [Agent memory and approval workflow](docs/AGENT-MEMORY.md)
+- [Agent skill](skills/retex/SKILL.md)
+- [Hosted read-only serving and refresh](docs/REALTIME-SYNC.md)
+- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## Updates
 
-Check availability without changing the installation:
+The updater has no default repository. Select the release channel explicitly:
 
-```bash
+```sh
+export RETEX_UPDATE_REPO=michael-berardi/retex
 retex update --check --lean
 ```
 
-For one installation, the verified updater remains:
-
-```bash
-retex update
-```
-
-For multiple vaults, explicitly register the full fleet and opt individual
-vaults into post-update initialization:
-
-```bash
-retex fleet register --vault ~/Vaults/CRM --auto-update --lean
-retex fleet status --lean
-retex fleet initialize --lean       # idempotent live init + strict doctor
-retex fleet install-updater --lean
-```
-
-The optional scheduler runs `retex update --auto --fleet` every six hours.
-Before replacing the binary, Retex copies only Markdown and vault config into
-disposable clones, requires strict doctor success, compares exact `list`,
-`search`, and `board` output in the existing `--raw-json` compatibility mode
-with the installed version, exercises a complete
-create/set/move/archive/undo round trip, and confirms that the installed
-version can still read candidate-initialized clones. Only then is the binary
-swapped atomically. Registered live vaults are initialized and strict-checked;
-any failure restores the previous binary.
-
-Every release download requires the exact published SHA-256. Before replacement,
-the candidate must also be a bounded regular file and report the expected
-version. Official macOS assets are Developer ID–signed and submitted to Apple
-notarization before publication; the updater verifies checksums and behavior,
-not signing identity. Linux uses static platform archives; Windows uses the
-matching signed release asset when available.
-
-The short release trigger is: check first, run the built-in clone-gated local
-update, deploy one hosted canary, run the bundled verifier for that canary,
-deploy the remaining hosted services, then run the verifier without a service
-filter. Reinstalling the scheduler is idempotent:
-
-```bash
-retex update --check --lean
-retex update --fleet --lean
-retex fleet install-updater --lean
-```
-
-## Vault format
-
-A Retex vault is just a folder of Markdown files — no app, account, or
-credential is ever required to read or write one:
-
-```
-MyVault/
-├── Deals/acme-redesign.md     # built-in CRM type
-├── Invoices/acme-august.md    # configured custom type
-├── Records/runbook.md         # explicit custom folder
-└── .retex/                    # optional internal state
-    ├── config.json            # schemas, columns, and saved views
-    └── history.jsonl          # undo journal
-```
-
-Every file outside `.retex/` is ordinary Markdown readable in any editor.
-Everything inside `.retex/` is derived state: delete the folder and Retex
-rebuilds it on demand. The full contract is documented above and versioned
-through `retex schema`.
-
-## Data API (Markdown contract)
-
-Retex reads ordinary Markdown files. YAML front matter may describe any record
-type. Built-ins (`note`, `contact`, `deal`, `task`, `agent-run`) retain their
-convenient defaults; values such as `invoice`, `memory`, `runbook`, or a
-project-specific type are preserved exactly. Properties are the unindented
-`key: value` lines; nested mappings and list items stay with their parent key
-and never become top-level properties. Block scalars (`|`, `>`) read as their
-text. `tags` accepts a flow list (`[a, b]`), a block list, or a scalar
-(`tags: urgent` or `tags: a, b`). Quoted values are unescaped, and values Retex
-writes are quoted and escaped so standard YAML parsers read the same string.
-Note bodies remain intact, including wiki links and Markdown checklists.
-
-```markdown
----
-title: Acme website rebuild
-type: deal
-status: Proposal
-rank: 1
-owner: Retex Team
-value: $11500
-due: 2026-08-06
-next_action: Send revised scope
-tags: [website, priority]
-archived: false
----
-
-# Acme website rebuild
-
-Linked contact: [[Jamie Doe]]
-
-- [x] Draft agreement
-- [ ] Send revised scope
-```
-
-Retex preserves the note body and unknown YAML properties. Board moves update
-`status` and `rank`. Archiving writes `archived: true`; it does not delete the
-file.
-
-## Architecture
-
-- `RetexCore` owns parsing, mutations, watching, crypto, the MCP server, and
-  the update channel. It is a plain Swift package usable from any app.
-- `RetexCLI` is the human and agent surface over `RetexCore`.
-- Markdown remains authoritative; internal state lives under `<vault>/.retex/`
-  and is always safe to delete (it is rebuilt on demand).
-- A vault reader UI is planned as a separate product consuming `RetexCore`.
-
-## Project status
-
-Implemented:
-
-- Arbitrary record types, discoverable schemas, required-field validation,
-  generic property filters, saved views, and non-destructive archiving
-- Exact search plus agent recall with partial matching, evidence excerpts,
-  provenance, and output budgets
-- Derived wiki-link graph with outgoing links, backlinks, and unresolved targets
-- Multi-vault navigation and atomic editing with unknown-property preservation
-- Undo history with cross-process journal locking
-- Native FSEvents watching on macOS and lightweight polling on Linux/Windows
-- Vault health checks (`retex doctor`)
-- Agent memory: budgeted context packs, validated proposals, operator-approved
-  promotion and supersession, usage counters, and memory MCP tools
-- Backwards-compatible MCP tools plus structured query, recall, link, and
-  schema interfaces; long-running servers answer from an in-memory snapshot
-  kept current by file events
-- Notion ZIP, Obsidian, and generic Markdown-vault imports with attachment
-  preservation, collision handling, and path/symlink limits
-- Optional encrypted sync (`retex sync`) with a reference server
-- Cross-platform encrypted export/import with per-file checksums and legacy
-  archive compatibility
-- Verified self-update, atomic rollback, disposable clone gates, opt-in fleet
-  initialization, and native macOS/Linux/Windows schedulers
-- Versioned machine-readable envelopes and regression coverage for parsing,
-  mutations, CLI/MCP contracts, imports, crypto, updates, and hosted gateway
-  security
-
-## Contributing
-
-Bug reports and focused pull requests are welcome; see
-[CONTRIBUTING.md](CONTRIBUTING.md). Keep Markdown as the source of truth, avoid
-committing private vault data or credentials, and include documentation
-updates when a user-facing command or record property changes.
-
-## Security
-
-Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). macOS release assets are Developer ID–signed and submitted to
-Apple notarization before publication. Verify `SHA256SUMS` and run
-`codesign --verify --strict --verbose=2 retex` before installing.
+Review the result before running `retex update`. Fleet and scheduler setup
+are covered in the [reference](docs/REFERENCE.md#updates).
 
 ## License
 
-Retex is released under the [MIT License](LICENSE).
-
----
-
-Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/retex/): free, private, open-source tools for working with AI agents.
+[MIT](LICENSE). `RetexCore` is also available as a Swift package library.

@@ -127,7 +127,7 @@ with `retex memory init`. Other commands never create it. Every harness reads
 it the same way and writes it the same way:
 
 ```bash
-retex memory context --project "$PROJECT" --budget 6000 --lean   # session pack, ≤ 6,000 chars
+retex memory context --project "$PROJECT" --budget 6000 --lean   # session pack, ≤ 6,000 bytes
 retex memory recall "how do we deploy" --budget 4000 --lean      # on-demand, provenance
 retex memory recall "<a line from the pack's index>" --lean       # load one indexed rule
 retex memory show global/deploy-lds --lean                       # one record, in full
