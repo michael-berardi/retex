@@ -5,16 +5,16 @@
 ## CLI
 
 ```bash
-retex query --vault ~/Documents/CRM --type invoice --tag priority --where owner=Sam --lean
-retex query --vault ~/Documents/CRM --on-or-before review_after=2026-08-28 --lean
-retex vocabulary --vault ~/Documents/CRM --limit 256 --lean
-retex search "website rebuild" --vault ~/Documents/CRM --lean
-retex search "release Retex" --vault ~/Documents/CRM --ranked --limit 20 --lean
-retex recall "what changed in the Retex release" --vault ~/Documents/CRM --budget 12000 --lean
-retex links ~/Documents/CRM/Notes/release.md --vault ~/Documents/CRM --lean
-retex create --vault ./CRM --type invoice --title "Acme August" --folder Invoices --set amount=11500 --lean
-retex set ./CRM/Invoices/acme-august.md due=2026-09-01 'client=Acme' --lean
-retex set ./CRM/Invoices/acme-august.md status=Approved --if-hash <sha256-from-show> --lean
+retex query --vault ./demo-vault --type invoice --tag priority --where owner=operator --lean
+retex query --vault ./demo-vault --on-or-before review_after=2026-08-28 --lean
+retex vocabulary --vault ./demo-vault --limit 256 --lean
+retex search "website rebuild" --vault ./demo-vault --lean
+retex search "release Retex" --vault ./demo-vault --ranked --limit 20 --lean
+retex recall "what changed in the Retex release" --vault ./demo-vault --budget 12000 --lean
+retex links ./demo-vault/Notes/release.md --vault ./demo-vault --lean
+retex create --vault ./CRM --type invoice --title "Example August" --folder Invoices --set amount=11500 --lean
+retex set ./CRM/Invoices/example-august.md due=2026-09-01 'client=Example' --lean
+retex set ./CRM/Invoices/example-august.md status=Approved --if-hash <sha256-from-show> --lean
 retex board --vault ./CRM --view pipeline --lean
 ```
 
@@ -42,7 +42,7 @@ storage format.
 
 Commands: `list`, `query`, `vocabulary`, `search`, `recall`, `links`, `show`, `create`,
 `set`, `move`, `archive`, `board`, `views`, `schema`, `count`, `undo`, `log`,
-`doctor`, `memory`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
+`init`, `sync`, `doctor`, `memory`, `watch`, `mcp`, `export`, `import`, `fleet`, `update`, `version`. Run
 `retex schema --vault ...` to discover built-in, configured, and existing
 record types and properties.
 
@@ -85,7 +85,7 @@ Exit codes: `0` success, `2` failed strict health gate, `64` invalid usage,
 Initialize a vault once before its first mutation:
 
 ```bash
-retex init --vault ~/Documents/CRM --lean
+retex init --vault ./demo-vault --lean
 ```
 
 - **Undo** — every mutation records the file's previous content in
@@ -108,7 +108,7 @@ retex init --vault ~/Documents/CRM --lean
     "name": "my-pipeline",
     "type": "deal",
     "status": "Proposal",
-    "properties": { "owner": "Sam" }
+    "properties": { "owner": "operator" }
   }],
   "recordTypes": [{
     "name": "invoice",
@@ -130,7 +130,11 @@ contract.
 `retex watch --vault ./CRM` streams change batches until Ctrl-C. With
 `--lean` (or the existing `--json`), each batch is one line:
 `{"changed":["Notes/foo.md", ...]}`.
-Internal `.retex/` state never appears in the stream.
+Only Markdown paths outside hidden directories are reported. Internal
+`.retex/` state (including memory usage) and atomic-save temporary files never
+appear. macOS uses FSEvents through the vault's real path, with a debounce
+flush deadline of `max(1 second, 4 × debounce)` under continuous writes;
+Linux and Windows poll for changes.
 
 ### Agent memory
 
@@ -138,17 +142,32 @@ Internal `.retex/` state never appears in the stream.
 procedures, preferences) in a private vault that several agents share:
 
 ```bash
-retex memory init --vault ~/agent-memory
-retex memory propose --op add --json-file record.json --vault ~/agent-memory --lean
-retex memory review --vault ~/agent-memory --lean
-retex memory promote global/deploy-with-npm --operator-approved --vault ~/agent-memory --lean
-retex memory context --project my-app --budget 6000 --heading "Team memory" --vault ~/agent-memory
+retex memory init --vault ./agent-memory
+retex memory propose --op add --json-file record.json --vault ./agent-memory --lean
+retex memory review --vault ./agent-memory --lean
+retex memory promote global/deploy-with-npm --operator-approved --vault ./agent-memory --lean
+retex memory context --project my-app --budget 6000 --heading "Team memory" --vault ./agent-memory
 ```
 
 `context` prints a deterministic pack of *active* records that never exceeds the
-budget (default 6,000 bytes, max 8,000); proposals are never included.
+budget (default 6,000 bytes, max 8,000); proposals are never included. The
+five highest-support records are pinned in full, followed by ranked full
+rules (default `--full-share 60`, with a floor of 12 when the budget allows)
+and a daily rotating index of readable titles. `--full-share 0` keeps only the pinned rules in full and indexes the rest; `--full-share 100` selects full entries only.
+`--index-width` defaults to 200 characters; `--day YYYY-MM-DD` chooses the
+rotation day. The budget bounds the rendered pack, not its JSON envelope.
+
+`context` writes nothing. Actual `cite` and `memory recall` usage is
+coalesced in `.retex/memory-usage.json`, at most once per record per day;
+record Markdown is not rewritten and telemetry is not undo history.
+Optional `verified_by` records what established a rule (one line, at most
+200 characters); `confirmation` is `confirmed` or `unconfirmed`, and
+`confirmed` requires `verified_by`. `memory show` and `memory recall` expose
+these fields; `memory doctor` reports missing verification as advisory
+warnings, not failing issues.
+
 Agents may propose; promotion, rejection and retirement need
-`--operator-approved`. Every change is journaled for `retex undo`. Schema,
+`--operator-approved`. Record mutations are journaled for `retex undo`. Schema,
 reason codes and protocol: [Agent memory](AGENT-MEMORY.md).
 
 ## MCP server
@@ -167,7 +186,7 @@ and `get_stats`, and adds structured `query_records`, budgeted
 with `--allow-write`). `read_note` returns
 `contentHash`; write tools accept optional `expected_hash`; and query/recall
 accept semicolon-separated `on_or_before` and `on_or_after` date filters.
-Mutation tools are rejected even when invoked directly, and note paths are
+In read-only mode, mutation tools are rejected even when invoked directly, and note paths are
 confined to the selected vault after resolving symlinks. A trusted local host
 can explicitly opt into `create_note`, `set_property`, `move_card`, and
 `archive_note` with `--allow-write`; the hosted helper never enables it.
@@ -256,12 +275,12 @@ executed directly without a shell:
 ```
 
 ```bash
-chmod 600 ~/.config/retex/hosted-fleet.json
+chmod 600 ./hosted-fleet.json
 uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
-  --config ~/.config/retex/hosted-fleet.json --service canary
+  --config ./hosted-fleet.json --service canary
 # Deploy the remaining services only after the canary passes.
 uv run --with mcp==1.16.0 --with pydantic==2.11.7 python deploy/readonly-mcp/verify_fleet.py \
-  --config ~/.config/retex/hosted-fleet.json
+  --config ./hosted-fleet.json
 ```
 
 The verifier discovers a live probe record, checks authentication, the exact
@@ -274,8 +293,8 @@ URLs, token bindings, and deploy commands remain in the private inventory.
 Import a Notion **Markdown & CSV** export directly from its ZIP:
 
 ```bash
-retex import --from ~/Downloads/notion-export.zip \
-  --into ~/Vaults/Notion --format notion --lean
+retex import --from ./notion-export.zip \
+  --into ./imported-notion --format notion --lean
 ```
 
 Retex strips Notion's opaque page IDs from names, rewrites local Markdown
@@ -285,8 +304,8 @@ Markdown tables while retaining the source CSV.
 Import an Obsidian or generic Markdown vault from an extracted directory:
 
 ```bash
-retex import --from ~/Documents/Obsidian \
-  --into ~/Vaults/Imported --format obsidian --lean
+retex import --from ./obsidian-vault \
+  --into ./imported-vault --format obsidian --lean
 ```
 
 Imports require a new or empty destination, reject symlinks and path escapes,
@@ -302,8 +321,8 @@ encrypted:
 ```bash
 read -s RETEX_PASS
 export RETEX_PASS
-retex export --vault ~/Vaults/CRM --out crm.retex --passphrase-env RETEX_PASS
-retex import --from crm.retex --into ~/Vaults/CRM-restored --passphrase-env RETEX_PASS
+retex export --vault ./demo-vault --out crm.retex --passphrase-env RETEX_PASS
+retex import --from crm.retex --into ./restored-vault --passphrase-env RETEX_PASS
 unset RETEX_PASS
 ```
 
@@ -327,10 +346,10 @@ server stores one opaque blob per vault and never sees a passphrase or note.
 ```bash
 export RETEX_SYNC_TOKEN=...   # bearer token for the server
 read -s RETEX_PASS; export RETEX_PASS
-retex sync push --vault ~/Vaults/CRM --server https://sync.example.com \
+retex sync push --vault ./demo-vault --server https://sync.example.com \
   --vault-id crm --passphrase-env RETEX_PASS      # server and id are saved
-retex sync pull --vault ~/Vaults/CRM --passphrase-env RETEX_PASS   # other machine
-retex sync status --vault ~/Vaults/CRM --lean
+retex sync pull --vault ./demo-vault --passphrase-env RETEX_PASS   # other machine
+retex sync status --vault ./demo-vault --lean
 ```
 
 - Writes are optimistic: a push made from an out-of-date copy is refused with
@@ -341,7 +360,7 @@ retex sync status --vault ~/Vaults/CRM --lean
 - The server must be `https` (plain `http` only for localhost). The token is
   read from `RETEX_SYNC_TOKEN` or the variable named by `--token-env`, never
   from an argument. State lives in `<vault>/.retex/sync.json`.
-- Same scope as export: Markdown and portable attachments; hidden and
+- operatore scope as export: Markdown and portable attachments; hidden and
   Retex-derived state stay local. Last pull wins per vault, with no merging.
 
 A reference server (Python standard library, no dependencies) is in
@@ -380,7 +399,7 @@ For multiple vaults, explicitly register the full fleet and opt individual
 vaults into post-update initialization:
 
 ```bash
-retex fleet register --vault ~/Vaults/CRM --auto-update --lean
+retex fleet register --vault ./demo-vault --auto-update --lean
 retex fleet status --lean
 retex fleet initialize --lean       # idempotent live init + strict doctor
 retex fleet install-updater --lean
@@ -400,8 +419,9 @@ Every release download requires the exact published SHA-256. Before replacement,
 the candidate must also be a bounded regular file and report the expected
 version. Official macOS assets are Developer ID–signed and submitted to Apple
 notarization before publication; the updater verifies checksums and behavior,
-not signing identity. Linux uses static platform archives; Windows uses the
-matching signed release asset when available.
+not signing identity. Linux uses static platform archives; Windows requires a source build unless a matching release asset is published.
+Linux manual installs use `.tar.xz`; the updater still selects the compatible
+`.tar.gz` assets.
 
 The short release trigger is: check first, run the built-in clone-gated local
 update, deploy one hosted canary, run the bundled verifier for that canary,
@@ -421,15 +441,16 @@ credential is ever required to read or write one:
 
 ```
 MyVault/
-├── Deals/acme-redesign.md     # built-in CRM type
-├── Invoices/acme-august.md    # configured custom type
+├── Deals/example-redesign.md     # built-in CRM type
+├── Invoices/example-august.md    # configured custom type
 ├── Records/runbook.md         # explicit custom folder
 └── .retex/                    # optional internal state
     ├── config.json            # schemas, columns, and saved views
     └── history.jsonl          # undo journal
 ```
 
-Every file outside `.retex/` is ordinary Markdown readable in any editor.
+Notes outside `.retex/` are ordinary Markdown readable in any editor;
+vaults may also contain attachments.
 Do not delete `.retex/` to clear a cache: it contains user configuration,
 undo history, and sync state. Those cannot be reconstructed from Markdown.
 Back up the whole vault when you need to preserve them. Encrypted exports
@@ -451,7 +472,7 @@ Note bodies remain intact, including wiki links and Markdown checklists.
 
 ```markdown
 ---
-title: Acme website rebuild
+title: Example website rebuild
 type: deal
 status: Proposal
 rank: 1
@@ -463,9 +484,9 @@ tags: [website, priority]
 archived: false
 ---
 
-# Acme website rebuild
+# Example website rebuild
 
-Linked contact: [[Jamie Doe]]
+Linked contact: [[Example Contact]]
 
 - [x] Draft agreement
 - [ ] Send revised scope

@@ -1,5 +1,12 @@
 # Retex
 
+<p align="center">
+  <a href="https://github.com/michael-berardi/retex/releases/latest"><img src="https://img.shields.io/github/v/release/michael-berardi/retex?label=release" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/michael-berardi/retex" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="macOS, Linux and Windows" />
+  <img src="https://img.shields.io/badge/MCP-server-8A2BE2" alt="MCP server" />
+</p>
+
 Retex is a Markdown vault CLI for people and agents. Query notes and custom
 records, follow wiki links, and edit properties without moving your files into
 a database. Agents can use compact JSON or the built-in, read-only-by-default
@@ -7,7 +14,29 @@ MCP server. Your Markdown stays readable in any editor.
 
 ## Install
 
-Build from source with Swift 6.0+ (macOS 14+, Linux, or Windows):
+Download the [signed macOS universal binary](https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip)
+(macOS 14+). In an empty directory, download, verify, and run:
+
+```sh
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
+curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
+grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
+unzip retex-universal.zip
+codesign --verify --strict --verbose=2 retex
+./retex --help
+```
+
+Only install after both verification commands succeed. Move `retex` into a
+directory on your `PATH`. [Linux releases](https://github.com/michael-berardi/retex/releases/latest)
+provide `retex-linux-x86_64.tar.xz` and `retex-linux-aarch64.tar.xz`; verify the
+matching `SHA256SUMS` entry with `sha256sum -c` before extracting with
+`tar -xJf <archive>.tar.xz`. Compatibility `.tar.gz` assets remain available
+for the built-in updater.
+Windows requires a source build.
+
+### From source
+
+With Swift 6.0+ (macOS 14+, Linux, or Windows):
 
 ```sh
 git clone https://github.com/michael-berardi/retex.git && cd retex && swift build -c release -j 4
@@ -16,22 +45,6 @@ git clone https://github.com/michael-berardi/retex.git && cd retex && swift buil
 
 On Windows, run `.build\release\retex.exe --help`. Put the built executable
 on your `PATH` to use `retex` below.
-
-Prefer a binary? [Releases](https://github.com/michael-berardi/retex/releases/latest)
-provide macOS universal and Linux archives with `SHA256SUMS`.
-For macOS, download and verify in an empty directory:
-
-```sh
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
-curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/SHA256SUMS
-grep ' retex-universal.zip$' SHA256SUMS | shasum -a 256 -c -
-unzip retex-universal.zip
-codesign --verify --strict --verbose=2 retex
-```
-
-Only install after both verification commands succeed. Linux assets are
-`retex-linux-x86_64.tar.gz` and `retex-linux-aarch64.tar.gz`; verify the matching
-checksum with `sha256sum -c` before extracting. Windows requires a source build.
 
 ## First vault
 
@@ -81,3 +94,7 @@ are covered in the [reference](docs/REFERENCE.md#updates).
 ## License
 
 [MIT](LICENSE). `RetexCore` is also available as a Swift package library.
+
+---
+
+Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/retex/): free, private, open-source tools for working with AI agents.
