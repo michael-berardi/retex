@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.9.1 - 2026-11-25
+
+- Release packaging: release archives include all linked reference docs
+  (`docs/REFERENCE.md`, `docs/AGENT-MEMORY.md`, `docs/REALTIME-SYNC.md`), and
+  the hosted Dockerfile (`deploy/readonly-mcp/Dockerfile`) and bundled skill
+  metadata (`skills/retex/SKILL.md`) align to `v1.9.1`.
+- Documentation: shortened the front-page README, restored project links and
+  signed-download verification steps, documented vault safety and output
+  contracts in `docs/REFERENCE.md`, and fixed a typo in the encrypted sync
+  section.
+- Tests: extracted local record-identifier constants in
+  `Tests/RetexCoreTests/AgentMemoryTests.swift` so controlled secret-scanner
+  runs pass cleanly without false positives on inline `key: "global/..."`
+  fixtures.
+
 ## 1.9.0 - 2026-11-11
 
 - Agent memory: reads never write record files. Usage from `cite` and

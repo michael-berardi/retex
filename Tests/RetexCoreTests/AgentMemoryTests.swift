@@ -886,9 +886,10 @@ final class AgentMemoryTests: XCTestCase {
 
     // Emission is not usage: a pack read must leave the vault byte-identical.
     func testContextIsAPureReadAndNeverFeedsTheScore() throws {
-        _ = try propose(json: try recordJSON(key: "global/counted"))
-        _ = try memory.promote(vault: vault, key: "global/counted", operatorApproved: true, ifHash: nil)
-        let url = try memory.recordURL(vault: vault, key: "global/counted")
+        let recordID = "global/counted"
+        _ = try propose(json: try recordJSON(key: recordID))
+        _ = try memory.promote(vault: vault, key: recordID, operatorApproved: true, ifHash: nil)
+        let url = try memory.recordURL(vault: vault, key: recordID)
         let before = try Data(contentsOf: url)
 
         let first = try memory.context(
@@ -908,7 +909,7 @@ final class AgentMemoryTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: url), before, "context rewrote a record file")
 
-        let record = try memory.loadRecord(vault: vault, key: "global/counted")
+        let record = try memory.loadRecord(vault: vault, key: recordID)
         XCTAssertEqual(record.recalled, 0)
         XCTAssertEqual(record.cited, 0)
         XCTAssertEqual(record.recallHits, 0)
@@ -992,12 +993,13 @@ final class AgentMemoryTests: XCTestCase {
     // MARK: - verified_by / confirmation
 
     func testProposeAcceptsVerificationFields() throws {
+        let recordID = "global/verified"
         _ = try propose(json: try recordJSON(
-            key: "global/verified",
+            key: recordID,
             verifiedBy: "swift test (177 tests) on 2026-11-09",
             confirmation: "confirmed"
         ))
-        var record = try memory.loadRecord(vault: vault, key: "global/verified")
+        var record = try memory.loadRecord(vault: vault, key: recordID)
         XCTAssertEqual(record.verifiedBy, "swift test (177 tests) on 2026-11-09")
         XCTAssertEqual(record.confirmation, "confirmed")
         // Frontmatter round-trips: the fields survive a re-read of the file.
@@ -1043,9 +1045,10 @@ final class AgentMemoryTests: XCTestCase {
     }
 
     func testEditInheritsVerificationFields() throws {
-        _ = try propose(json: try recordJSON(key: "global/inherit", verifiedBy: "swift build", confirmation: "confirmed"))
-        _ = try memory.promote(vault: vault, key: "global/inherit", operatorApproved: true, ifHash: nil)
-        let successor = try propose("edit", key: "global/inherit", json: try recordJSON(key: "global/inherit", title: "Edited rule"))
+        let recordID = "global/inherit"
+        _ = try propose(json: try recordJSON(key: recordID, verifiedBy: "swift build", confirmation: "confirmed"))
+        _ = try memory.promote(vault: vault, key: recordID, operatorApproved: true, ifHash: nil)
+        let successor = try propose("edit", key: recordID, json: try recordJSON(key: recordID, title: "Edited rule"))
         let edited = try memory.loadRecord(vault: vault, key: successor.key)
         XCTAssertEqual(edited.verifiedBy, "swift build")
         XCTAssertEqual(edited.confirmation, "confirmed")
@@ -1081,8 +1084,9 @@ final class AgentMemoryTests: XCTestCase {
     }
 
     func testDoctorWarnsButDoesNotFailOnMissingVerificationFields() throws {
-        _ = try propose(json: try recordJSON(key: "global/unverified"))
-        _ = try memory.promote(vault: vault, key: "global/unverified", operatorApproved: true, ifHash: nil)
+        let recordID = "global/unverified"
+        _ = try propose(json: try recordJSON(key: recordID))
+        _ = try memory.promote(vault: vault, key: recordID, operatorApproved: true, ifHash: nil)
         var report = try memory.doctor(vault: vault)
         XCTAssertTrue(report.ok, "missing optional fields must not fail doctor: \(report.issues)")
         XCTAssertEqual(report.issues, [])
@@ -1091,8 +1095,8 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertTrue(report.warnings[1].contains("no confirmation"), "\(report.warnings)")
 
         // Filled in, the warnings disappear.
-        _ = try propose("edit", key: "global/unverified",
-                        json: try recordJSON(key: "global/unverified"),
+        _ = try propose("edit", key: recordID,
+                        json: try recordJSON(key: recordID),
                         verification: ("swift test", "confirmed"))
         // Promoting the successor retires the unverified one it supersedes.
         _ = try memory.promote(vault: vault, key: "global/unverified-v2", operatorApproved: true, ifHash: nil)
@@ -1212,7 +1216,8 @@ final class AgentMemoryTests: XCTestCase {
     }
 
     func testDoctorDetectsDuplicateKeysModesAndBrokenChains() throws {
-        _ = try propose(json: try recordJSON(key: "global/duplicated"))
+        let recordID = "global/duplicated"
+        _ = try propose(json: try recordJSON(key: recordID))
         // Same key in a second file.
         let original = try Data(contentsOf: globalDir.appendingPathComponent("duplicated.md"))
         try original.write(to: globalDir.appendingPathComponent("duplicate-copy.md"))

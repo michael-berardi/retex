@@ -360,7 +360,7 @@ retex sync status --vault ./demo-vault --lean
 - The server must be `https` (plain `http` only for localhost). The token is
   read from `RETEX_SYNC_TOKEN` or the variable named by `--token-env`, never
   from an argument. State lives in `<vault>/.retex/sync.json`.
-- operatore scope as export: Markdown and portable attachments; hidden and
+- Same scope as export: Markdown and portable attachments; hidden and
   Retex-derived state stay local. Last pull wins per vault, with no merging.
 
 A reference server (Python standard library, no dependencies) is in
