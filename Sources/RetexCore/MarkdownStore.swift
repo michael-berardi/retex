@@ -271,8 +271,10 @@ public struct MarkdownStore {
             let asciiNeedles = terms.map(Self.asciiNeedle)
             let entries = try cache.snapshot(vault).entries
             let scoped: [VaultSnapshotCache.Entry]
-            if let prefix = scope.prefix {
-                scoped = entries.filter { $0.note.id.hasPrefix(prefix) }
+            if let prefixes = scope.prefixes {
+                scoped = entries.filter { entry in
+                    prefixes.contains { entry.note.id.hasPrefix($0) }
+                }
             } else {
                 scoped = entries
             }
@@ -452,25 +454,31 @@ public struct MarkdownStore {
     }
 
     /// Resolves an optional recall subdirectory to the directory that gets
-    /// enumerated and the canonical prefix snapshot entries are filtered by.
+    /// enumerated and the prefixes snapshot entries are filtered by.
+    /// Snapshot entries carry realpath-resolved ids while a subdirectory is
+    /// usually spelled lexically (a symlinked vault root, or macOS /tmp under
+    /// /private/tmp), so both spellings are accepted.
     /// `directory` is nil when the requested subdirectory is missing or
     /// escapes the vault, which means an empty result.
     static func recallScope(
         _ subdirectory: String?,
         root: URL
-    ) -> (directory: URL?, prefix: String?) {
+    ) -> (directory: URL?, prefixes: [String]?) {
         guard let subdirectory else { return (root, nil) }
         let expanded = NSString(string: subdirectory).expandingTildeInPath
         guard !(expanded as NSString).isAbsolutePath else { return (nil, nil) }
         let candidate = root.appendingPathComponent(expanded).standardizedFileURL
         guard isWithinVault(candidate, root: root) else { return (nil, nil) }
-        let path = candidate.path
-        let prefix = path.hasSuffix("/") ? path : path + "/"
+        var prefixes: [String] = []
+        for spelling in [candidate.path, candidate.resolvingSymlinksInPath().path] {
+            let prefix = spelling.hasSuffix("/") ? spelling : spelling + "/"
+            if !prefixes.contains(prefix) { prefixes.append(prefix) }
+        }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
               isDirectory.boolValue
-        else { return (nil, prefix) }
-        return (candidate, prefix)
+        else { return (nil, prefixes) }
+        return (candidate, prefixes)
     }
 
     private static func isoDay(_ value: String) -> Int? {

@@ -236,6 +236,34 @@ final class ParsingAndRecallTests: XCTestCase {
         XCTAssertTrue(try cached.recall(vault, query: "release", subdirectory: "Missing").isEmpty)
     }
 
+    func testCachedRecallScopesSubdirectoriesThroughASymlinkedVaultRoot() throws {
+        // Snapshot entries carry realpath ids, so a subdirectory spelled through
+        // a symlinked vault root (macOS /tmp under /private/tmp) must match on
+        // either spelling instead of silently returning nothing.
+        try write("Memory/rule.md", "# Rule\n\nalpha memory rule")
+        try write("Elsewhere/note.md", "# Note\n\nalpha elsewhere")
+        let link = vaultDir.deletingLastPathComponent()
+            .appendingPathComponent("retex-parsing-link-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: vaultDir)
+        defer { try? FileManager.default.removeItem(at: link) }
+        let cached = MarkdownStore(cache: VaultSnapshotCache())
+        let linked = Vault(url: link)
+
+        XCTAssertEqual(try cached.recall(linked, query: "alpha").map(\.note.title).sorted(), ["Note", "Rule"])
+        XCTAssertEqual(
+            try cached.recall(linked, query: "alpha", subdirectory: "Memory").map(\.note.title),
+            ["Rule"]
+        )
+        XCTAssertEqual(
+            try cached.recall(linked, query: "alpha", subdirectory: "Elsewhere").map(\.note.title),
+            ["Note"]
+        )
+        XCTAssertEqual(
+            try cached.recall(vault, query: "alpha", subdirectory: "Memory").map(\.note.title),
+            ["Rule"]
+        )
+    }
+
     // MARK: - Configuration resilience
 
     private func writeConfig(_ json: String) throws {
