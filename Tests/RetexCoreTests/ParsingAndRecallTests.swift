@@ -293,6 +293,28 @@ final class ParsingAndRecallTests: XCTestCase {
         XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["Second", "Third"])
     }
 
+    func testVaultConfigReloadSeesAReplacementWithTheSameMtimeAndSize() throws {
+        // A rename over the config can keep the mtime and the size, so the memo
+        // must also key on the inode and the ctime.
+        let configURL = vault.url.appendingPathComponent(".retex/config.json")
+        let stamped = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = #"{"views": [{"name": "First"}]}"#
+        let second = #"{"views": [{"name": "Other"}]}"#
+        XCTAssertEqual(first.utf8.count, second.utf8.count)
+
+        try writeConfig(first)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: configURL.path)
+        XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["First"])
+
+        let staged = vault.url.appendingPathComponent(".retex/config.tmp")
+        try second.write(to: staged, atomically: false, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: staged.path)
+        _ = try FileManager.default.replaceItemAt(configURL, withItemAt: staged)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: configURL.path)
+
+        XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["Other"])
+    }
+
     // MARK: - Native text paths match Foundation
 
     func testRankingFoldMatchesFoundationFolding() {

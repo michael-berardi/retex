@@ -97,15 +97,13 @@ public struct VaultConfig: Sendable, Equatable {
 
     /// Loads `<vault>/.retex/config.json`, falling back to defaults on any
     /// read/parse problem so a broken config never bricks a vault. Decoded
-    /// configs are memoized by (path, mtime, size): an MCP session asks for
+    /// configs are memoized by the file's fingerprint: an MCP session asks for
     /// the same unchanged file on nearly every request.
     public static func load(for vault: Vault) -> VaultConfig {
         let url = Self.url(for: vault)
         let path = url.path
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-        let mtime = attributes?[.modificationDate] as? Date
-        let size = (attributes?[.size] as? NSNumber)?.intValue
-        if let cached = cache.config(for: path, mtime: mtime, size: size) {
+        let fingerprint = Self.fingerprint(of: url)
+        if let cached = cache.config(for: path, fingerprint: fingerprint) {
             return cached
         }
         let config: VaultConfig
@@ -115,8 +113,59 @@ public struct VaultConfig: Sendable, Equatable {
         } else {
             config = .default
         }
-        cache.store(config, for: path, mtime: mtime, size: size)
+        cache.store(config, for: path, fingerprint: fingerprint)
         return config
+    }
+
+    /// Identifies one version of the config file. Size and mtime alone miss a
+    /// replacement made inside the same timestamp tick — a same-size rewrite,
+    /// or a rename over the file — so the inode and ctime join the key.
+    struct Fingerprint: Equatable {
+        let mtime: Date?
+        let size: Int?
+        let inode: UInt64
+        let changedAt: Double
+    }
+
+    static func fingerprint(of url: URL) -> Fingerprint {
+#if canImport(Darwin)
+        var info = Darwin.stat()
+        if lstat(url.path, &info) == 0 {
+            let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
+            let ctime = Double(info.st_ctimespec.tv_sec) + Double(info.st_ctimespec.tv_nsec) / 1_000_000_000
+            return Fingerprint(
+                mtime: Date(timeIntervalSince1970: mtime),
+                size: Int(info.st_size),
+                inode: UInt64(info.st_ino),
+                changedAt: ctime
+            )
+        }
+#elseif canImport(Glibc) || canImport(Musl)
+        var info = stat()
+        if lstat(url.path, &info) == 0 {
+            let mtime = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1_000_000_000
+            let ctime = Double(info.st_ctim.tv_sec) + Double(info.st_ctim.tv_nsec) / 1_000_000_000
+            return Fingerprint(
+                mtime: Date(timeIntervalSince1970: mtime),
+                size: Int(info.st_size),
+                inode: UInt64(info.st_ino),
+                changedAt: ctime
+            )
+        }
+#else
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if attributes != nil {
+            return Fingerprint(
+                mtime: attributes?[.modificationDate] as? Date,
+                size: (attributes?[.size] as? NSNumber)?.intValue,
+                inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0,
+                changedAt: (attributes?[.creationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            )
+        }
+#endif
+        // A missing file has one fingerprint, so the defaults it yields are
+        // cached until the file appears.
+        return Fingerprint(mtime: nil, size: nil, inode: 0, changedAt: 0)
     }
 
     // MARK: Config cache
@@ -128,8 +177,7 @@ public struct VaultConfig: Sendable, Equatable {
     /// fingerprint, so defaults are never served for a config that exists.
     private final class VaultConfigCache: @unchecked Sendable {
         private struct Entry {
-            let mtime: Date?
-            let size: Int?
+            let fingerprint: VaultConfig.Fingerprint
             let config: VaultConfig
         }
 
@@ -137,18 +185,18 @@ public struct VaultConfig: Sendable, Equatable {
         private var entries: [String: Entry] = [:]
         private let limit = 64
 
-        func config(for path: String, mtime: Date?, size: Int?) -> VaultConfig? {
+        func config(for path: String, fingerprint: VaultConfig.Fingerprint) -> VaultConfig? {
             lock.lock()
             defer { lock.unlock() }
-            guard let entry = entries[path], entry.mtime == mtime, entry.size == size else { return nil }
+            guard let entry = entries[path], entry.fingerprint == fingerprint else { return nil }
             return entry.config
         }
 
-        func store(_ config: VaultConfig, for path: String, mtime: Date?, size: Int?) {
+        func store(_ config: VaultConfig, for path: String, fingerprint: VaultConfig.Fingerprint) {
             lock.lock()
             defer { lock.unlock() }
             if entries.count >= limit, entries[path] == nil { entries.removeAll(keepingCapacity: true) }
-            entries[path] = Entry(mtime: mtime, size: size, config: config)
+            entries[path] = Entry(fingerprint: fingerprint, config: config)
         }
     }
 
