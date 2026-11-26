@@ -13,7 +13,7 @@
 #
 # Environment: RETEX_HOME (default ~/.local/share/retex),
 # RETEX_BIN_DIR (default ~/.local/bin), RETEX_VERSION (default: latest,
-# e.g. 1.9.1), RETEX_RELEASE_BASE (override download base URL or local dir;
+# e.g. 1.2.3), RETEX_RELEASE_BASE (override download base URL or local dir;
 # used by tests and mirrors).
 set -eu
 

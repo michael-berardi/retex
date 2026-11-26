@@ -11,7 +11,9 @@ final class InstallerTests: XCTestCase {
         return file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    private static let fixtureVersion = "1.9.1"
+    // Arbitrary stub version; assertions below read the version reported by
+    // the installed binary instead of hardcoding this value.
+    private static let stubVersion = "3.2.1"
 
     private var root: URL!
     private var stubBin: URL!
@@ -72,7 +74,7 @@ final class InstallerTests: XCTestCase {
         let source = root.appendingPathComponent("fixture-source", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try writeExecutable(
-            "#!/bin/sh\n[ \"$1\" = version ] && echo \(Self.fixtureVersion) || echo 'stub retex'\nexit 0\n",
+            "#!/bin/sh\n[ \"$1\" = version ] && echo \(Self.stubVersion) || echo 'stub retex'\nexit 0\n",
             at: source.appendingPathComponent("retex")
         )
 
@@ -118,6 +120,20 @@ final class InstallerTests: XCTestCase {
 #endif
     }
 
+    private func version(of executable: URL) throws -> String {
+        let result = try run(executable: executable, arguments: ["version"])
+        XCTAssertEqual(result.status, 0, result.stderr)
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func installedVersionDirectories(in home: URL) throws -> [URL] {
+        let installed = home.appendingPathComponent(".local/share/retex", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: installed.path) else { return [] }
+        return names.filter { $0 != "current" }
+            .map { installed.appendingPathComponent($0) }
+            .filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("retex").path) }
+    }
+
     private func install(
         home: URL,
         release: URL,
@@ -147,17 +163,17 @@ final class InstallerTests: XCTestCase {
         let bin = home.appendingPathComponent(".local/bin/retex")
         let installedHome = home.appendingPathComponent(".local/share/retex")
         let current = installedHome.appendingPathComponent("current/retex")
-        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: current.deletingLastPathComponent().path),
-                       installedHome.appendingPathComponent(Self.fixtureVersion).path)
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: bin.path), current.path)
 
         let real = current.resolvingSymlinksInPath()
         XCTAssertTrue(FileManager.default.fileExists(atPath: real.path))
+        let expectedVersion = try version(of: real)
+        XCTAssertFalse(expectedVersion.isEmpty)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: current.deletingLastPathComponent().path),
+                       installedHome.appendingPathComponent(expectedVersion).path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: real.deletingLastPathComponent()
             .appendingPathComponent(".retex-installed").path))
-        let version = try run(executable: bin, arguments: ["version"])
-        XCTAssertEqual(version.status, 0, version.stderr)
-        XCTAssertEqual(version.stdout.trimmingCharacters(in: .whitespacesAndNewlines), Self.fixtureVersion)
+        XCTAssertEqual(try version(of: bin), expectedVersion)
 
         // The self-updater replaces the resolved binary in the version folder;
         // the shim must still point at that exact file afterwards.
@@ -178,9 +194,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertNotEqual(result.status, 0)
         XCTAssertTrue(result.stderr.contains("was not installed by this installer"), result.stderr)
         XCTAssertEqual(try String(contentsOf: unowned, encoding: .utf8), "unowned")
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: home.appendingPathComponent(".local/share/retex/\(Self.fixtureVersion)/retex").path
-        ))
+        XCTAssertTrue(try installedVersionDirectories(in: home).isEmpty)
     }
 
     func testRejectsChecksumMismatchBeforeInstalling() throws {
@@ -195,8 +209,37 @@ final class InstallerTests: XCTestCase {
         let result = try install(home: home, release: bad)
         XCTAssertNotEqual(result.status, 0)
         XCTAssertTrue(result.stderr.contains("checksum mismatch"), result.stderr)
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: home.appendingPathComponent(".local/share/retex/\(Self.fixtureVersion)/retex").path
-        ))
+        XCTAssertTrue(try installedVersionDirectories(in: home).isEmpty)
+    }
+
+    func testInstallerPinsSameTeamIDAsUpdater() throws {
+        let installer = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("scripts/install.sh"),
+            encoding: .utf8
+        )
+        // The in-app updater's validation requirement lives in the CLI entry
+        // point; UpdateChecker.swift performs the symlink-resolving swap.
+        let updater = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("Sources/RetexCLI/Entrypoint.swift"),
+            encoding: .utf8
+        )
+        let releaseScript = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("scripts/release.sh"),
+            encoding: .utf8
+        )
+        let regex = try NSRegularExpression(
+            pattern: #"certificate leaf\[subject\.OU\] = "([A-Z0-9]+)""#
+        )
+        func teamID(in text: String) -> String? {
+            guard let match = regex.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text)
+            ), let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+        let installerID = try XCTUnwrap(teamID(in: installer), "installer must pin a Team ID")
+        let updaterID = try XCTUnwrap(teamID(in: updater), "updater must pin a Team ID")
+        let releaseID = try XCTUnwrap(teamID(in: releaseScript), "release script must pin a Team ID")
+        XCTAssertEqual(installerID, updaterID)
+        XCTAssertEqual(installerID, releaseID)
     }
 }
