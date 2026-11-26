@@ -24,10 +24,17 @@ final class InstallerTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         stubBin = root.appendingPathComponent("stub-bin", isDirectory: true)
         try FileManager.default.createDirectory(at: stubBin, withIntermediateDirectories: true)
-        // The generated fixture is a shell script, not a Developer ID binary.
+    }
+
+    /// Only the generated fixture (a shell script, not a Developer ID binary)
+    /// gets a codesign stub; real release assets keep the real signature check.
+    private var usesFixture = false
+
+    private func stubCodesign() throws {
         let codeSign = stubBin.appendingPathComponent("codesign")
         try "#!/bin/sh\nexit 0\n".write(to: codeSign, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codeSign.path)
+        usesFixture = true
     }
 
     override func tearDownWithError() throws {
@@ -70,6 +77,7 @@ final class InstallerTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: release.appendingPathComponent("SHA256SUMS").path))
             return release
         }
+        try stubCodesign()
         try FileManager.default.createDirectory(at: release, withIntermediateDirectories: true)
         let source = root.appendingPathComponent("fixture-source", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -141,6 +149,7 @@ final class InstallerTests: XCTestCase {
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         let bin = binDirectory ?? home.appendingPathComponent(".local/bin", isDirectory: true)
         var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "RETEX_VERSION")
         environment["HOME"] = home.path
         environment["RETEX_HOME"] = home.appendingPathComponent(".local/share/retex", isDirectory: true).path
         environment["RETEX_BIN_DIR"] = bin.path

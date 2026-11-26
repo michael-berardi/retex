@@ -15,6 +15,12 @@ die() { printf 'build-release: %s\n' "$*" >&2; exit 1; }
 [ -d "$SRC" ] || die "asset source directory not found: $SRC (set RETEX_ASSET_SOURCE)"
 [ -f scripts/install.sh ] || die "scripts/install.sh is missing"
 
+ROOT=$(pwd -P)
+case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
+OUT=${OUT%/}
+case "$OUT" in */..|*/../*|*/.|*/./*) die "out directory must not contain . or .." ;; esac
+case "$OUT" in "$ROOT"/dist/?*) ;; *) die "out directory must be a non-empty path under $ROOT/dist" ;; esac
+case "$(cd "$SRC" && pwd -P)/" in "$OUT"/*) die "out directory must not contain the asset source" ;; esac
 rm -rf "$OUT"; mkdir -p "$OUT"
 for asset in retex-universal.zip retex-linux-aarch64.tar.xz retex-linux-aarch64.tar.gz \
              retex-linux-x86_64.tar.xz retex-linux-x86_64.tar.gz retex-windows-x86_64.zip; do
