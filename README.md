@@ -14,8 +14,32 @@ MCP server. Your Markdown stays readable in any editor.
 
 ## Install
 
-Download the [signed macOS universal binary](https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip)
-(macOS 14+). In an empty directory, download, verify, and run:
+```sh
+curl -fsSL https://github.com/michael-berardi/retex/releases/latest/download/install.sh | sh
+```
+
+The installer downloads the [signed macOS universal binary](https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip)
+(macOS 14+) or the Linux static archive for your CPU, checks it against the
+release `SHA256SUMS` (and the Developer ID signature on macOS), installs it
+into `~/.local/share/retex/<version>`, and links `~/.local/bin/retex` to it.
+Add `~/.local/bin` to your `PATH` if it is not there already:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+retex --help
+```
+
+The link resolves to the real binary, so the built-in `retex update` keeps
+working: it replaces that binary in the version folder and leaves a rollback
+copy at `retex.previous`. Re-running the installer makes a fresh version
+folder and repoints `~/.local/share/retex/current`. Existing files that the
+installer did not create are never replaced. `RETEX_HOME`, `RETEX_BIN_DIR`,
+`RETEX_VERSION` and `RETEX_RELEASE_BASE` override the locations and download
+base for mirrors and tests. Windows requires a source build.
+
+### Manual install
+
+In an empty directory, download, verify, and run:
 
 ```sh
 curl -fLO https://github.com/michael-berardi/retex/releases/latest/download/retex-universal.zip
@@ -32,7 +56,6 @@ provide `retex-linux-x86_64.tar.xz` and `retex-linux-aarch64.tar.xz`; verify the
 matching `SHA256SUMS` entry with `sha256sum -c` before extracting with
 `tar -xJf <archive>.tar.xz`. Compatibility `.tar.gz` assets remain available
 for the built-in updater.
-Windows requires a source build.
 
 ### From source
 
