@@ -672,7 +672,9 @@ public struct VaultCrypto {
                 message[position] = byte
                 position += 1
             }
-            message.withUnsafeBytes { source in
+            // Explicit type: on Linux FoundationEssentials also offers the
+            // deprecated typed-pointer overload, which makes a bare closure ambiguous.
+            message.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
                 derived.withUnsafeMutableBufferPointer { target in
                     for index in 0..<target.count {
                         target[index] ^= source[index]

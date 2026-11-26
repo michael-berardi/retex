@@ -31,6 +31,8 @@
   into `dist/release` for verification. No Windows asset is published, so no
   `install.ps1` ships. `RETEX_HOME`, `RETEX_BIN_DIR`, `RETEX_VERSION` and
   `RETEX_RELEASE_BASE` support isolated tests and mirrors.
+- Release builds: the PBKDF fallback names its buffer type, so the static
+  Linux build compiles again.
 - Tests: an end-to-end installer test runs against a local release directory
   with a temporary HOME, including clobber refusal, checksum mismatch, and
   equality of the installer's and updater's pinned Developer ID Team ID. The
