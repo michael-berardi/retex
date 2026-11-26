@@ -83,7 +83,7 @@ cd "$ROOT"
 stage_support() {
   local destination="$1"
   mkdir -p "$destination/deploy/readonly-mcp"
-  cp README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md "$destination/"
+  cp README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md PRIVACY.md "$destination/"
   cp -R docs skills "$destination/"
   cp deploy/readonly-mcp/{Dockerfile,gateway.py,refresh_vault.py,validate_vault.py,verify_fleet.py} \
     "$destination/deploy/readonly-mcp/"
@@ -123,7 +123,7 @@ if [[ -z "$LINUX_ONLY" ]]; then
     "$BUILD/bin/retex"
   stage_support "$BUILD/bin"
   MAC_ARCHIVE="$OUT/retex-universal.zip"
-  (cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md docs skills deploy)
+  (cd "$BUILD/bin" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md PRIVACY.md docs skills deploy)
 
   xcrun notarytool submit "$MAC_ARCHIVE" --keychain-profile "$NOTARY_PROFILE" --wait
   STAGE="$BUILD/macos-stage"
@@ -132,7 +132,7 @@ if [[ -z "$LINUX_ONLY" ]]; then
   xcrun stapler staple "$STAGE/retex" || echo "WARN: flat binary ticket verifies online"
   spctl -a -t install -vv "$STAGE/retex"
   rm -f "$MAC_ARCHIVE"
-  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md docs skills deploy)
+  (cd "$STAGE" && zip -qry "$MAC_ARCHIVE" retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md PRIVACY.md docs skills deploy)
 fi
 
 for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl"; do
@@ -167,8 +167,8 @@ for spec in "aarch64:aarch64-swift-linux-musl" "x86_64:x86_64-swift-linux-musl";
   chmod 755 "$STAGE/retex"
   stage_support "$STAGE"
   COPYFILE_DISABLE=1 tar -czf "$OUT/retex-linux-$ARCH.tar.gz" -C "$STAGE" \
-    retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md docs skills deploy
-  COPYFILE_DISABLE=1 tar -cf - -C "$STAGE" retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md docs skills deploy \
+    retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md PRIVACY.md docs skills deploy
+  COPYFILE_DISABLE=1 tar -cf - -C "$STAGE" retex README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md PRIVACY.md docs skills deploy \
     | xz -9e > "$OUT/retex-linux-$ARCH.tar.xz"
 done
 
@@ -179,7 +179,7 @@ if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
   cp "$RETEX_WINDOWS_BINARY" "$STAGE/retex.exe"
   stage_support "$STAGE"
   (cd "$STAGE" && zip -qry "$OUT/retex-windows-x86_64.zip" \
-    retex.exe README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md docs skills deploy)
+    retex.exe README.md LICENSE CHANGELOG.md CONTRIBUTING.md SECURITY.md PRIVACY.md docs skills deploy)
 fi
 
 : > "$OUT/SHA256SUMS"

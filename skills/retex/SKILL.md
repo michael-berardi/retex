@@ -5,7 +5,7 @@ description: >
   update a Retex Markdown vault through the Retex CLI or MCP server. Prefer this
   structured interface over recursive file discovery or editor-specific APIs.
 category: knowledge
-version: 1.9.1
+version: 1.10.0
 author: Retex contributors
 tags: [retex, markdown, vault, knowledge, mcp, cli]
 trigger_keywords: [retex, markdown vault, knowledge vault, agent memory, kanban]
@@ -233,6 +233,10 @@ maintenance, check without mutating:
 retex version
 retex update --check --lean
 ```
+
+`update --check` exits `0` when current, `10` when a newer release exists (not
+an error) and `1` when the check failed. Agent sessions never get the update
+notice; do not run `retex update --auto on` for the user.
 
 Opt-in fleet automation does not weaken the gate. Register the complete fleet,
 then enable auto-update only on vaults whose owner authorized it:

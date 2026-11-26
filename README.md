@@ -77,19 +77,28 @@ state. Never point an untrusted agent at notes it should not read.
 - [Agent memory and approval workflow](docs/AGENT-MEMORY.md)
 - [Agent skill](skills/retex/SKILL.md)
 - [Hosted read-only serving and refresh](docs/REALTIME-SYNC.md)
-- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- [Privacy](PRIVACY.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## Updates
 
-The updater has no default repository. Select the release channel explicitly:
+Retex checks once a day, anonymously, for a newer stable release and prints a
+short notice after interactive commands. There is no default channel; choose
+it yourself:
 
 ```sh
 export RETEX_UPDATE_REPO=michael-berardi/retex
-retex update --check --lean
+retex update            # verified install, previous binary kept for rollback
+retex update --auto on  # optional; automatic installs are off by default
 ```
 
-Review the result before running `retex update`. Fleet and scheduler setup
-are covered in the [reference](docs/REFERENCE.md#updates).
+Details, `--check` exit codes and opt-outs: [docs/updates.md](docs/updates.md).
+
+## Privacy
+
+Notes leave the machine only through sync or export. Once you choose a
+release channel, Retex makes one anonymous HTTPS GET a day to it, with no
+identifier or usage data; never without a terminal, in CI or for machine
+output. `RETEX_NO_UPDATE_CHECK=1` turns it off. Details: [PRIVACY.md](PRIVACY.md).
 
 ## License
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.10.0 - 2026-11-26
+
+- Updates: once you choose a release channel, Retex checks once a day, with
+  one anonymous request and a 4-second background timeout, and prints a
+  two-line notice on stderr after interactive commands. Never without a
+  terminal, in CI, for `--json`/`--lean`/`--raw-json`, or for `mcp`, `update`
+  and `watch`. Opt out with `RETEX_NO_UPDATE_CHECK=1` or
+  `retex update --checks off`.
+- Updates: `retex update --check` now exits `10` when a newer release exists
+  (`0` current, `1` failed, cause on stderr). New: `--skip`, `--rollback`,
+  `--auto on|off|status` (automatic installs, off by default, through a
+  low-priority job), `--checks on|off` and `--uninstall`. `retex update` shows
+  the first release-note lines and asks before installing on a terminal, then
+  asks once about automatic installs.
+- Updates: Homebrew installs are upgraded with `brew upgrade`. The SHA-256 is
+  checked before the download touches disk; the download directory is always
+  removed; the one `.previous` copy is removed after the new version has run
+  a command; the job log stays under 256 KB.
+- Docs: `docs/updates.md` and `PRIVACY.md`.
+
 ## 1.9.1 - 2026-11-25
 
 - Release packaging: release archives include all linked reference docs

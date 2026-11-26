@@ -378,21 +378,19 @@ those can stand in.
 ## Updates
 
 Self-update requires `RETEX_UPDATE_REPO` set to the GitHub `owner/repo`
-you trust. See the [installation page](../README.md#updates) for the public
-release channel. Without this variable, `update` exits with usage error 64.
-Scheduled jobs also need this variable in their own environment; installing
-the scheduler does not copy it from your shell.
-
-Check availability without changing the installation:
+you trust; see the [installation page](../README.md#updates). Without it (or
+a channel saved by `retex update --auto on`), `update` exits with usage
+error 64. [Updates](updates.md) covers the daily check, the notice, opt-outs
+and automatic installs.
 
 ```bash
-retex update --check --lean
-```
-
-For one installation, the verified updater remains:
-
-```bash
-retex update
+retex update --check --lean   # report only: exit 0 current, 10 available, 1 failed
+retex update                  # show notes, confirm on a terminal, install
+retex update --skip           # hide this version's notice
+retex update --auto on        # opt in to automatic installs (off by default)
+retex update --auto status
+retex update --checks off     # stop the daily check
+retex update --rollback
 ```
 
 For multiple vaults, explicitly register the full fleet and opt individual
@@ -405,7 +403,9 @@ retex fleet initialize --lean       # idempotent live init + strict doctor
 retex fleet install-updater --lean
 ```
 
-The optional scheduler runs `retex update --auto --fleet` every six hours.
+The optional scheduler runs `retex update --auto --fleet` every six hours. It
+needs `RETEX_UPDATE_REPO` in its own environment unless `retex update --auto
+on` has saved a channel; installing it does not copy your shell's variables.
 Before replacing the binary, Retex copies only Markdown and vault config into
 disposable clones, requires strict doctor success, compares exact `list`,
 `search`, and `board` output in the existing `--raw-json` compatibility mode
@@ -417,11 +417,11 @@ any failure restores the previous binary.
 
 Every release download requires the exact published SHA-256. Before replacement,
 the candidate must also be a bounded regular file and report the expected
-version. Official macOS assets are Developer ID–signed and submitted to Apple
-notarization before publication; the updater verifies checksums and behavior,
-not signing identity. Linux uses static platform archives; Windows requires a source build unless a matching release asset is published.
+version. On macOS it must also carry the project's Developer ID signature and
+pass Gatekeeper. Linux uses static platform archives; Windows requires a source build unless a matching release asset is published.
 Linux manual installs use `.tar.xz`; the updater still selects the compatible
-`.tar.gz` assets.
+`.tar.gz` assets. A binary under Homebrew's `Cellar` is upgraded with
+`brew upgrade` instead of being swapped.
 
 The short release trigger is: check first, run the built-in clone-gated local
 update, deploy one hosted canary, run the bundled verifier for that canary,
