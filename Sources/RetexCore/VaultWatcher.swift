@@ -306,6 +306,10 @@ public final class VaultWatcher: @unchecked Sendable {
             throw StoreError.unreadableVault(vaultURL)
         }
         let racyAfter = scanStartedAt.addingTimeInterval(-Self.racyWindow)
+        // A write that lands while the scan runs can be stamped just after it
+        // began. A timestamp further in the future comes from a skewed clock,
+        // and re-reporting it as racy would fire on every poll forever.
+        let racyBefore = scanStartedAt.addingTimeInterval(1)
         let rootComponents = vaultURL.pathComponents.count
         var signatures: [String: Signature] = [:]
         var racy: Set<String> = []
@@ -313,7 +317,9 @@ public final class VaultWatcher: @unchecked Sendable {
             guard let signature = Self.signature(of: url) else { continue }
             let relative = url.pathComponents.dropFirst(rootComponents).joined(separator: "/")
             signatures[relative] = signature
-            if signature.modifiedAt >= racyAfter { racy.insert(relative) }
+            if signature.modifiedAt >= racyAfter, signature.modifiedAt <= racyBefore {
+                racy.insert(relative)
+            }
         }
         return Scan(signatures: signatures, racy: racy)
     }
