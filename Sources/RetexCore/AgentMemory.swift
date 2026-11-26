@@ -837,7 +837,7 @@ public struct AgentMemory {
             pattern: #"\bAKIA[0-9A-Z]{16}\b"#, options: [.caseInsensitive])),
         ("google-api-key", try! NSRegularExpression(pattern: #"\bAIza[0-9A-Za-z_-]{30,}"#)),
         ("secret-assignment", try! NSRegularExpression(
-            pattern: #"\b[A-Za-z0-9_-]{0,24}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|_key)["']?\s*[=:]\s*["']?(?:bearer[ \t]+|basic[ \t]+)?[^\s"',;`]+"#,
+            pattern: #"\b[A-Za-z0-9_-]{0,24}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|_key)["']?\s*[=:]\s*["']?(?:bearer[ \t]+|basic[ \t]+)?[^\s"',;`]+"#,
             options: [.caseInsensitive])),
         ("url-userinfo", try! NSRegularExpression(
             pattern: #"\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"#, options: [.caseInsensitive])),
@@ -864,8 +864,12 @@ public struct AgentMemory {
                     // Port of sanitize.js assignIsSecret: paths and code
                     // identifiers are not secrets.
                     let cut = matched.firstIndex(where: { $0 == "=" || $0 == ":" }) ?? matched.startIndex
-                    let name = String(matched[..<cut]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                    let value = String(matched[matched.index(after: cut)...]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                    let name = String(matched[..<cut])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
+                    // The separator's whitespace is part of the match but not
+                    // part of the value, and it must not count as a symbol.
+                    let value = String(matched[matched.index(after: cut)...])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
                     guard assignIsSecret(name: name, value: value) else { continue }
                 case "high-entropy-blob":
                     let before = String(text[text.startIndex..<range.lowerBound].suffix(48))
@@ -880,15 +884,26 @@ public struct AgentMemory {
     }
 
     /// Generic `<name>: <value>` assignments are prose far more often than
-    /// they are credentials ("Never log the token: it is user data"), so the
-    /// value must be long enough to be key material and key-shaped: a digit, a
-    /// symbol, or mixed case. Real credentials (`sup3rs3cretvalue123`,
-    /// `Bearer …`, `AWS_SECRET_ACCESS_KEY=…`) all clear both gates.
-    private static let minimumAssignmentSecretLength = 8
+    /// they are credentials ("Never log the token: it is user data"), so short
+    /// values must be key-shaped: a digit, a symbol, or mixed case. Anything
+    /// long enough to be key material is a secret whatever its character
+    /// classes (`password: correcthorsebatterystaple`), and password keys keep
+    /// `hunter2`-style short secrets.
+    private static let minimumAssignmentSecretLength = 6
+    /// A single-token value this long is key material by length alone.
+    private static let unambiguousAssignmentSecretLength = 12
 
-    private static func assignmentValueIsSecretShaped(_ value: String) -> Bool {
-        let core = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    /// Keys whose value is a credential even when it looks like a word.
+    private static func passwordKeyName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return ["password", "passwd", "passphrase", "pwd"].contains { lower.hasSuffix($0) }
+    }
+
+    private static func assignmentValueIsSecretShaped(_ value: String, named name: String) -> Bool {
+        let core = value.trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
         guard core.count >= minimumAssignmentSecretLength else { return false }
+        if passwordKeyName(name) { return true }
+        if core.count >= unambiguousAssignmentSecretLength { return true }
         let hasDigit = core.contains(where: \.isNumber)
         let hasSymbol = core.contains { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "_" }
         let hasLower = core.contains(where: \.isLowercase)
@@ -897,7 +912,7 @@ public struct AgentMemory {
     }
 
     private static func assignIsSecret(name: String, value: String) -> Bool {
-        guard assignmentValueIsSecretShaped(value) else { return false }
+        guard assignmentValueIsSecretShaped(value, named: name) else { return false }
         if value.hasPrefix("./") || value.hasPrefix("../") || value.hasPrefix("~/") { return false }
         // Absolute paths point at a secret, they are not one — unless the
         // value itself is key-shaped material.

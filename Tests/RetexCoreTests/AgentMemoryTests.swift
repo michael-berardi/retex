@@ -1444,6 +1444,29 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertEqual(result.status, "proposed")
     }
 
+    func testSecretScannerFlagsUnshapedLongAndPasswordAssignments() throws {
+        // Any single-token value long enough to be key material is a secret
+        // whatever its character classes; the shape test only settles the
+        // short values where prose is the likelier reading.
+        XCTAssertEqual(AgentMemory.findSecret(in: "password: correcthorsebatterystaple"), "secret-assignment")
+        XCTAssertEqual(AgentMemory.findSecret(in: "secret=opensesameplease"), "secret-assignment")
+        XCTAssertEqual(AgentMemory.findSecret(in: "api_key=letmeinwithwords"), "secret-assignment")
+        XCTAssertEqual(AgentMemory.findSecret(in: "token: abcdefghijklmn"), "secret-assignment")
+        // Password keys keep short secrets such as hunter2.
+        XCTAssertEqual(AgentMemory.findSecret(in: "password=hunter2"), "secret-assignment")
+        XCTAssertEqual(AgentMemory.findSecret(in: "db_pwd: swordfish"), "secret-assignment")
+        // Prose that merely mentions a credential is still not one.
+        XCTAssertNil(AgentMemory.findSecret(in: "Never log the token: it is user data"))
+        XCTAssertNil(AgentMemory.findSecret(in: "password: short"))
+        // Whole-record validation sees the same rule.
+        expectReason("secret:secret-assignment") {
+            try propose(json: try recordJSON(
+                key: "global/unshaped-secret",
+                body: "Set password: correcthorsebatterystaple in the env file."
+            ))
+        }
+    }
+
     func testMemoryRecallScopesToMemorySubdirectoryAndIgnoresRetired() throws {
         let now = Date(timeIntervalSince1970: 1_780_000_000)
         _ = try directRecord(key: "global/active-deploy", status: "active", created: now, updated: now)
