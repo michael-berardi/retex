@@ -21,6 +21,21 @@ MAGIC = b"RETEXENC1"
 MAX_BYTES = int(os.environ.get("RETEX_SYNC_MAX_BYTES", str(1024 * 1024 * 1024 + 4096)))
 ID_RE = re.compile(r"^/v1/vaults/([A-Za-z0-9._-]{1,64})$")
 LOCK = threading.Lock()
+READ_CHUNK = 65536
+
+
+def fsync_dir(path):
+    """Flush a directory entry so a completed rename survives a crash."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def make_handler(data_dir: str, token: str):
@@ -63,6 +78,34 @@ def make_handler(data_dir: str, token: str):
             except FileNotFoundError:
                 return None
 
+        def _read_exact(self, length):
+            """Read exactly `length` body bytes; None when the body is truncated."""
+            chunks = []
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, READ_CHUNK))
+                if not chunk:
+                    return None
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+
+        def _etags(self, name):
+            """Entity tags offered by the client; `*` is preserved verbatim."""
+            tags = set()
+            for raw in self.headers.get_all(name) or []:
+                for part in raw.split(","):
+                    tag = part.strip()
+                    if not tag:
+                        continue
+                    if tag == "*":
+                        tags.add("*")
+                        continue
+                    if tag.startswith("W/"):
+                        tag = tag[2:].strip()
+                    tags.add(tag.strip('"').strip())
+            return tags
+
         def do_GET(self):
             path = self._target()
             if path is None:
@@ -88,24 +131,40 @@ def make_handler(data_dir: str, token: str):
             path = self._target()
             if path is None:
                 return
+            raw_length = self.headers.get("Content-Length")
+            if raw_length is None or not raw_length.strip():
+                return self._err(411, "Content-Length required")
             try:
-                length = int(self.headers.get("Content-Length", ""))
+                length = int(raw_length.strip())
             except ValueError:
                 return self._err(411, "Content-Length required")
+            if length < 0:
+                return self._err(400, "invalid Content-Length")
             if length <= len(MAGIC) or length > MAX_BYTES:
                 return self._err(413, "body size out of range")
-            body = self.rfile.read(length)
+            # A short read means the client vanished mid-upload; reject before the
+            # lock and before any temporary file exists so a truncated export can
+            # never replace a good vault.
+            body = self._read_exact(length)
+            if body is None or len(body) != length:
+                return self._err(400, "incomplete body")
             if not body.startswith(MAGIC):
                 return self._err(400, "body is not a RETEXENC1 encrypted export")
-            if_match = (self.headers.get("If-Match") or "").strip('"')
-            if_none = self.headers.get("If-None-Match")
+            if_match = self._etags("If-Match")
+            if_none = self._etags("If-None-Match")
             with LOCK:
                 current = self._current(path)
                 digest = hashlib.sha256(current).hexdigest() if current is not None else None
-                if if_none == "*" and current is not None:
+                if "*" in if_none and current is not None:
                     return self._err(412, "vault already exists; pull first")
-                if if_match and if_match != digest:
-                    return self._err(412, "revision is stale; pull first")
+                if digest is not None and digest in if_none:
+                    return self._err(412, "vault is unchanged since the offered revision")
+                if if_match:
+                    matched = ("*" in if_match and current is not None) or (
+                        digest is not None and digest in if_match
+                    )
+                    if not matched:
+                        return self._err(412, "revision is stale; pull first")
                 fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".tmp-")
                 try:
                     with os.fdopen(fd, "wb") as f:
@@ -113,6 +172,9 @@ def make_handler(data_dir: str, token: str):
                         f.flush()
                         os.fsync(f.fileno())
                     os.replace(tmp, path)
+                    # Durability: the rename itself must reach the parent directory
+                    # entry, otherwise a crash can lose a fully acknowledged PUT.
+                    fsync_dir(data_dir)
                 except BaseException:
                     if os.path.exists(tmp):
                         os.unlink(tmp)

@@ -33,6 +33,37 @@ public struct UndoHistory: Sendable {
 
     private static let capacityPerFile = 50
     private let lock = NSLock()
+    /// Vault state directories this instance has already created and chmodded.
+    /// Mutations run far more often than the directory set changes, so
+    /// `prepare` is skipped after the first success.
+    private let preparedDirectories = PreparedDirectoryCache()
+
+    /// Memo of prepared state directories, guarded by its own lock so it can be
+    /// consulted while a caller holds the journal lock.
+    private final class PreparedDirectoryCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var directories: Set<String> = []
+
+        func contains(_ path: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return directories.contains(path)
+        }
+
+        func insert(_ path: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            directories.insert(path)
+        }
+
+        /// Drops every memoized directory: used when the state directory turns
+        /// out to be unusable, so the next mutation re-runs `prepare`.
+        func removeAll() {
+            lock.lock()
+            defer { lock.unlock() }
+            directories.removeAll()
+        }
+    }
 
     public init() {}
 
@@ -98,9 +129,10 @@ public struct UndoHistory: Sendable {
     /// always private to the current user.
     private func withJournalLock<R>(journalURL: URL, _ body: () throws -> R) throws -> R {
         let stateDirectory = journalURL.deletingLastPathComponent()
-        _ = try Self.prepare(
-            for: Vault(url: stateDirectory.deletingLastPathComponent())
-        )
+        if !preparedDirectories.contains(stateDirectory.path) {
+            _ = try Self.prepare(for: Vault(url: stateDirectory.deletingLastPathComponent()))
+            preparedDirectories.insert(stateDirectory.path)
+        }
 
         #if os(Windows)
         let lockURL = URL(fileURLWithPath: journalURL.path + ".lockdir", isDirectory: true)
@@ -119,19 +151,28 @@ public struct UndoHistory: Sendable {
                 }
             }
         }
-        guard acquired else { throw StoreError.historyUnwritable(journalURL) }
+        guard acquired else {
+            preparedDirectories.removeAll()
+            throw StoreError.historyUnwritable(journalURL)
+        }
         defer { try? FileManager.default.removeItem(at: lockURL) }
         return try body()
         #else
         let lockPath = journalURL.path + ".lock"
         let fd = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw StoreError.historyUnwritable(journalURL) }
+        guard fd >= 0 else {
+            preparedDirectories.removeAll()
+            throw StoreError.historyUnwritable(journalURL)
+        }
         defer {
             flock(fd, LOCK_UN)
             close(fd)
         }
-        guard fchmod(fd, 0o600) == 0, flock(fd, LOCK_EX) == 0 else {
-            throw StoreError.historyUnwritable(journalURL)
+        guard fchmod(fd, 0o600) == 0 else { throw StoreError.historyUnwritable(journalURL) }
+        // A signal delivered while waiting for the lock must not turn into a
+        // spurious "history unwritable" failure.
+        while flock(fd, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw StoreError.historyUnwritable(journalURL) }
         }
         return try body()
         #endif
@@ -304,6 +345,10 @@ public struct UndoHistory: Sendable {
             _ = ftruncate(fd, end)
             throw StoreError.historyUnwritable(url)
         }
+        // Crash durability for the undo record. `fsync` is the right tool: an
+        // append that only loses undo is fine, a note and its undo record that
+        // disagree is not. `F_FULLFSYNC` would be ~20x slower here.
+        _ = fsync(fd)
         return (UInt64(end), UInt64(end) + UInt64(line.count))
         #endif
     }
@@ -355,6 +400,32 @@ public struct UndoHistory: Sendable {
             guard let index = entries.lastIndex(where: { $0.path == path }) else { return nil }
             let restored = entries.remove(at: index)
             try writeEntries(entries, to: url)
+            return restored.previousSource
+        }
+    }
+
+    /// Restores the newest entry for `url` to the file itself, then drops that
+    /// entry — one locked read-modify-write, so two processes cannot both
+    /// restore the same entry. The file is written first: if that write fails
+    /// the journal is left alone and the undo stays retryable. Returns the
+    /// restored source, or nil when the file has no history.
+    @discardableResult
+    public func restoreLatest(for url: URL) throws -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let path = url.standardizedFileURL.path
+        let journalURL = journalURL(forPath: path)
+        return try withJournalLock(journalURL: journalURL) {
+            var entries = Self.capped(try readEntries(from: journalURL))
+            guard let index = entries.lastIndex(where: { $0.path == path }) else { return nil }
+            let restored = entries[index]
+            do {
+                try restored.previousSource.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                throw StoreError.historyUnwritable(journalURL)
+            }
+            entries.remove(at: index)
+            try writeEntries(entries, to: journalURL)
             return restored.previousSource
         }
     }

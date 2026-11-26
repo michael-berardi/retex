@@ -1,7 +1,14 @@
-"""Token-authenticated, read-only Retex MCP over Streamable HTTP."""
+"""Token-authenticated, read-only Retex MCP over Streamable HTTP.
+
+RETEX_MAX_CONCURRENT_REQUESTS (default 16) caps how many requests may be in
+flight at once, and RETEX_MAX_CONCURRENT_WAIT_SECONDS (default 10) is how long a
+request may queue for a permit before the gateway answers 503. Together they stop
+a request burst from spawning unbounded `retex mcp` children.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -22,6 +29,34 @@ RETEX_BIN = os.environ.get("RETEX_BIN", "retex")
 VAULT = os.environ.get("RETEX_VAULT", "/data/vault")
 SERVICE_NAME = os.environ.get("RETEX_SERVICE_NAME", "retex-readonly")
 MAX_REQUEST_BYTES = 1_048_576
+DEFAULT_MAX_CONCURRENT_REQUESTS = 16
+DEFAULT_CONCURRENCY_WAIT_SECONDS = 10.0
+
+
+def _positive_int(name: str, default: int) -> int:
+    """Read a positive integer from the environment, falling back silently."""
+    try:
+        value = int(os.environ.get(name, "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _positive_float(name: str, default: float) -> float:
+    """Read a positive float from the environment, falling back silently."""
+    try:
+        value = float(os.environ.get(name, "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Every in-flight MCP request may hold a `retex mcp` child process open. Cap the
+# number of concurrent requests so a burst cannot exhaust file descriptors or RAM.
+MAX_CONCURRENT_REQUESTS = _positive_int("RETEX_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS)
+CONCURRENCY_WAIT_SECONDS = _positive_float(
+    "RETEX_MAX_CONCURRENT_WAIT_SECONDS", DEFAULT_CONCURRENCY_WAIT_SECONDS
+)
 # The only tools a hosted vault exposes. `retex mcp` also offers agent-memory
 # tools for local hosts; a shared hosted vault must not, so everything not
 # listed here is hidden from tools/list and refused on tools/call.
@@ -113,6 +148,9 @@ def security_middleware(app):
         "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         "X-Content-Type-Options": "nosniff",
     }
+    # One semaphore per wrapped app: it must be shared by every request, so it is
+    # created here rather than per request, and it is loop-bound only on use.
+    permits = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
     async def middleware(scope, receive, send):
         if scope["type"] != "http":
@@ -124,7 +162,10 @@ def security_middleware(app):
             if authenticate:
                 headers["WWW-Authenticate"] = 'Bearer realm="retex"'
             response = PlainTextResponse(message, status_code=status, headers=headers)
-            await response(scope, receive, send)
+            try:
+                await response(scope, receive, send)
+            except OSError:  # the peer is already gone; nothing left to tell it
+                pass
 
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         if not authorized(headers.get(b"authorization", b"")):
@@ -136,7 +177,7 @@ def security_middleware(app):
             await reject("content length required", 411)
             return
         try:
-            length = int(content_length or b"0")
+            length = int((content_length or b"0").decode("ascii", "replace"))
             too_large = length < 0 or length > MAX_REQUEST_BYTES
         except ValueError:
             too_large = True
@@ -144,56 +185,76 @@ def security_middleware(app):
             await reject("request too large", 413)
             return
 
-        secured_receive = receive
+        # An in-flight request can hold a `retex mcp` child open for its whole
+        # lifetime; cap concurrency so a burst cannot exhaust FDs or RAM.
+        permit = False
         if scope.get("method") == "POST":
-            chunks: list[bytes] = []
-            actual_length = 0
-            while True:
-                message = await receive()
-                if message["type"] == "http.disconnect":
-                    await reject("request disconnected", 400)
-                    return
-                if message["type"] != "http.request":
-                    continue
-                chunk = message.get("body", b"")
-                actual_length += len(chunk)
-                if actual_length > MAX_REQUEST_BYTES:
-                    await reject("request too large", 413)
-                    return
-                chunks.append(chunk)
-                if not message.get("more_body", False):
-                    break
-            if actual_length != length:
-                await reject("content length mismatch", 400)
+            try:
+                await asyncio.wait_for(permits.acquire(), timeout=CONCURRENCY_WAIT_SECONDS)
+                permit = True
+            except (asyncio.TimeoutError, TimeoutError):
+                await reject("server busy", 503)
+                return
+            except RuntimeError:  # loop closed under us; fail closed, not open
+                await reject("server busy", 503)
                 return
 
-            body = b"".join(chunks)
-            replayed = False
+        try:
+            secured_receive = receive
+            if scope.get("method") == "POST":
+                chunks: list[bytes] = []
+                actual_length = 0
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        # The client vanished mid-body: there is nobody to answer,
+                        # so try once and never start the downstream app.
+                        await reject("request disconnected", 400)
+                        return
+                    if message["type"] != "http.request":
+                        continue
+                    chunk = message.get("body", b"")
+                    actual_length += len(chunk)
+                    if actual_length > MAX_REQUEST_BYTES:
+                        await reject("request too large", 413)
+                        return
+                    chunks.append(chunk)
+                    if not message.get("more_body", False):
+                        break
+                if actual_length != length:
+                    await reject("content length mismatch", 400)
+                    return
 
-            async def replay_receive():
-                nonlocal replayed
-                if replayed:
-                    return await receive()
-                replayed = True
-                return {"type": "http.request", "body": body, "more_body": False}
-            secured_receive = replay_receive
+                body = b"".join(chunks)
+                replayed = False
 
-        async def secure_send(message):
-            if message["type"] == "http.response.start":
-                existing = {
-                    key.lower()
-                    for key, _value in message.get("headers", [])
-                }
-                response_headers = list(message.get("headers", []))
-                response_headers.extend(
-                    (key.lower().encode(), value.encode())
-                    for key, value in security_headers.items()
-                    if key.lower().encode() not in existing
-                )
-                message["headers"] = response_headers
-            await send(message)
+                async def replay_receive():
+                    nonlocal replayed
+                    if replayed:
+                        return await receive()
+                    replayed = True
+                    return {"type": "http.request", "body": body, "more_body": False}
+                secured_receive = replay_receive
 
-        await app(scope, secured_receive, secure_send)
+            async def secure_send(message):
+                if message["type"] == "http.response.start":
+                    existing = {
+                        key.lower()
+                        for key, _value in message.get("headers", [])
+                    }
+                    response_headers = list(message.get("headers", []))
+                    response_headers.extend(
+                        (key.lower().encode(), value.encode())
+                        for key, value in security_headers.items()
+                        if key.lower().encode() not in existing
+                    )
+                    message["headers"] = response_headers
+                await send(message)
+
+            await app(scope, secured_receive, secure_send)
+        finally:
+            if permit:
+                permits.release()
 
     return middleware
 

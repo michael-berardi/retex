@@ -21,13 +21,17 @@ public struct VaultCrypto {
 
     public init() {}
 
-    public enum CryptoError: LocalizedError {
+    public enum CryptoError: LocalizedError, Equatable {
         case badFormat
         case wrongPassphrase
         case keyDerivationFailed
         case invalidArchive
         case weakPassphrase
         case destinationNotEmpty
+        /// One archive member is larger than the 64 MiB per-file limit.
+        case fileTooLarge(path: String, bytes: Int, limit: Int)
+        /// The archive as a whole is larger than the 1 GiB limit.
+        case archiveTooLarge(path: String, bytes: Int, limit: Int)
 
         public var errorDescription: String? {
             switch self {
@@ -37,6 +41,10 @@ public struct VaultCrypto {
             case .invalidArchive: "Retex archive manifest, checksum, path, or size validation failed."
             case .weakPassphrase: "Export passphrase must contain at least 12 characters."
             case .destinationNotEmpty: "Restore destination must be new or empty."
+            case let .fileTooLarge(path, bytes, limit):
+                "Retex archive file \(path) is \(bytes) bytes, which exceeds the \(limit)-byte per-file limit."
+            case let .archiveTooLarge(path, bytes, limit):
+                "Retex archive exceeds the \(limit)-byte archive limit: \(path) brings it to \(bytes) bytes."
             }
         }
     }
@@ -59,6 +67,20 @@ public struct VaultCrypto {
         let sha256: String
     }
 
+    /// A portable file discovered during the single vault walk.
+    private struct PortableFile {
+        let relativePath: String
+        let data: Data
+        let sha256: String
+    }
+
+    /// An archive member after path, size, and checksum validation.
+    private struct ValidatedEntry {
+        let relativePath: String
+        let data: Data
+        let sha256: String
+    }
+
     private static let maximumFileBytes = 64 * 1024 * 1024
     private static let maximumArchiveBytes = 1024 * 1024 * 1024
     private static let portableVaultExtensions: Set<String> = [
@@ -68,11 +90,13 @@ public struct VaultCrypto {
         "doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip",
     ]
 
-    /// Collects portable, non-hidden vault documents and attachments. Retex
-    /// state, source code, VCS/editor state, symlinks, and packages are excluded.
-    /// `skippedSymlink` receives each symlink left out, so callers can report
-    /// the omission instead of producing a silently incomplete backup.
-    public static func makeArchive(vaultURL: URL, skippedSymlink: ((URL) -> Void)? = nil) throws -> Data {
+    /// One enumeration of the portable vault files, sorted by relative path.
+    /// Callers that need an archive *and* its digest reuse this single walk
+    /// instead of re-enumerating and re-hashing the vault.
+    private static func portableFiles(
+        vaultURL: URL,
+        skippedSymlink: ((URL) -> Void)? = nil
+    ) throws -> [PortableFile] {
         let lexicalRoot = vaultURL.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
         guard let enumerator = FileManager.default.enumerator(
@@ -83,7 +107,7 @@ public struct VaultCrypto {
             throw StoreError.unreadableVault(vaultURL)
         }
 
-        var files: [ArchiveEntry] = []
+        var files: [PortableFile] = []
         var totalBytes = 0
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -93,23 +117,41 @@ public struct VaultCrypto {
             }
             guard values.isRegularFile == true else { continue }
             guard portableVaultExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            let relative = url.standardizedFileURL.pathComponents
+                .dropFirst(lexicalRoot.pathComponents.count)
+                .joined(separator: "/")
             let size = values.fileSize ?? 0
+            guard size <= maximumFileBytes else {
+                throw CryptoError.fileTooLarge(path: relative, bytes: size, limit: maximumFileBytes)
+            }
             totalBytes += size
-            guard size <= maximumFileBytes, totalBytes <= maximumArchiveBytes else {
-                throw CryptoError.invalidArchive
+            guard totalBytes <= maximumArchiveBytes else {
+                throw CryptoError.archiveTooLarge(path: relative, bytes: totalBytes, limit: maximumArchiveBytes)
             }
             let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
             guard isWithinVault(resolved, root: resolvedRoot) else {
                 throw StoreError.pathOutsideVault(url)
             }
-            let relative = url.standardizedFileURL.pathComponents
-                .dropFirst(lexicalRoot.pathComponents.count)
-                .joined(separator: "/")
             let data = try Data(contentsOf: resolved, options: [.mappedIfSafe])
-            files.append(ArchiveEntry(path: relative, data: data, sha256: sha256(data)))
+            files.append(PortableFile(relativePath: relative, data: data, sha256: sha256(data)))
         }
-        files.sort { $0.path < $1.path }
-        return try JSONEncoder().encode(ArchiveEnvelope(version: 2, files: files))
+        files.sort { $0.relativePath < $1.relativePath }
+        return files
+    }
+
+    /// Collects portable, non-hidden vault documents and attachments. Retex
+    /// state, source code, VCS/editor state, symlinks, and packages are excluded.
+    /// `skippedSymlink` receives each symlink left out, so callers can report
+    /// the omission instead of producing a silently incomplete backup.
+    public static func makeArchive(vaultURL: URL, skippedSymlink: ((URL) -> Void)? = nil) throws -> Data {
+        try encodeArchive(portableFiles(vaultURL: vaultURL, skippedSymlink: skippedSymlink))
+    }
+
+    private static func encodeArchive(_ files: [PortableFile]) throws -> Data {
+        try JSONEncoder().encode(ArchiveEnvelope(
+            version: 2,
+            files: files.map { ArchiveEntry(path: $0.relativePath, data: $0.data, sha256: $0.sha256) }
+        ))
     }
 
     /// Relative paths of every portable file `makeArchive` would include.
@@ -132,36 +174,123 @@ public struct VaultCrypto {
     }
 
     /// Stable digest of the portable file set (paths plus content hashes).
+    /// The hash is fed incrementally so no intermediate `String` is built.
     public static func contentDigest(vaultURL: URL) throws -> String {
-        let root = vaultURL.standardizedFileURL
-        var lines = ""
-        for path in try portableFilePaths(vaultURL: vaultURL) {
-            let data = try Data(contentsOf: root.appendingPathComponent(path))
-            lines += "\(sha256(data))  \(path)\n"
-        }
-        return sha256(Data(lines.utf8))
+        digest(files: try portableFiles(vaultURL: vaultURL))
     }
+
+    private static func digest(files: [PortableFile]) -> String {
+        var hasher = SHA256()
+        for file in files {
+            hasher.update(data: Data("\(file.sha256)  \(file.relativePath)\n".utf8))
+        }
+        return hex(hasher.finalize())
+    }
+
+    /// Archive bytes, content digest, and file count from one vault walk.
+    struct VaultSnapshot {
+        let archive: Data
+        let digest: String
+        let fileCount: Int
+    }
+
+    static func snapshot(vaultURL: URL) throws -> VaultSnapshot {
+        let files = try portableFiles(vaultURL: vaultURL)
+        return VaultSnapshot(
+            archive: try encodeArchive(files),
+            digest: digest(files: files),
+            fileCount: files.count
+        )
+    }
+
+    // MARK: - Mirroring
 
     /// Makes `dir` match the archive: writes every archived file and removes
     /// portable files the archive does not contain (remote deletions).
-    /// Validates the whole archive before touching the vault.
+    ///
+    /// Nothing in the live vault is touched until the whole archive has been
+    /// restored and verified in a sibling staging directory on the same
+    /// filesystem. The swap then moves existing files aside, moves the
+    /// verified files into place, and only drops obsolete files once every
+    /// new file is live; any failure rolls the vault back unchanged.
     @discardableResult
     public static func mirrorArchive(_ data: Data, into dir: URL) throws -> (written: Int, removed: Int) {
-        let staging = FileManager.default.temporaryDirectory
-            .appendingPathComponent("retex-mirror-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: staging) }
-        let written = try restoreArchive(data, into: staging, requireEmptyDestination: true)
-        let keep = Set(try portableFilePaths(vaultURL: staging))
-        var removed = 0
-        if FileManager.default.fileExists(atPath: dir.path) {
-            for path in try portableFilePaths(vaultURL: dir) where !keep.contains(path) {
-                try FileManager.default.removeItem(at: dir.appendingPathComponent(path))
-                removed += 1
-            }
-        }
-        _ = try restoreArchive(data, into: dir, requireEmptyDestination: false)
-        return (written, removed)
+        let outcome = try mirrorArchiveReport(data, into: dir)
+        return (outcome.written, outcome.removed)
     }
+
+    struct MirrorOutcome {
+        let written: Int
+        let removed: Int
+        let digest: String
+        let fileCount: Int
+    }
+
+    static func mirrorArchiveReport(_ data: Data, into dir: URL) throws -> MirrorOutcome {
+        let fm = FileManager.default
+        // Validate the entire archive before the vault is touched at all.
+        let entries = try decodeArchive(data)
+        let lexicalRoot = dir.standardizedFileURL
+        let parent = lexicalRoot.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let token = UUID().uuidString
+        // Siblings of the vault: same filesystem, so every move is a rename,
+        // and hidden names, so neither directory is ever enumerated as vault
+        // content.
+        let staged = parent.appendingPathComponent(".retex-mirror-\(token).new", isDirectory: true)
+        let stash = parent.appendingPathComponent(".retex-mirror-\(token).old", isDirectory: true)
+        defer {
+            try? fm.removeItem(at: staged)
+            try? fm.removeItem(at: stash)
+        }
+        let written = try writeEntries(entries, into: staged, requireEmptyDestination: true)
+        let relativePaths = entries.map(\.relativePath)
+        let keep = Set(relativePaths)
+
+        try fm.createDirectory(at: lexicalRoot, withIntermediateDirectories: true)
+        let existing = try portableFilePaths(vaultURL: lexicalRoot)
+        let removed = existing.reduce(0) { $0 + (keep.contains($1) ? 0 : 1) }
+
+        var stashed: [(live: URL, saved: URL)] = []
+        var installed: [URL] = []
+        do {
+            for path in existing {
+                let live = lexicalRoot.appendingPathComponent(path)
+                let saved = stash.appendingPathComponent(path)
+                try fm.createDirectory(at: saved.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: live, to: saved)
+                stashed.append((live, saved))
+            }
+            for path in relativePaths {
+                let live = lexicalRoot.appendingPathComponent(path)
+                try fm.createDirectory(at: live.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: staged.appendingPathComponent(path), to: live)
+                installed.append(live)
+            }
+        } catch {
+            // Roll back: drop anything already installed, then restore every
+            // file the archive did not replace.
+            for url in installed { try? fm.removeItem(at: url) }
+            for item in stashed {
+                try? fm.createDirectory(at: item.live.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.moveItem(at: item.saved, to: item.live)
+            }
+            throw error
+        }
+        return MirrorOutcome(written: written, removed: removed, digest: digest(entries: entries), fileCount: written)
+    }
+
+    private static func digest(entries: [ValidatedEntry]) -> String {
+        var hasher = SHA256()
+        // Sorted by path so this matches `digest(files:)` for any archive
+        // order, which keeps the recorded sync revision stable.
+        for entry in entries.sorted(by: { $0.relativePath < $1.relativePath }) {
+            hasher.update(data: Data("\(entry.sha256)  \(entry.relativePath)\n".utf8))
+        }
+        return hex(hasher.finalize())
+    }
+
+    // MARK: - Restore
 
     /// Restores a versioned vault archive into a new or empty directory.
     /// Version 1 Markdown-only exports remain readable; version 2 also
@@ -174,6 +303,12 @@ public struct VaultCrypto {
     }
 
     static func restoreArchive(_ data: Data, into dir: URL, requireEmptyDestination: Bool) throws -> Int {
+        try writeEntries(decodeArchive(data), into: dir, requireEmptyDestination: requireEmptyDestination)
+    }
+
+    /// Decodes and fully validates an archive: paths, duplicates, per-file and
+    /// total size, and every per-file checksum.
+    private static func decodeArchive(_ data: Data) throws -> [ValidatedEntry] {
         let entries: [ArchiveEntry]
         if let envelope = try? JSONDecoder().decode(ArchiveEnvelope.self, from: data) {
             guard envelope.version == 2 else { throw CryptoError.invalidArchive }
@@ -188,47 +323,53 @@ public struct VaultCrypto {
                 return ArchiveEntry(path: $0.path, data: bytes, sha256: sha256(bytes))
             }
         }
-        if requireEmptyDestination {
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDirectory) {
-                guard isDirectory.boolValue,
-                      (try FileManager.default.contentsOfDirectory(atPath: dir.path)).isEmpty
-                else { throw CryptoError.destinationNotEmpty }
-            }
-        }
-        return try restoreEntries(entries, into: dir)
-    }
-
-    private static func restoreEntries(_ files: [ArchiveEntry], into dir: URL) throws -> Int {
-        let fm = FileManager.default
-        // Validate the whole archive before writing anything.
         var seen: Set<String> = []
         var totalBytes = 0
-        var relativePaths: [String] = []
-        for file in files {
+        var validated: [ValidatedEntry] = []
+        for file in entries {
             let trimmed = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
             let components = trimmed.split(separator: "/").filter { $0 != "." }
             let relative = components.joined(separator: "/")
-            totalBytes += file.data.count
             guard !relative.isEmpty,
                   !(trimmed as NSString).isAbsolutePath,
                   !components.contains(where: { $0.hasPrefix(".") }),
                   portableVaultExtensions.contains((relative as NSString).pathExtension.lowercased()),
-                  seen.insert(relative).inserted,
-                  file.data.count <= maximumFileBytes,
-                  totalBytes <= maximumArchiveBytes,
-                  sha256(file.data) == file.sha256
+                  seen.insert(relative).inserted
             else {
                 throw CryptoError.invalidArchive
             }
-            relativePaths.append(relative)
+            guard file.data.count <= maximumFileBytes else {
+                throw CryptoError.fileTooLarge(path: relative, bytes: file.data.count, limit: maximumFileBytes)
+            }
+            totalBytes += file.data.count
+            guard totalBytes <= maximumArchiveBytes else {
+                throw CryptoError.archiveTooLarge(path: relative, bytes: totalBytes, limit: maximumArchiveBytes)
+            }
+            guard sha256(file.data) == file.sha256 else { throw CryptoError.invalidArchive }
+            validated.append(ValidatedEntry(relativePath: relative, data: file.data, sha256: file.sha256))
         }
+        return validated
+    }
 
+    private static func writeEntries(
+        _ files: [ValidatedEntry],
+        into dir: URL,
+        requireEmptyDestination: Bool
+    ) throws -> Int {
+        let fm = FileManager.default
+        if requireEmptyDestination {
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: dir.path, isDirectory: &isDirectory) {
+                guard isDirectory.boolValue,
+                      (try fm.contentsOfDirectory(atPath: dir.path)).isEmpty
+                else { throw CryptoError.destinationNotEmpty }
+            }
+        }
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let lexicalRoot = dir.standardizedFileURL
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
-        for (file, relative) in zip(files, relativePaths) {
-            let target = lexicalRoot.appendingPathComponent(relative).standardizedFileURL
+        for file in files {
+            let target = lexicalRoot.appendingPathComponent(file.relativePath).standardizedFileURL
             guard isWithinVault(target, root: lexicalRoot) else {
                 throw StoreError.pathOutsideVault(target)
             }
@@ -257,8 +398,22 @@ public struct VaultCrypto {
         return files.count
     }
 
+    // MARK: - Hashing
+
+    private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
+    private static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
+        var buffer: [UInt8] = []
+        buffer.reserveCapacity(bytes.underestimatedCount * 2)
+        for byte in bytes {
+            buffer.append(hexDigits[Int(byte >> 4)])
+            buffer.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: buffer, as: UTF8.self)
+    }
+
     private static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        hex(SHA256.hash(data: data))
     }
 
     // MARK: - Symmetric envelope
@@ -316,18 +471,38 @@ public struct VaultCrypto {
         guard status == kCCSuccess else { throw CryptoError.keyDerivationFailed }
         return SymmetricKey(data: derived)
         #else
-        let passwordKey = SymmetricKey(data: Data(passphrase.utf8))
+        return SymmetricKey(data: deriveKeyFallback(passphrase: passphrase, salt: salt, iterations: iterations))
+        #endif
+    }
+
+    /// PBKDF2-HMAC-SHA256 (RFC 8018) for platforms without CommonCrypto.
+    ///
+    /// The chained MAC input lives in one reusable scratch buffer that each
+    /// round overwrites in place, so the 600,000 iterations never allocate an
+    /// intermediate `Data` value. The result is byte-for-byte identical to
+    /// `CCKeyDerivationPBKDF`.
+    static func deriveKeyFallback(passphrase: String, salt: [UInt8], iterations: Int) -> [UInt8] {
+        let key = SymmetricKey(data: Data(passphrase.utf8))
         var block = Data(salt)
         block.append(contentsOf: [0, 0, 0, 1])
-        var previous = Data(HMAC<SHA256>.authenticationCode(for: block, using: passwordKey))
-        var derived = previous
+        var message = Data(HMAC<SHA256>.authenticationCode(for: block, using: key))
+        var derived = [UInt8](message)
+        guard iterations > 1 else { return derived }
         for _ in 1..<iterations {
-            previous = Data(HMAC<SHA256>.authenticationCode(for: previous, using: passwordKey))
-            for index in derived.indices {
-                derived[index] ^= previous[index]
+            let mac = HMAC<SHA256>.authenticationCode(for: message, using: key)
+            var position = 0
+            for byte in mac {
+                message[position] = byte
+                position += 1
+            }
+            message.withUnsafeBytes { source in
+                derived.withUnsafeMutableBufferPointer { target in
+                    for index in 0..<target.count {
+                        target[index] ^= source[index]
+                    }
+                }
             }
         }
-        return SymmetricKey(data: derived)
-        #endif
+        return derived
     }
 }

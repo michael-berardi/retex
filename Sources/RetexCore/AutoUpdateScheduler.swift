@@ -30,16 +30,26 @@ public struct AutoUpdateScheduler {
         }
     }
 
+    /// Environment a scheduled run must inherit so it targets the same update
+    /// repository (and fleet registry, when one is configured) as the
+    /// invocation that installed it. Without these the six-hourly job exits
+    /// 64 and never checks for updates.
+    static let forwardedEnvironmentKeys = ["RETEX_UPDATE_REPO", "RETEX_FLEET_REGISTRY"]
+
     public init() {}
 
-    public func install(executable: URL) throws -> AutoUpdateSchedule {
-        try validate(executable)
-#if os(macOS)
-        let target = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/org.retex.cli.fleet-update.plist")
-        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/retex/logs")
-        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        let plist: [String: Any] = [
+    /// The subset of `environment` a scheduled run inherits, verbatim.
+    static func forwardedEnvironment(from environment: [String: String]) -> [String: String] {
+        var forwarded: [String: String] = [:]
+        for key in forwardedEnvironmentKeys {
+            if let value = environment[key], !value.isEmpty { forwarded[key] = value }
+        }
+        return forwarded
+    }
+
+    /// launchd property list for the macOS agent.
+    static func launchdPlist(executable: URL, logs: URL, environment: [String: String]) -> [String: Any] {
+        var plist: [String: Any] = [
             "Label": "org.retex.cli.fleet-update",
             "ProgramArguments": [executable.path, "update", "--auto", "--fleet", "--json"],
             "StartInterval": 21_600,
@@ -47,6 +57,48 @@ public struct AutoUpdateScheduler {
             "StandardOutPath": logs.appendingPathComponent("fleet-update.log").path,
             "StandardErrorPath": logs.appendingPathComponent("fleet-update-error.log").path,
         ]
+        if !environment.isEmpty {
+            plist["EnvironmentVariables"] = environment
+        }
+        return plist
+    }
+
+    /// systemd `Environment=` lines, quoted and escaped per systemd rules.
+    static func systemdEnvironmentLines(_ environment: [String: String]) -> [String] {
+        environment.keys.sorted().map { key in
+            let value = environment[key, default: ""]
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "Environment=\"\(key)=\(value)\""
+        }
+    }
+
+    /// systemd service unit for the Linux timer.
+    static func systemdServiceUnit(executable: URL, environment: [String: String]) -> String {
+        let escapedExecutable = executable.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        var lines = [
+            "[Unit]",
+            "Description=Verify and update the registered Retex vault fleet",
+            "",
+            "[Service]",
+            "Type=oneshot",
+        ]
+        lines.append(contentsOf: systemdEnvironmentLines(environment))
+        lines.append("ExecStart=\"\(escapedExecutable)\" update --auto --fleet --json")
+        return lines.joined(separator: "\n")
+    }
+
+    public func install(executable: URL) throws -> AutoUpdateSchedule {
+        try validate(executable)
+        let environment = Self.forwardedEnvironment(from: ProcessInfo.processInfo.environment)
+#if os(macOS)
+        let target = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/org.retex.cli.fleet-update.plist")
+        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/retex/logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let plist = Self.launchdPlist(executable: executable, logs: logs, environment: environment)
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: target, options: .atomic)
@@ -54,6 +106,9 @@ public struct AutoUpdateScheduler {
         try run(URL(fileURLWithPath: "/bin/launchctl"), ["bootstrap", "gui/\(getuid())", target.path])
         return AutoUpdateSchedule(platform: "macos", installed: true, configurationPath: target.path)
 #elseif os(Windows)
+        // The scheduled task carries no environment of its own; a Windows
+        // install forwards nothing.
+        _ = environment
         let taskName = "Retex Fleet Update"
         let action = "\"\(executable.path)\" update --auto --fleet --json"
         try run(URL(fileURLWithPath: "C:/Windows/System32/schtasks.exe"), [
@@ -66,17 +121,7 @@ public struct AutoUpdateScheduler {
         let service = directory.appendingPathComponent("retex-fleet-update.service")
         let timer = directory.appendingPathComponent("retex-fleet-update.timer")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let escapedExecutable = executable.path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let serviceBody = """
-        [Unit]
-        Description=Verify and update the registered Retex vault fleet
-
-        [Service]
-        Type=oneshot
-        ExecStart="\(escapedExecutable)" update --auto --fleet --json
-        """
+        let serviceBody = Self.systemdServiceUnit(executable: executable, environment: environment)
         let timerBody = """
         [Unit]
         Description=Run Retex fleet update every six hours
@@ -129,20 +174,29 @@ public struct AutoUpdateScheduler {
         else { throw SchedulerError.invalidExecutable }
     }
 
-    @discardableResult
-    private func run(_ executable: URL, _ arguments: [String]) throws -> Data {
+    /// Runs a scheduler command without ever blocking on an unread pipe: the
+    /// child's standard output is discarded and its standard error goes to a
+    /// private temporary file that is read only after the process exits.
+    private func run(_ executable: URL, _ arguments: [String]) throws {
+        let fm = FileManager.default
+        let errorURL = fm.temporaryDirectory
+            .appendingPathComponent("retex-scheduler-\(UUID().uuidString).err")
+        _ = fm.createFile(atPath: errorURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let stderr = try FileHandle(forWritingTo: errorURL)
+        defer {
+            try? stderr.close()
+            try? fm.removeItem(at: errorURL)
+        }
         let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
         process.executableURL = executable
         process.arguments = arguments
-        process.standardOutput = stdout
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw SchedulerError.commandFailed(String(decoding: stderr.fileHandleForReading.readDataToEndOfFile().prefix(4_096), as: UTF8.self))
+            let data = (try? Data(contentsOf: errorURL)) ?? Data()
+            throw SchedulerError.commandFailed(String(decoding: data.prefix(4_096), as: UTF8.self))
         }
-        return stdout.fileHandleForReading.readDataToEndOfFile()
     }
 }

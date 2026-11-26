@@ -308,7 +308,12 @@ public struct AgentMemory {
     /// Lenient parse of a memory note. Structural validation is a separate,
     /// strict step (`validate`) so `doctor` can report every defect instead
     /// of failing at the first one.
-    public static func parse(note: Note) -> MemoryRecord {
+    ///
+    /// `includeHash: false` skips the whole-record SHA-256 (`Note.contentHash`
+    /// hashes on every access). Scan-only callers (`context`, `review`,
+    /// `doctor`) never read it, so a 600-record vault does not pay 600 hashes
+    /// on every agent turn; mutation paths keep the default.
+    public static func parse(note: Note, includeHash: Bool = true) -> MemoryRecord {
         let metadata = note.metadata
         return MemoryRecord(
             url: note.url,
@@ -344,7 +349,7 @@ public struct AgentMemory {
             retireProposed: metadata["retire_proposed"],
             verifiedBy: metadata["verified_by"],
             confirmation: metadata["confirmation"],
-            contentHash: note.contentHash
+            contentHash: includeHash ? note.contentHash : ""
         )
     }
 
@@ -374,81 +379,150 @@ public struct AgentMemory {
     }
 
     /// Every memory record in the vault, sorted by key for determinism.
-    public func scanRecords(vault: Vault) throws -> [MemoryRecord] {
+    /// `includeHash` is passed through to `parse`; scan-only callers leave it
+    /// false so no record is ever hashed.
+    public func scanRecords(vault: Vault, includeHash: Bool = true) throws -> [MemoryRecord] {
         let memoryRoot = vault.url.standardizedFileURL
             .resolvingSymlinksInPath()
             .appendingPathComponent("Memory", isDirectory: true)
         guard FileManager.default.fileExists(atPath: memoryRoot.path) else { return [] }
-        guard let enumerator = FileManager.default.enumerator(
-            at: memoryRoot,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
+        guard let paths = try? MarkdownStore.enumerateMarkdownPaths(under: memoryRoot) else { return [] }
         let usage = Self.loadUsage(vault: vault)
+        let urls = paths.map { URL(fileURLWithPath: $0, isDirectory: false) }
+        if urls.count < 64 {
+            var records: [MemoryRecord] = []
+            records.reserveCapacity(urls.count)
+            for url in urls {
+                guard let note = try? store.load(url) else { continue }
+                let record = Self.parse(note: note, includeHash: includeHash)
+                records.append(Self.applyingUsage(usage[record.key], to: record))
+            }
+            return records.sorted { $0.key < $1.key }
+        }
+        var parsed = [MemoryRecord?](repeating: nil, count: urls.count)
+        parsed.withUnsafeMutableBufferPointer { buffer in
+            final class UncheckedBox<T>: @unchecked Sendable {
+                let value: T
+                init(_ value: T) { self.value = value }
+            }
+            let storeBox = UncheckedBox(self.store)
+            let bufferBox = UncheckedBox(buffer)
+            let count = urls.count
+            let chunkSize = 32
+            let chunkCount = (count + chunkSize - 1) / chunkSize
+            DispatchQueue.concurrentPerform(iterations: chunkCount) { chunk in
+                let start = chunk * chunkSize
+                let end = min(start + chunkSize, count)
+                for index in start..<end {
+                    guard let note = try? storeBox.value.load(urls[index]) else { continue }
+                    let record = Self.parse(note: note, includeHash: includeHash)
+                    bufferBox.value[index] = Self.applyingUsage(usage[record.key], to: record)
+                }
+            }
+        }
         var records: [MemoryRecord] = []
-        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            guard let note = try? store.load(url) else { continue }
-            let record = Self.parse(note: note)
-            records.append(Self.applyingUsage(usage[record.key], to: record))
+        records.reserveCapacity(urls.count)
+        for item in parsed {
+            if let item { records.append(item) }
         }
         return records.sorted { $0.key < $1.key }
     }
 
     /// Deterministic frontmatter + body for a record. Field order is fixed so
     /// identical records serialize to identical bytes.
+    ///
+    /// Frontmatter is line-oriented, so every single-line value runs through
+    /// `singleLine` first: a control character (a newline, a NUL, a vertical
+    /// tab) inside a value can therefore never forge a second field such as
+    /// `status: active`. Evidence entries are one locator each, so they are
+    /// flattened the same way before they land in the block scalar.
     public func serialize(_ record: MemoryRecord) -> String {
         var lines: [String] = [
             "---",
             "type: memory",
-            "key: \(Self.scalar(record.key))",
-            "kind: \(Self.scalar(record.kind))",
-            "scope: \(Self.scalar(record.scope))",
-            "status: \(Self.scalar(record.status))",
-            "title: \(Self.scalar(record.title))",
-            "confidence: \(Self.scalar(record.confidence))",
-            "certainty: \(Self.scalar(record.certainty))",
+            "key: \(Self.scalar(Self.singleLine(record.key)))",
+            "kind: \(Self.scalar(Self.singleLine(record.kind)))",
+            "scope: \(Self.scalar(Self.singleLine(record.scope)))",
+            "status: \(Self.scalar(Self.singleLine(record.status)))",
+            "title: \(Self.scalar(Self.singleLine(record.title)))",
+            "confidence: \(Self.scalar(Self.singleLine(record.confidence)))",
+            "certainty: \(Self.scalar(Self.singleLine(record.certainty)))",
             "support: \(record.support)",
-            "source_harness: \(Self.scalar(record.sourceHarness))",
+            "source_harness: \(Self.scalar(Self.singleLine(record.sourceHarness)))",
         ]
         lines.append("evidence: |")
-        lines.append(contentsOf: record.evidence.map { "  \($0)" })
+        lines.append(contentsOf: record.evidence.map { "  \(Self.singleLine($0))" })
         if let appliesWhen = record.appliesWhen, !appliesWhen.isEmpty {
             lines.append("applies_when: \(Self.scalar(appliesWhen))")
         }
         if let supersedes = record.supersedes {
-            lines.append("supersedes: [[\(supersedes)]]")
+            lines.append("supersedes: [[\(Self.singleLine(supersedes))]]")
         }
         if !record.supersededBy.isEmpty {
             lines.append(
                 "superseded_by: "
-                    + record.supersededBy.map { "[[\($0)]]" }.joined(separator: ", ")
+                    + record.supersededBy.map { "[[\(Self.singleLine($0))]]" }.joined(separator: ", ")
             )
         }
-        if let validFrom = record.validFrom, !validFrom.isEmpty { lines.append("valid_from: \(validFrom)") }
-        if let validUntil = record.validUntil, !validUntil.isEmpty { lines.append("valid_until: \(validUntil)") }
-        lines.append("as_of: \(record.asOf)")
-        lines.append("created: \(record.created)")
-        lines.append("updated: \(record.updated)")
+        if let validFrom = record.validFrom, !validFrom.isEmpty {
+            lines.append("valid_from: \(Self.singleLine(validFrom))")
+        }
+        if let validUntil = record.validUntil, !validUntil.isEmpty {
+            lines.append("valid_until: \(Self.singleLine(validUntil))")
+        }
+        lines.append("as_of: \(Self.singleLine(record.asOf))")
+        lines.append("created: \(Self.singleLine(record.created))")
+        lines.append("updated: \(Self.singleLine(record.updated))")
         lines.append("recalled: \(record.recalled)")
         lines.append("cited: \(record.cited)")
         // Only written once a real recall hit exists, so legacy records keep
         // their bytes when another field changes.
         if record.recallHits > 0 { lines.append("recall_hits: \(record.recallHits)") }
-        if let lastUsed = record.lastUsed, !lastUsed.isEmpty { lines.append("last_used: \(lastUsed)") }
+        if let lastUsed = record.lastUsed, !lastUsed.isEmpty {
+            lines.append("last_used: \(Self.singleLine(lastUsed))")
+        }
         lines.append("recurrences: \(record.recurrences)")
         if let retireProposed = record.retireProposed, !retireProposed.isEmpty {
-            lines.append("retire_proposed: \(Self.scalar(retireProposed))")
+            lines.append("retire_proposed: \(Self.scalar(Self.singleLine(retireProposed)))")
         }
         if let verifiedBy = record.verifiedBy, !verifiedBy.isEmpty {
-            lines.append("verified_by: \(Self.scalar(verifiedBy))")
+            lines.append("verified_by: \(Self.scalar(Self.singleLine(verifiedBy)))")
         }
         if let confirmation = record.confirmation, !confirmation.isEmpty {
-            lines.append("confirmation: \(Self.scalar(confirmation))")
+            lines.append("confirmation: \(Self.scalar(Self.singleLine(confirmation)))")
         }
         lines.append("---")
         lines.append("")
         lines.append(record.body)
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Characters that end a frontmatter line or scramble it for the
+    /// line-oriented parser: C0/C1 controls plus U+2028/U+2029.
+    private static let frontmatterControlCharacters: CharacterSet =
+        CharacterSet.controlCharacters.union(.newlines)
+
+    /// True when the text carries a character a single-line field cannot hold.
+    public static func containsControlCharacter(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        return text.unicodeScalars.contains { frontmatterControlCharacters.contains($0) }
+    }
+
+    /// Defense in depth for `serialize`: control characters become spaces, so
+    /// one value can never introduce a line break (and so a new field). Text
+    /// without them is returned untouched — byte identity is preserved.
+    static func singleLine(_ value: String) -> String {
+        guard containsControlCharacter(value) else { return value }
+        var result = ""
+        result.reserveCapacity(value.utf8.count)
+        for scalar in value.unicodeScalars {
+            if frontmatterControlCharacters.contains(scalar) {
+                result.append(" ")
+            } else {
+                result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
     }
 
     /// Same quoting contract as the store's scalar serializer: plain YAML
@@ -549,8 +623,11 @@ public struct AgentMemory {
         }
         var evidence: [String] = []
         if let rawEvidence = dictionary["evidence"] {
-            guard let list = rawEvidence as? [Any], !list.isEmpty else {
-                throw MemoryError.invalidRecordJSON("field evidence must be a non-empty array of strings")
+            // `[]` is accepted here on purpose: CLI `--evidence` flags are
+            // merged into this list afterwards and `validate` then rejects a
+            // record that still has no locator (`missing-field:evidence`).
+            guard let list = rawEvidence as? [Any] else {
+                throw MemoryError.invalidRecordJSON("field evidence must be an array of strings")
             }
             for item in list {
                 guard let locator = item as? String else {
@@ -636,11 +713,15 @@ public struct AgentMemory {
         guard !input.evidence.isEmpty else {
             throw validation("missing-field:evidence", "at least one evidence locator is required")
         }
-        for locator in input.evidence where !isValidLocator(locator) {
-            throw validation(
-                "bad-evidence",
-                "evidence locator \(locator) must match ^(pi|claude|git|agents-md|operator|usap|note):\\S+$"
-            )
+        for locator in input.evidence {
+            // A newline inside a locator is a frontmatter injection attempt:
+            // the block scalar would grow a line that reads as a new field.
+            guard !containsControlCharacter(locator), isValidLocator(locator) else {
+                throw validation(
+                    "bad-evidence",
+                    "evidence locator \(locator) must match ^(pi|claude|git|agents-md|operator|usap|note):\\S+$"
+                )
+            }
         }
 
         if let confidence = input.confidence, !confidence.isEmpty {
@@ -719,19 +800,19 @@ public struct AgentMemory {
 
     /// Word-shaped `sk-…` lookalikes ("sk-learn-tutorial") are identifiers,
     /// not key material.
-    private nonisolated(unsafe) static let skWordLike = try! NSRegularExpression(
+    private static let skWordLike = try! NSRegularExpression(
         pattern: #"^sk-[a-z0-9]{1,10}(?:-[a-z0-9]{1,10})*$"#,
         options: [.caseInsensitive]
     )
 
-    private nonisolated(unsafe) static let pathLike = try! NSRegularExpression(
+    private static let pathLike = try! NSRegularExpression(
         pattern: #"^(?:/[A-Za-z0-9._-]+)+/?$"#,
         options: []
     )
 
     /// (name, pattern, case-insensitive). Order is the detection priority.
     /// NSRegularExpression instances are immutable and thread-safe.
-    private nonisolated(unsafe) static let secretPatterns: [(String, NSRegularExpression)] = [
+    private static let secretPatterns: [(String, NSRegularExpression)] = [
         ("private-key", try! NSRegularExpression(pattern: #"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"#)),
         ("aws-secret-access-key", try! NSRegularExpression(
             pattern: #"AWS_SECRET_ACCESS_KEY["']?\s*[=:]\s*["']?[^\s"',;`]+"#, options: [.caseInsensitive])),
@@ -798,7 +879,25 @@ public struct AgentMemory {
         return nil
     }
 
+    /// Generic `<name>: <value>` assignments are prose far more often than
+    /// they are credentials ("Never log the token: it is user data"), so the
+    /// value must be long enough to be key material and key-shaped: a digit, a
+    /// symbol, or mixed case. Real credentials (`sup3rs3cretvalue123`,
+    /// `Bearer …`, `AWS_SECRET_ACCESS_KEY=…`) all clear both gates.
+    private static let minimumAssignmentSecretLength = 8
+
+    private static func assignmentValueIsSecretShaped(_ value: String) -> Bool {
+        let core = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard core.count >= minimumAssignmentSecretLength else { return false }
+        let hasDigit = core.contains(where: \.isNumber)
+        let hasSymbol = core.contains { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "_" }
+        let hasLower = core.contains(where: \.isLowercase)
+        let hasUpper = core.contains(where: \.isUppercase)
+        return hasDigit || hasSymbol || (hasLower && hasUpper)
+    }
+
     private static func assignIsSecret(name: String, value: String) -> Bool {
+        guard assignmentValueIsSecretShaped(value) else { return false }
         if value.hasPrefix("./") || value.hasPrefix("../") || value.hasPrefix("~/") { return false }
         // Absolute paths point at a secret, they are not one — unless the
         // value itself is key-shaped material.
@@ -895,8 +994,72 @@ public struct AgentMemory {
 
     /// Accepts an ISO datetime or an ISO day; nil when neither.
     public static func parseTimestamp(_ value: String) -> Date? {
+        // Ranking parses two timestamps per record on every agent turn, and
+        // the recorded forms are always `YYYY-MM-DDTHH:MM:SSZ` (what
+        // `isoDateTime` writes) or `YYYY-MM-DD` (what `isoDay` writes). Those
+        // two shapes are decoded in pure Swift; anything else falls back to
+        // the formatters, so what counts as a timestamp is unchanged.
+        if let date = fastTimestamp(value) { return date }
         if let date = dateTimeFormatter.date(from: value) { return date }
         return dayFormatter.date(from: value)
+    }
+
+    /// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ` in pure Swift; nil otherwise.
+    /// No calendar, formatter or allocation per call beyond the byte copy.
+    static func fastTimestamp(_ value: String) -> Date? {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 10 || bytes.count == 20 else { return nil }
+        func number(at index: Int) -> Int? {
+            let byte = bytes[index]
+            guard byte >= 0x30, byte <= 0x39 else { return nil }
+            return Int(byte - 0x30)
+        }
+        func number(_ start: Int, length: Int) -> Int? {
+            var total = 0
+            for offset in 0..<length {
+                guard let digit = number(at: start + offset) else { return nil }
+                total = total * 10 + digit
+            }
+            return total
+        }
+        guard bytes[4] == UInt8(ascii: "-"), bytes[7] == UInt8(ascii: "-") else { return nil }
+        guard let year = number(0, length: 4),
+              let month = number(5, length: 2),
+              let day = number(8, length: 2)
+        else { return nil }
+        guard month >= 1, month <= 12, day >= 1 else { return nil }
+        let monthLengths = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        guard day <= monthLengths[month - 1] else { return nil }
+        var secondsInDay = 0
+        if bytes.count == 20 {
+            guard bytes[10] == UInt8(ascii: "T"),
+                  bytes[13] == UInt8(ascii: ":"),
+                  bytes[16] == UInt8(ascii: ":"),
+                  bytes[19] == UInt8(ascii: "Z"),
+                  let hour = number(11, length: 2),
+                  let minute = number(14, length: 2),
+                  let second = number(17, length: 2),
+                  hour <= 23, minute <= 59, second <= 59
+            else { return nil }
+            secondsInDay = hour * 3600 + minute * 60 + second
+        }
+        let days = daysFromCivil(year: year, month: month, day: day)
+        return Date(timeIntervalSince1970: Double(days) * 86_400 + Double(secondsInDay))
+    }
+
+    private static func isLeapYear(_ year: Int) -> Bool {
+        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    }
+
+    /// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's
+    /// `days_from_civil`): no calendar or time-zone lookup per timestamp.
+    private static func daysFromCivil(year: Int, month: Int, day: Int) -> Int {
+        let adjustedYear = year - (month <= 2 ? 1 : 0)
+        let era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400
+        let yearOfEra = adjustedYear - era * 400
+        let dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        return era * 146_097 + dayOfEra - 719_468
     }
 
     /// Strict YYYY-MM-DD with a real calendar day.
@@ -1082,6 +1245,17 @@ public struct AgentMemory {
         }
         guard !evidence.isEmpty else {
             throw Self.validation("missing-field:evidence", "at least one --evidence locator is required")
+        }
+        // Validated before anything is loaded or mutated: a locator carrying a
+        // newline would land in the evidence block scalar and read back as a
+        // extra frontmatter field (`status: active` being the dangerous one).
+        for locator in evidence {
+            guard !Self.containsControlCharacter(locator), Self.isValidLocator(locator) else {
+                throw Self.validation(
+                    "bad-evidence",
+                    "evidence locator \(locator) must match ^(pi|claude|git|agents-md|operator|usap|note):\\S+$"
+                )
+            }
         }
         let url = try recordURL(vault: vault, key: key)
         var newStatus = ""
@@ -1272,6 +1446,14 @@ public struct AgentMemory {
     /// Promotes a proposal to active. When the record supersedes another, the
     /// superseded record is retired in the same operation: `valid_until` set
     /// to today and `superseded_by` extended with the new key.
+    ///
+    /// The record is re-read and re-validated under the journal lock, so a
+    /// malformed or secret-bearing proposal can never be flipped into agent
+    /// context, and the supersession target comes from the record as it is on
+    /// disk instead of a read taken before the lock. When retiring that target
+    /// fails, the promoted record is restored to its exact pre-promotion bytes
+    /// and its journal entry is dropped again: a supersession chain never ends
+    /// up with two active records.
     public func promote(
         vault: Vault,
         key: String,
@@ -1283,46 +1465,57 @@ public struct AgentMemory {
             throw MemoryError.notAuthorized("promote requires --operator-approved")
         }
         let url = try existingURL(vault: vault, key: key)
-
-        // Resolve the supersession target up front so a broken chain fails
-        // before any record changes.
-        let supersededKey = try loadRecord(vault: vault, key: key).supersedes
-        var supersededURL: URL?
-        if let supersededKey {
-            supersededURL = try existingURL(vault: vault, key: supersededKey)
-        }
-
         var newStatus = ""
+        var previousSource = ""
+        var supersededURL: URL?
         try history.performMutation(path: url.path, fileMode: 0o600) {
             let note = try store.load(url)
             if let ifHash, note.contentHash != ifHash {
                 throw MemoryError.hashMismatch(key: key, expected: ifHash, actual: note.contentHash)
             }
             var record = Self.parse(note: note)
-            guard record.status == Status.proposed.rawValue else {
+            guard record.status == Status.proposed.rawValue || record.status == Status.stale.rawValue else {
                 throw Self.validation(
                     "bad-status",
-                    "key \(key) has status \(record.status); only proposed records can be promoted"
+                    "key \(key) has status \(record.status); only proposed or stale records can be promoted"
                 )
+            }
+            // Promotion is the gate between "an agent suggested this" and
+            // "every agent now reads this": the proposal must pass the same
+            // strict validation it would have needed at creation.
+            try Self.validate(Self.input(from: record))
+            // Resolved under this lock, then retired below, so a broken chain
+            // still fails before any record changes.
+            if let target = record.supersedes {
+                supersededURL = try existingURL(vault: vault, key: target)
             }
             record.status = Status.active.rawValue
             record.validFrom = Self.isoDay(now)
             record.updated = Self.isoDateTime(now)
             newStatus = record.status
+            previousSource = note.source
             return (previousSource: note.source, nextSource: serialize(record))
         }
 
         if let supersededURL {
-            try history.performMutation(path: supersededURL.path, fileMode: 0o600) {
-                let note = try store.load(supersededURL)
-                var record = Self.parse(note: note)
-                record.status = Status.retired.rawValue
-                record.validUntil = Self.isoDay(now)
-                record.updated = Self.isoDateTime(now)
-                if !record.supersededBy.contains(key) {
-                    record.supersededBy.append(key)
+            do {
+                try history.performMutation(path: supersededURL.path, fileMode: 0o600) {
+                    let note = try store.load(supersededURL)
+                    var record = Self.parse(note: note)
+                    record.status = Status.retired.rawValue
+                    record.validUntil = Self.isoDay(now)
+                    record.updated = Self.isoDateTime(now)
+                    if !record.supersededBy.contains(key) {
+                        record.supersededBy.append(key)
+                    }
+                    return (previousSource: note.source, nextSource: serialize(record))
                 }
-                return (previousSource: note.source, nextSource: serialize(record))
+            } catch {
+                // Roll the promotion back: an active record whose supersession
+                // never happened would share the chain with the still-active
+                // record it was meant to replace.
+                rollback(previousSource, at: url)
+                throw error
             }
         }
 
@@ -1331,6 +1524,17 @@ public struct AgentMemory {
             ok: true, op: "promote", key: key, path: url.path,
             status: newStatus, contentHash: stored.contentHash, countersUpdated: nil
         )
+    }
+
+    /// Restores a record's exact pre-mutation bytes and drops the journal entry
+    /// that announced the mutation, so a failed multi-record operation leaves
+    /// both the vault and the undo chain as they were.
+    private func rollback(_ source: String, at url: URL) {
+        try? source.write(to: url, atomically: true, encoding: .utf8)
+        #if !os(Windows)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        #endif
+        _ = try? history.pop(path: url.path)
     }
 
     /// Rejects a proposal.
@@ -1344,11 +1548,11 @@ public struct AgentMemory {
         try transition(
             vault: vault, op: "reject", key: key, from: [Status.proposed.rawValue, Status.stale.rawValue],
             to: Status.rejected.rawValue, operatorApproved: operatorApproved,
-            requireActive: false, ifHash: ifHash, now: now
+            ifHash: ifHash, now: now
         )
     }
 
-    /// Retires an active record (operator action).
+    /// Retires an active (or stale) record (operator action).
     public func retire(
         vault: Vault,
         key: String,
@@ -1371,10 +1575,10 @@ public struct AgentMemory {
                 throw MemoryError.hashMismatch(key: key, expected: ifHash, actual: note.contentHash)
             }
             var record = Self.parse(note: note)
-            guard record.status == Status.active.rawValue else {
+            guard record.status == Status.active.rawValue || record.status == Status.stale.rawValue else {
                 throw Self.validation(
                     "bad-status",
-                    "key \(key) has status \(record.status); only active records can be retired"
+                    "key \(key) has status \(record.status); only active or stale records can be retired"
                 )
             }
             record.status = Status.retired.rawValue
@@ -1404,7 +1608,7 @@ public struct AgentMemory {
         try transition(
             vault: vault, op: "stale", key: key, from: [Status.active.rawValue, Status.proposed.rawValue],
             to: Status.stale.rawValue, operatorApproved: operatorApproved,
-            requireActive: false, ifHash: ifHash, now: now
+            ifHash: ifHash, now: now
         )
     }
 
@@ -1415,7 +1619,6 @@ public struct AgentMemory {
         from allowed: [String],
         to target: String,
         operatorApproved: Bool,
-        requireActive: Bool,
         ifHash: String?,
         now: Date
     ) throws -> MutationResult {
@@ -1457,12 +1660,19 @@ public struct AgentMemory {
     /// entry is created, and a busy lock skips the update rather than
     /// blocking the caller.
     public func cite(vault: Vault, key: String, now: Date = Date()) throws -> MutationResult {
+        // One read: `loadRecord` already carries the status, the hash and the
+        // effective `last_used`, so neither the counter update nor the result
+        // needs a second (or third) pass over the same file.
         let record = try loadRecord(vault: vault, key: key)
-        let updated = try? performTelemetryUpdate(vault: vault, keys: [record.key], mode: .cite, now: now)
-        let stored = try store.load(record.url)
+        let updated = try? performTelemetryUpdate(
+            vault: vault,
+            entries: [TelemetryEntry(key: record.key, lastUsed: record.lastUsed)],
+            mode: .cite,
+            now: now
+        )
         return MutationResult(
             ok: true, op: "cite", key: key, path: record.url.path,
-            status: stored.metadata["status", default: ""], contentHash: stored.contentHash,
+            status: record.status, contentHash: record.contentHash,
             countersUpdated: updated
         )
     }
@@ -1490,6 +1700,14 @@ public struct AgentMemory {
         #endif
     }
 
+    /// What a counter update needs from an already-parsed record: its key and
+    /// the `last_used` the caller already resolved. Passing it in is what lets
+    /// `recall` and `cite` skip re-reading every hit from disk.
+    struct TelemetryEntry {
+        let key: String
+        let lastUsed: String?
+    }
+
     /// Records real use in the vault's usage sidecar under the try-lock.
     /// Record Markdown is never written here: before 1.9.0 every read
     /// rewrote each emitted record file (a new inode per record per call),
@@ -1500,35 +1718,45 @@ public struct AgentMemory {
     /// day in its effective `last_used`) is left untouched, so a chatty
     /// session cannot saturate the usage term, and a call that changes
     /// nothing writes nothing. At most one sidecar write per call.
-    private func performTelemetryUpdate(vault: Vault, keys: [String], mode: TelemetryMode, now: Date) throws -> Bool {
-        guard !keys.isEmpty else { return true }
+    private func performTelemetryUpdate(
+        vault: Vault,
+        entries: [TelemetryEntry],
+        mode: TelemetryMode,
+        now: Date
+    ) throws -> Bool {
+        guard !entries.isEmpty else { return true }
         let timestamp = Self.isoDateTime(now)
         let today = Self.isoDay(now)
         return try withTelemetryLock(vault: vault) {
-            var usage = Self.loadUsage(vault: vault)
+            var state = Self.loadUsageState(vault: vault)
             var changed = false
             var seen = Set<String>()
-            for key in keys where seen.insert(key).inserted {
-                guard let url = try? recordURL(vault: vault, key: key),
-                      let note = try? store.load(url)
-                else { continue }
-                let record = Self.parse(note: note)
-                var entry = usage[record.key] ?? UsageEntry()
-                let lastUsed = Self.laterTimestamp(record.lastUsed, entry.lastUsed)
+            for entry in entries where seen.insert(entry.key).inserted {
+                // The sidecar lock only guards the sidecar: a key whose file no
+                // longer resolves is not counted.
+                guard (try? recordURL(vault: vault, key: entry.key)) != nil else { continue }
+                var usage = state.records[entry.key] ?? UsageEntry()
+                let lastUsed = Self.laterTimestamp(entry.lastUsed, usage.lastUsed)
                 if let lastUsed, let previous = Self.parseTimestamp(lastUsed), Self.isoDay(previous) == today {
                     continue
                 }
                 switch mode {
                 case .cite:
-                    entry.cited += 1
+                    usage.cited += 1
                 case .recallHit:
-                    entry.recallHits += 1
+                    usage.recallHits += 1
                 }
-                entry.lastUsed = timestamp
-                usage[record.key] = entry
+                usage.lastUsed = timestamp
+                state.records[entry.key] = usage
                 changed = true
             }
-            if changed { try Self.writeUsage(usage, vault: vault) }
+            if changed {
+                try Self.writeUsage(
+                    state.records,
+                    vault: vault,
+                    preservingCorruptFile: state.corrupt
+                )
+            }
             return true
         } ?? false
     }
@@ -1572,23 +1800,98 @@ public struct AgentMemory {
             .appendingPathComponent("memory-usage.json")
     }
 
-    /// Missing or unreadable sidecar reads as "no usage since upgrade".
+    /// Missing sidecar: normal, nothing recorded since upgrade.
     static func loadUsage(vault: Vault) -> [String: UsageEntry] {
-        guard let data = try? Data(contentsOf: usageURL(for: vault)),
-              let file = try? JSONDecoder().decode(UsageFile.self, from: data)
-        else { return [:] }
-        return file.records
+        loadUsageState(vault: vault).records
     }
 
-    private static func writeUsage(_ records: [String: UsageEntry], vault: Vault) throws {
+    /// Outcome of reading the usage sidecar. A missing file is the normal
+    /// "no usage yet" case; a file that exists but cannot be decoded is
+    /// corrupt and is preserved before fresh usage replaces it.
+    struct UsageState {
+        var records: [String: UsageEntry] = [:]
+        var corrupt = false
+    }
+
+    static func loadUsageState(vault: Vault) -> UsageState {
+        let url = usageURL(for: vault)
+        guard let data = try? Data(contentsOf: url) else {
+            // Absent and unreadable are different: only the second is damage.
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            return UsageState(records: [:], corrupt: exists)
+        }
+        return decodeUsage(data)
+    }
+
+    /// Permissive decode: a broken envelope is corruption, but one malformed
+    /// entry must not wipe every other key's accumulated counters.
+    static func decodeUsage(_ data: Data) -> UsageState {
+        guard let raw = try? JSONSerialization.jsonObject(with: data),
+              let object = raw as? [String: Any],
+              let rawRecords = object["records"]
+        else { return UsageState(records: [:], corrupt: true) }
+        guard let records = rawRecords as? [String: Any] else {
+            return UsageState(records: [:], corrupt: true)
+        }
+        let decoder = JSONDecoder()
+        var decoded: [String: UsageEntry] = [:]
+        decoded.reserveCapacity(records.count)
+        for (key, value) in records {
+            guard let entryData = try? JSONSerialization.data(withJSONObject: value),
+                  let entry = try? decoder.decode(UsageEntry.self, from: entryData)
+            else { continue }
+            decoded[key] = entry
+        }
+        return UsageState(records: decoded, corrupt: false)
+    }
+
+    private static func writeUsage(
+        _ records: [String: UsageEntry],
+        vault: Vault,
+        preservingCorruptFile: Bool = false
+    ) throws {
+        let url = usageURL(for: vault)
+        // Never clobber counters that could still be read back by hand.
+        if preservingCorruptFile { preserveCorruptUsage(at: url) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(UsageFile(version: 1, records: records))
-        let url = usageURL(for: vault)
         try data.write(to: url, options: .atomic)
         #if !os(Windows)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         #endif
+    }
+
+    /// Keeps a copy of an unreadable sidecar beside it, so accumulated usage is
+    /// never silently destroyed by the next write.
+    private static func preserveCorruptUsage(at url: URL, now: Date = Date()) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let stamp = corruptUsageStamp(now)
+        var destination = url.path + ".corrupt-" + stamp
+        var counter = 2
+        while FileManager.default.fileExists(atPath: destination), counter < 100 {
+            destination = url.path + ".corrupt-" + stamp + "-\(counter)"
+            counter += 1
+        }
+        try? FileManager.default.copyItem(at: url, to: URL(fileURLWithPath: destination))
+        #if !os(Windows)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination)
+        #endif
+    }
+
+    /// `20260131T120000Z`: sortable, filesystem-safe, second resolution.
+    private static func corruptUsageStamp(_ date: Date) -> String {
+        String(isoDateTime(date).filter { $0.isNumber || $0 == "T" || $0 == "Z" })
+    }
+
+    /// Backups left behind by `preserveCorruptUsage`, sorted oldest first.
+    static func corruptUsageBackups(forUsageFileAt url: URL) -> [String] {
+        let directory = url.deletingLastPathComponent()
+        let prefix = url.lastPathComponent + ".corrupt-"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
+            return []
+        }
+        return names.filter { $0.hasPrefix(prefix) }.sorted()
     }
 
     static func applyingUsage(_ entry: UsageEntry?, to record: MemoryRecord) -> MemoryRecord {
@@ -1684,7 +1987,8 @@ public struct AgentMemory {
         guard scope == "global" else {
             throw Self.validation("bad-scope", "scope must be global")
         }
-        let all = try scanRecords(vault: vault)
+        // Scan-only: the pack never reads `contentHash`, so no record is hashed.
+        let all = try scanRecords(vault: vault, includeHash: false)
         let eligible = all.filter { record in
             guard record.status == Status.active.rawValue else { return false }
             if record.scope == "global" { return true }
@@ -1735,9 +2039,19 @@ public struct AgentMemory {
         records.map { record -> (record: MemoryRecord, score: Double) in
             let kindWeight = Kind(rawValue: record.kind)?.weight ?? 0
             let supportComponent = Double(min(record.support, 4)) / 4.0
+            // Both timestamps are parsed once per record (`updated` is shared
+            // by the usage and recency terms) instead of four times.
+            let updated = parseTimestamp(record.updated)
+            let usageReference: Date?
+            if let lastUsed = record.lastUsed {
+                // An unparseable `last_used` means "no age", exactly as before.
+                usageReference = parseTimestamp(lastUsed)
+            } else {
+                usageReference = updated
+            }
             let usage = min(1, Double(record.recallHits + record.cited) / 3.0)
-                * pow(0.5, daysSince(record.lastUsed ?? record.updated, before: now) / 60.0)
-            let recency = pow(0.5, daysSince(record.updated, before: now) / 90.0)
+                * pow(0.5, daysSince(usageReference, before: now) / 60.0)
+            let recency = pow(0.5, daysSince(updated, before: now) / 90.0)
             let score = 0.35 * kindWeight + 0.25 * supportComponent + 0.2 * usage + 0.2 * recency
             return (record, score)
         }
@@ -1747,8 +2061,8 @@ public struct AgentMemory {
         }
     }
 
-    private static func daysSince(_ timestamp: String, before now: Date) -> Double {
-        guard let date = parseTimestamp(timestamp) else { return 0 }
+    private static func daysSince(_ date: Date?, before now: Date) -> Double {
+        guard let date else { return 0 }
         return max(0, now.timeIntervalSince(date) / 86_400)
     }
 
@@ -1778,18 +2092,79 @@ public struct AgentMemory {
         dayNumber: Int = 0
     ) -> (text: String, emitted: [PackItem], excluded: Int, fullCount: Int, indexCount: Int) {
         let total = ranked.count
-        let pinnedKeys = Set(
-            ranked
+        // Everything below is measured in bytes, but nothing is rendered except
+        // the final text: each record's full line and index line is formatted
+        // at most once (and only for the records a phase actually asks about),
+        // and adding a line is a delta on four counters. The previous shape
+        // re-rendered the whole pack for every candidate *and* once more per
+        // candidate inside the index-phase measurement — quadratic work on a
+        // 600-record vault, on every agent turn.
+        var fullByteCache = [Int?](repeating: nil, count: total)
+        var indexByteCache = [Int?](repeating: nil, count: total)
+        func lineBytes(_ position: Int, index: Bool) -> Int {
+            if index {
+                if let cached = indexByteCache[position] { return cached }
+                let bytes = indexLine(ranked[position].record, width: indexTitleWidth).utf8.count
+                indexByteCache[position] = bytes
+                return bytes
+            }
+            if let cached = fullByteCache[position] { return cached }
+            let bytes = fullLine(ranked[position].record).utf8.count
+            fullByteCache[position] = bytes
+            return bytes
+        }
+
+        // The exact framing `renderPack` produces, as byte counts.
+        let headerOpenBytes = "## \(title) (".utf8.count
+        let headerCloseBytes = " of \(total) active)".utf8.count
+        let indexLabelBytes = "\n\nIndex (recall a line's words to load it):\n".utf8.count
+        let footerTailBytes = " more active memories; run: retex memory recall \"<topic>\")".utf8.count
+        func digits(_ value: Int) -> Int {
+            if value < 10 { return 1 }
+            if value < 100 { return 2 }
+            if value < 1_000 { return 3 }
+            if value < 10_000 { return 4 }
+            if value < 100_000 { return 5 }
+            return String(value).utf8.count
+        }
+        struct Counts {
+            var fullLines = 0
+            var fullBytes = 0
+            var indexLines = 0
+            var indexBytes = 0
+        }
+        func renderedBytes(_ counts: Counts) -> Int {
+            let emitted = counts.fullLines + counts.indexLines
+            var bytes = headerOpenBytes + digits(emitted) + headerCloseBytes
+            if counts.fullLines > 0 {
+                bytes += 2 + counts.fullBytes + counts.fullLines - 1
+            }
+            if counts.indexLines > 0 {
+                bytes += indexLabelBytes + counts.indexBytes + counts.indexLines - 1
+            }
+            let excluded = total - emitted
+            if excluded > 0 {
+                bytes += 2 + 1 + digits(excluded) + footerTailBytes
+            }
+            return bytes + 1
+        }
+
+        // Pinned records are positions, not keys, so duplicate keys cannot
+        // pin (or unpin) an extra record.
+        let pinnedPositions = Set(
+            ranked.indices
                 .sorted { left, right in
-                    if left.record.support != right.record.support { return left.record.support > right.record.support }
-                    return left.record.key < right.record.key
+                    if ranked[left].record.support != ranked[right].record.support {
+                        return ranked[left].record.support > ranked[right].record.support
+                    }
+                    return ranked[left].record.key < ranked[right].record.key
                 }
                 .prefix(pinnedRecordCount)
-                .map(\.record.key)
         )
 
         var items: [PackItem] = []
-        var text = ""
+        var counts = Counts()
+        var emittedFull = [Bool](repeating: false, count: total)
         func render(_ candidate: [PackItem]) -> String {
             renderPack(
                 header: "## \(title) (\(candidate.count) of \(total) active)",
@@ -1798,35 +2173,47 @@ public struct AgentMemory {
                 indexTitleWidth: indexTitleWidth
             )
         }
-        func add(_ item: PackItem) -> Bool {
-            let candidate = items + [item]
-            let attempt = render(candidate)
-            guard attempt.utf8.count <= budget else { return false }
-            items = candidate
-            text = attempt
+        func addFull(_ position: Int) -> Bool {
+            var candidate = counts
+            candidate.fullLines += 1
+            candidate.fullBytes += lineBytes(position, index: false)
+            guard renderedBytes(candidate) <= budget else { return false }
+            counts = candidate
+            emittedFull[position] = true
+            items.append(
+                PackItem(record: ranked[position].record, score: ranked[position].score, mode: "full")
+            )
+            return true
+        }
+        func addIndex(_ position: Int) -> Bool {
+            var candidate = counts
+            candidate.indexLines += 1
+            candidate.indexBytes += lineBytes(position, index: true)
+            guard renderedBytes(candidate) <= budget else { return false }
+            counts = candidate
+            items.append(
+                PackItem(record: ranked[position].record, score: ranked[position].score, mode: "index")
+            )
             return true
         }
 
         // 1. Pinned full records, in rank order. They are emitted even when
         //    they alone use more than the full share: support outranks the split.
-        for entry in ranked where pinnedKeys.contains(entry.record.key) {
-            guard add(PackItem(record: entry.record, score: entry.score, mode: "full")) else { break }
+        for position in ranked.indices where pinnedPositions.contains(position) {
+            guard addFull(position) else { break }
         }
-        let emittedFullKeys = Set(items.map(\.record.key))
 
         // 2. Best-ranked others in full, up to the full share of the budget,
         //    but never fewer than `minimumFullRecords` while the budget holds
         //    them: the top rules are what the pack is for. A share of 0 keeps
         //    its meaning — pinned full rules only, everything else indexed.
-        var fullBytes = items.reduce(0) { $0 + fullLine($1.record).utf8.count }
-        var fullShown = items.count
         let fullLimit = budget * fullShare / 100
         let fullFloor = fullShare == 0 ? 0 : max(minimumFullRecords, pinnedRecordCount)
-        for entry in ranked where !emittedFullKeys.contains(entry.record.key) {
-            let cost = fullLine(entry.record).utf8.count
-            if fullBytes + cost > fullLimit, fullShown >= fullFloor { break }
-            guard add(PackItem(record: entry.record, score: entry.score, mode: "full")) else { break }
-            fullBytes += cost
+        var fullShown = counts.fullLines
+        for position in ranked.indices where !emittedFull[position] {
+            let cost = lineBytes(position, index: false)
+            if counts.fullBytes + cost > fullLimit, fullShown >= fullFloor { break }
+            guard addFull(position) else { break }
             fullShown += 1
         }
 
@@ -1836,48 +2223,60 @@ public struct AgentMemory {
         //    index window, so windows tile the pool instead of leaving gaps:
         //    every non-pinned record gets a turn within one cycle. The window
         //    size depends on which lines fit, so it is measured, then applied.
-        let fullKeys = Set(items.map(\.record.key))
-        let pool = ranked.filter { !fullKeys.contains($0.record.key) }
-        let fullPart = items
-        // The walk is over a key-ordered copy of the ranked list. Rank order
-        // drifts as recency decays, so a window measured in rank positions
-        // would skip records between days; key order gives every record one
-        // fixed position, so consecutive days take consecutive windows and
-        // nothing is skipped. Records already shown in full today are passed
-        // over (they are visible anyway), and each day's window is then shown
-        // best-ranked first.
-        let stable = ranked.sorted { $0.record.key < $1.record.key }
-        let fullKeySet = Set(fullPart.map(\.record.key))
-        func indexPhase(window: Int, step: Int) -> [PackItem] {
-            let dayWindow = rotated(stable, dayNumber: dayNumber, step: step)
+        //
+        //    The walk is over a key-ordered copy of the ranked list. Rank order
+        //    drifts as recency decays, so a window measured in rank positions
+        //    would skip records between days; key order gives every record one
+        //    fixed position, so consecutive days take consecutive windows and
+        //    nothing is skipped. Records already shown in full today are passed
+        //    over (they are visible anyway), and each day's window is then shown
+        //    best-ranked first.
+        let keyOrder = ranked.indices.sorted { ranked[$0].record.key < ranked[$1].record.key }
+        func rotatedWindow(step: Int) -> [Int] {
+            guard keyOrder.count > 1 else { return keyOrder }
+            // Exactly `rotated(_:dayNumber:step:)`: same advance, same offset.
+            let count = keyOrder.count
+            let advance = max(1, min(step, count - 1))
+            let offset = ((dayNumber * advance) % count + count) % count
+            return Array(keyOrder[offset...]) + Array(keyOrder[..<offset])
+        }
+        func indexPhase(window: Int, step: Int) -> [Int] {
+            let dayWindow = rotatedWindow(step: step)
                 .prefix(max(0, window))
-                .filter { !fullKeySet.contains($0.record.key) }
+                .filter { !emittedFull[$0] }
                 .sorted { left, right in
-                    if left.score != right.score { return left.score > right.score }
-                    return left.record.key < right.record.key
+                    if ranked[left].score != ranked[right].score {
+                        return ranked[left].score > ranked[right].score
+                    }
+                    return ranked[left].record.key < ranked[right].record.key
                 }
-            var kept = fullPart
-            for entry in dayWindow {
-                let candidate = kept + [PackItem(record: entry.record, score: entry.score, mode: "index")]
-                let attempt = render(candidate)
-                guard attempt.utf8.count <= budget else { continue }
-                kept = candidate
+            // Measured on a copy: the capacity probe must not emit anything.
+            var trial = counts
+            var accepted: [Int] = []
+            for position in dayWindow {
+                var candidate = trial
+                candidate.indexLines += 1
+                candidate.indexBytes += lineBytes(position, index: true)
+                guard renderedBytes(candidate) <= budget else { continue }
+                trial = candidate
+                accepted.append(position)
             }
-            return Array(kept.dropFirst(fullPart.count))
+            return accepted
         }
         // How many index lines a day holds at all, then use that as the walk
         // step: the window a day shows is exactly one step of the cycle.
-        let capacity = indexPhase(window: ranked.count, step: 1).count
-        var step = max(1, min(pool.count, capacity))
-        var index = indexPhase(window: step, step: step)
-        if !index.isEmpty {
-            items += index
-            text = render(items)
+        let capacity = indexPhase(window: total, step: 1).count
+        let step = max(1, min(total - counts.fullLines, capacity))
+        for position in indexPhase(window: step, step: step) {
+            _ = addIndex(position)
         }
 
+        let text: String
         if items.isEmpty {
             let attempt = render([])
-            if attempt.utf8.count <= budget { text = attempt }
+            text = attempt.utf8.count <= budget ? attempt : ""
+        } else {
+            text = render(items)
         }
         let fullCount = items.filter { $0.mode == "full" }.count
         return (text, items, total - items.count, fullCount, items.count - fullCount)
@@ -2021,9 +2420,14 @@ public struct AgentMemory {
         public let records: [RecallItem]
     }
 
-    /// Ranked lexical recall restricted to active Memory/ records (plus
+    /// Ranked lexical recall restricted to active `Memory/` records (plus
     /// labelled proposals with `includeProposed`). Records are packed whole
     /// under the byte budget using the same accounting as `retex recall`.
+    ///
+    /// The scan is restricted to `Memory/` and to the statuses the caller wants,
+    /// so retired and rejected records can never crowd active ones out of the
+    /// top `limit`; one extra hit is requested so `truncated` is exact.
+    ///
     /// A recall hit is real use (the agent asked for it), so it is the one
     /// path besides `cite` that feeds the usage term: `recall_hits += 1` and
     /// `last_used = now` in the vault's usage sidecar (never the record file),
@@ -2040,20 +2444,41 @@ public struct AgentMemory {
         guard (1...1_000_000).contains(budget) else {
             throw Self.validation("bad-budget", "budget must be an integer from 1 through 1000000")
         }
+        // Resolved once per call: every hit is then checked with a string
+        // prefix instead of a realpath syscall per hit.
         let memoryRoot = vault.url.standardizedFileURL
             .appendingPathComponent("Memory", isDirectory: true)
-        let memoryPrefix = Self.canonicalPath(memoryRoot.path) + "/"
-        let hits = try store.recall(vault, query: query, type: "memory", limit: limit)
-        let filtered = hits.filter { hit in
-            guard Self.canonicalPath(hit.note.url.path).hasPrefix(memoryPrefix) else { return false }
-            return hit.note.metadata["status", default: ""] == Status.active.rawValue
-                || (includeProposed && hit.note.metadata["status", default: ""] == Status.proposed.rawValue)
+        let memoryPrefixes = [
+            Self.canonicalPath(memoryRoot.path) + "/",
+            memoryRoot.path + "/",
+        ]
+        let candidateLimit = limit + 1
+        let activeHits = try store.recall(
+            vault, query: query, type: "memory", status: Status.active.rawValue,
+            limit: candidateLimit, subdirectory: "Memory"
+        )
+        let hits: [RecallHit]
+        if includeProposed {
+            let proposedHits = try store.recall(
+                vault, query: query, type: "memory", status: Status.proposed.rawValue,
+                limit: candidateLimit, subdirectory: "Memory"
+            )
+            hits = Self.mergedRecallHits([activeHits, proposedHits], limit: candidateLimit)
+        } else {
+            hits = activeHits
         }
+        let overLimit = hits.count > limit
+        let candidates = overLimit ? Array(hits.prefix(limit)) : hits
         let encoder = JSONEncoder()
         var items: [RecallItem] = []
+        var telemetry: [TelemetryEntry] = []
         var usedBytes = 2
-        for hit in filtered {
+        for hit in candidates {
+            guard memoryPrefixes.contains(where: { hit.note.url.path.hasPrefix($0) }) else { continue }
             let status = hit.note.metadata["status", default: ""]
+            guard status == Status.active.rawValue
+                || (includeProposed && status == Status.proposed.rawValue)
+            else { continue }
             let label = status == Status.proposed.rawValue
                 ? "[proposed] \(hit.note.title)"
                 : hit.note.title
@@ -2071,11 +2496,13 @@ public struct AgentMemory {
             let candidateBytes = usedBytes + encoded.count + (items.isEmpty ? 0 : 1)
             guard candidateBytes <= budget else { break }
             items.append(item)
+            // Already parsed here, so telemetry never re-reads the record.
+            telemetry.append(TelemetryEntry(key: item.key, lastUsed: hit.note.metadata["last_used"]))
             usedBytes = candidateBytes
         }
         let countersUpdated = (try? performTelemetryUpdate(
             vault: vault,
-            keys: items.map(\.key),
+            entries: telemetry,
             mode: .recallHit,
             now: now
         )) ?? false
@@ -2083,10 +2510,25 @@ public struct AgentMemory {
             query: query,
             budgetBytes: budget,
             usedBytes: usedBytes,
-            truncated: items.count < filtered.count,
+            truncated: overLimit || items.count < candidates.count,
             countersUpdated: countersUpdated,
             records: items
         )
+    }
+
+    /// Merges per-status recall lists into one ranking: score first, then path,
+    /// so the result is deterministic whatever order the store returned.
+    static func mergedRecallHits(_ lists: [[RecallHit]], limit: Int) -> [RecallHit] {
+        var merged: [RecallHit] = []
+        for list in lists { merged.append(contentsOf: list) }
+        merged.sort { left, right in
+            if left.score != right.score { return left.score > right.score }
+            if left.note.url.path != right.note.url.path {
+                return left.note.url.path < right.note.url.path
+            }
+            return left.note.title < right.note.title
+        }
+        return merged.count > limit ? Array(merged.prefix(limit)) : merged
     }
 
     // MARK: - Review (design §6)
@@ -2106,7 +2548,7 @@ public struct AgentMemory {
     /// `promoteReady` = support ≥ 2 from ≥ 2 distinct sessions, kind
     /// `correction`, and operator-flavoured evidence.
     public func review(vault: Vault) throws -> [ReviewItem] {
-        try scanRecords(vault: vault)
+        try scanRecords(vault: vault, includeHash: false)
             .filter { $0.status == Status.proposed.rawValue }
             .sorted { left, right in
                 if left.support != right.support { return left.support > right.support }
@@ -2186,9 +2628,16 @@ public struct AgentMemory {
                 issues.append("\(note.url.path): type \(note.recordType) is not a memory record")
                 continue
             }
-            let record = Self.parse(note: note)
+            let record = Self.parse(note: note, includeHash: false)
             records.append(record)
             keys[record.key, default: 0] += 1
+
+            if Status(rawValue: record.status) == nil {
+                issues.append(
+                    "\(record.url.path): status \(record.status.isEmpty ? "(missing)" : record.status) "
+                        + "is not one of \(Status.allCases.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
 
             if let expectedScope = Self.scopeKey(from: record.key) {
                 let expectedURL = try recordURL(vault: vault, key: record.key)
@@ -2270,6 +2719,27 @@ public struct AgentMemory {
             warnings.append(
                 "\(missingConfirmation) of \(records.count) records have no confirmation "
                     + "(confirmed|unconfirmed; optional)"
+            )
+        }
+
+        // The usage sidecar is state, not a record: a corrupt one is an issue
+        // (counters are being lost) but an existing backup is only a warning —
+        // the counters are safe on disk and the next write starts clean.
+        let usageFileURL = Self.usageURL(for: vault)
+        let usageState = Self.loadUsageState(vault: vault)
+        if usageState.corrupt {
+            issues.append(
+                "\(usageFileURL.path): memory-usage.json is unreadable; the next usage write keeps a "
+                    + ".corrupt- backup beside it and starts fresh"
+            )
+        }
+        let usageBackups = Self.corruptUsageBackups(forUsageFileAt: usageFileURL)
+        if !usageBackups.isEmpty {
+            warnings.append(
+                "\(usageBackups.count) corrupt memory-usage.json backup"
+                    + "\(usageBackups.count == 1 ? "" : "s") kept in "
+                    + "\(usageFileURL.deletingLastPathComponent().path) "
+                    + "(\(usageBackups.suffix(3).joined(separator: ", ")))"
             )
         }
 
@@ -2369,7 +2839,7 @@ public struct AgentMemory {
         #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
         var buffer = [CChar](repeating: 0, count: 4097)
         guard realpath(path, &buffer) != nil else { return path }
-        return String(cString: buffer)
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         #else
         return path
         #endif

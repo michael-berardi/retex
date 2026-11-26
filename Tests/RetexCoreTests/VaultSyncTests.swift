@@ -13,6 +13,19 @@ import FoundationNetworking
 final class FakeSyncProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var blob: Data?
     nonisolated(unsafe) static var lastBody: Data?
+    /// When set, the server answers with this opaque revision token instead of
+    /// the blob hash, which proves the client stores the server's ETag rather
+    /// than recomputing its own digest.
+    nonisolated(unsafe) static var etagOverride: String?
+    /// When true the server answers without any ETag header at all.
+    nonisolated(unsafe) static var suppressETag = false
+
+    /// The revision token this fake server advertises, honouring the overrides.
+    private static func tag(_ fallback: @autoclosure () -> String?) -> String? {
+        if suppressETag { return nil }
+        if let override = etagOverride { return override }
+        return fallback()
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -32,8 +45,8 @@ final class FakeSyncProtocol: URLProtocol, @unchecked Sendable {
         }
         let digest = Self.blob.map { VaultSyncTests.hash($0) }
         switch request.httpMethod {
-        case "GET": Self.blob.map { reply(200, $0, etag: digest) } ?? reply(404)
-        case "HEAD": Self.blob == nil ? reply(404) : reply(200, etag: digest)
+        case "GET": Self.blob.map { reply(200, $0, etag: Self.tag(digest)) } ?? reply(404)
+        case "HEAD": Self.blob == nil ? reply(404) : reply(200, etag: Self.tag(digest))
         case "PUT":
             var body = request.httpBody ?? Data()
             if body.isEmpty, let stream = request.httpBodyStream {
@@ -52,7 +65,7 @@ final class FakeSyncProtocol: URLProtocol, @unchecked Sendable {
             if let match, match != digest { return reply(412, Data(#"{"error":"revision is stale"}"#.utf8)) }
             let created = Self.blob == nil
             Self.blob = body
-            reply(created ? 201 : 200, Data("{}".utf8), etag: VaultSyncTests.hash(body))
+            reply(created ? 201 : 200, Data("{}".utf8), etag: Self.tag(VaultSyncTests.hash(body)))
         default: reply(405)
         }
     }
@@ -64,8 +77,16 @@ final class VaultSyncTests: XCTestCase {
     private let passphrase = "correct horse battery staple"
     private var dirs: [URL] = []
 
-    override func setUp() { FakeSyncProtocol.blob = nil }
-    override func tearDown() { dirs.forEach { try? FileManager.default.removeItem(at: $0) } }
+    override func setUp() {
+        FakeSyncProtocol.blob = nil
+        FakeSyncProtocol.etagOverride = nil
+        FakeSyncProtocol.suppressETag = false
+    }
+    override func tearDown() {
+        FakeSyncProtocol.etagOverride = nil
+        FakeSyncProtocol.suppressETag = false
+        dirs.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
 
     private func vault(_ files: [String: String] = [:]) throws -> Vault {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("retex-sync-\(UUID().uuidString)", isDirectory: true)
@@ -134,6 +155,37 @@ final class VaultSyncTests: XCTestCase {
             XCTAssertEqual($0 as? VaultCrypto.CryptoError, .wrongPassphrase)
         }
         XCTAssertEqual(try String(contentsOf: a.url.appendingPathComponent("one.md")), "keep")
+    }
+
+    func testServerETagIsStoredAsTheRevisionEverywhere() throws {
+        FakeSyncProtocol.etagOverride = "server-revision-1"
+        let a = try vault(["one.md": "# shared"])
+        let pushed = try sync(a).push(server: server, vaultID: "crm", passphrase: passphrase)
+        XCTAssertEqual(pushed.revision, "server-revision-1")
+        XCTAssertEqual(try VaultSync.loadState(a)?.revision, "server-revision-1")
+
+        let status = try sync(a).status(server: nil, vaultID: nil)
+        XCTAssertEqual(status.remoteRevision, "server-revision-1")
+        XCTAssertEqual(status.revision, "server-revision-1")
+        XCTAssertFalse(status.remoteChanged)
+        XCTAssertFalse(status.localChanges)
+
+        let b = try vault()
+        let pulled = try sync(b).pull(server: server, vaultID: "crm", passphrase: passphrase)
+        XCTAssertEqual(pulled.revision, "server-revision-1")
+        XCTAssertEqual(try VaultSync.loadState(b)?.revision, "server-revision-1")
+        XCTAssertEqual(try String(contentsOf: b.url.appendingPathComponent("one.md")), "# shared")
+    }
+
+    func testMissingETagFallsBackToTheBlobDigest() throws {
+        FakeSyncProtocol.suppressETag = true
+        let a = try vault(["one.md": "# shared"])
+        let pushed = try sync(a).push(server: server, vaultID: "crm", passphrase: passphrase)
+        XCTAssertEqual(pushed.revision, VaultSyncTests.hash(try XCTUnwrap(FakeSyncProtocol.blob)))
+
+        let b = try vault()
+        let pulled = try sync(b).pull(server: server, vaultID: "crm", passphrase: passphrase)
+        XCTAssertEqual(pulled.revision, pushed.revision)
     }
 
     func testRejectsBadTokenInsecureServerAndBadID() throws {

@@ -70,10 +70,22 @@ public struct VaultSync {
     private let token: String
     private let session: URLSession
 
+    /// Hard ceiling for one HTTP exchange: the session's resource timeout is
+    /// 180 s and the blocking wait stops slightly later, so a slow-drip server
+    /// can never hang a CLI invocation indefinitely.
+    static let responseDeadline: TimeInterval = 185
+
     public init(vault: Vault, token: String, session: URLSession = .shared) {
         self.vault = vault
         self.token = token
-        self.session = session
+        self.session = Self.boundedSession(from: session.configuration)
+    }
+
+    /// A dedicated session carrying a bounded resource timeout.
+    static func boundedSession(from configuration: URLSessionConfiguration) -> URLSession {
+        let config = configuration.copy() as? URLSessionConfiguration ?? configuration
+        config.timeoutIntervalForResource = 180
+        return URLSession(configuration: config)
     }
 
     // MARK: - State
@@ -136,8 +148,10 @@ public struct VaultSync {
     public func push(server: String?, vaultID: String?, passphrase: String,
                      force: Bool = false) throws -> Result {
         var (state, url) = try resolve(server: server, vaultID: vaultID)
-        let archive = try VaultCrypto.makeArchive(vaultURL: vault.url)
-        let blob = try VaultCrypto().encrypt(archive, passphrase: passphrase)
+        // One vault walk yields the archive, the digest recorded for this
+        // revision, and the file count.
+        let snapshot = try VaultCrypto.snapshot(vaultURL: vault.url)
+        let blob = try VaultCrypto().encrypt(snapshot.archive, passphrase: passphrase)
         var request = authorized(URLRequest(url: url))
         request.httpMethod = "PUT"
         request.httpBody = blob
@@ -148,12 +162,12 @@ public struct VaultSync {
         let (body, response) = try send(request)
         switch response.statusCode {
         case 200, 201:
-            let revision = Self.sha256(blob)
+            let revision = Self.revision(from: response, fallback: Self.sha256(blob))
             state.revision = revision
-            state.localDigest = try localDigest()
+            state.localDigest = snapshot.digest
             state.syncedAt = ISO8601DateFormatter().string(from: Date())
             try Self.saveState(state, vault)
-            return Result(action: "push", revision: revision, files: try VaultCrypto.portableFilePaths(vaultURL: vault.url).count,
+            return Result(action: "push", revision: revision, files: snapshot.fileCount,
                           removed: 0, bytes: blob.count)
         case 409, 412:
             throw SyncError.conflict(Self.message(body))
@@ -165,11 +179,13 @@ public struct VaultSync {
     public func pull(server: String?, vaultID: String?, passphrase: String,
                      force: Bool = false) throws -> Result {
         var (state, url) = try resolve(server: server, vaultID: vaultID)
-        if !force, let recorded = state.localDigest, recorded != (try localDigest()) {
-            throw SyncError.localChanges
-        }
-        if !force, state.localDigest == nil, !(try VaultCrypto.portableFilePaths(vaultURL: vault.url)).isEmpty {
-            throw SyncError.localChanges
+        if !force {
+            if let recorded = state.localDigest {
+                // Exactly one walk of the vault for the local-change check.
+                if recorded != (try localDigest()) { throw SyncError.localChanges }
+            } else if !(try VaultCrypto.portableFilePaths(vaultURL: vault.url)).isEmpty {
+                throw SyncError.localChanges
+            }
         }
         var request = authorized(URLRequest(url: url))
         request.httpMethod = "GET"
@@ -178,9 +194,11 @@ public struct VaultSync {
         guard response.statusCode == 200 else { throw SyncError.server(response.statusCode, Self.message(body)) }
         // Decrypt and validate everything before the vault is touched.
         let archive = try VaultCrypto().decrypt(body, passphrase: passphrase)
-        let outcome = try VaultCrypto.mirrorArchive(archive, into: vault.url)
-        state.revision = Self.sha256(body)
-        state.localDigest = try localDigest()
+        let outcome = try VaultCrypto.mirrorArchiveReport(archive, into: vault.url)
+        state.revision = Self.revision(from: response, fallback: Self.sha256(body))
+        // The mirrored vault holds exactly the archived files, so the digest
+        // comes from the archive instead of re-walking the vault.
+        state.localDigest = outcome.digest
         state.syncedAt = ISO8601DateFormatter().string(from: Date())
         try Self.saveState(state, vault)
         return Result(action: "pull", revision: state.revision ?? "", files: outcome.written,
@@ -194,12 +212,16 @@ public struct VaultSync {
         let (_, response) = try send(request)
         var remote: String?
         if response.statusCode == 200 {
-            remote = response.value(forHTTPHeaderField: "ETag")?.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            remote = Self.etag(from: response)
         } else if response.statusCode != 404 {
             throw SyncError.server(response.statusCode, "status check failed")
         }
-        let changed = state.localDigest != nil ? state.localDigest != (try localDigest())
-            : !(try VaultCrypto.portableFilePaths(vaultURL: vault.url)).isEmpty
+        let changed: Bool
+        if let recorded = state.localDigest {
+            changed = recorded != (try localDigest())
+        } else {
+            changed = !(try VaultCrypto.portableFilePaths(vaultURL: vault.url)).isEmpty
+        }
         return Status(server: state.server, vaultID: state.vaultID, revision: state.revision,
                       syncedAt: state.syncedAt, localChanges: changed,
                       remoteRevision: remote, remoteChanged: remote != state.revision)
@@ -218,7 +240,7 @@ public struct VaultSync {
         final class Box: @unchecked Sendable { var result: Swift.Result<(Data, HTTPURLResponse), Error>? }
         let box = Box()
         let semaphore = DispatchSemaphore(value: 0)
-        session.dataTask(with: request) { data, response, error in
+        let task = session.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error {
                 box.result = .failure(SyncError.network(error.localizedDescription))
@@ -227,9 +249,27 @@ public struct VaultSync {
             } else {
                 box.result = .failure(SyncError.network("no HTTP response"))
             }
-        }.resume()
-        semaphore.wait()
-        return try box.result!.get()
+        }
+        task.resume()
+        if semaphore.wait(timeout: .now() + Self.responseDeadline) == .timedOut {
+            task.cancel()
+            throw SyncError.network("no answer within \(Int(Self.responseDeadline)) seconds")
+        }
+        guard let result = box.result else { throw SyncError.network("no HTTP response") }
+        return try result.get()
+    }
+
+    /// The server's revision token: its `ETag` when present, otherwise the
+    /// SHA-256 of the blob we just exchanged.
+    private static func etag(from response: HTTPURLResponse) -> String? {
+        guard let raw = response.value(forHTTPHeaderField: "ETag") else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func revision(from response: HTTPURLResponse, fallback: @autoclosure () -> String) -> String {
+        etag(from: response) ?? fallback()
     }
 
     private static func message(_ body: Data) -> String {

@@ -102,11 +102,29 @@ class VaultRefresher:
         )
 
     def remote_revision(self) -> str:
-        result = self._run(["git", "ls-remote", self.repo, f"refs/heads/{self.ref}", f"refs/tags/{self.ref}"])
+        """Resolve `<ref>` to a commit id on the remote.
+
+        Branches, annotated tags and lightweight tags all resolve: for an
+        annotated tag the peeled `refs/tags/<ref>^{}` line is the commit the tag
+        points at, and it is preferred over the tag object id when present. A
+        lightweight tag only advertises `refs/tags/<ref>`, which is exactly the
+        commit to serve.
+        """
+        result = self._run([
+            "git", "ls-remote", self.repo,
+            f"refs/heads/{self.ref}",
+            f"refs/tags/{self.ref}",
+            f"refs/tags/{self.ref}^{{}}",
+        ])
+        advertised: dict[str, str] = {}
         for line in result.stdout.splitlines():
             sha, _, name = line.partition("\t")
-            if name.strip() in (f"refs/heads/{self.ref}", f"refs/tags/{self.ref}^{{}}"):
-                return sha.strip()
+            sha, name = sha.strip(), name.strip()
+            if sha and name:
+                advertised.setdefault(name, sha)
+        for name in (f"refs/heads/{self.ref}", f"refs/tags/{self.ref}^{{}}", f"refs/tags/{self.ref}"):
+            if advertised.get(name):
+                return advertised[name]
         raise RuntimeError(f"ref {self.ref!r} not found on remote")
 
     def fetch_revision(self, revision: str) -> tuple[Path, Path] | None:
@@ -242,7 +260,12 @@ class VaultRefresher:
         try:
             revision = self.remote_revision()
             if revision == self.applied_revision:
-                self.consecutive_failures = 0
+                if self.consecutive_failures:
+                    # The transient failure cleared without a new commit: publish a
+                    # clean status so /health returns from "degraded" to "ok".
+                    self.consecutive_failures = 0
+                    self._write_status()
+                    log(f"refresh recovered, still serving {str(self.applied_revision)[:12]}")
                 return False
             changed = self.apply_revision(revision)
             self.consecutive_failures = 0

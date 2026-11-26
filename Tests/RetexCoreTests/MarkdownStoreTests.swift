@@ -422,6 +422,212 @@ final class MarkdownStoreTests: XCTestCase {
     }
 }
 
+/// Regressions for front-matter rewriting, hashing, and file metadata.
+final class MarkdownStoreRegressionTests: XCTestCase {
+    private var vaultDir: URL!
+
+    override func setUpWithError() throws {
+        vaultDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-regress-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: vaultDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: vaultDir)
+    }
+
+    private func writeNote(_ name: String, _ source: String) throws -> URL {
+        let url = vaultDir.appendingPathComponent(name)
+        try source.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func frontmatterLines(_ source: String) -> [Substring] {
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let closing = lines.dropFirst().firstIndex(of: "---") else { return [] }
+        return Array(lines[1..<closing])
+    }
+
+    // MARK: - updateMetadata
+
+    func testUpdateMetadataReplacesBlockScalarWithBlankLine() throws {
+        let url = try writeNote("block.md", """
+        ---
+        title: Block scalar
+        description: |
+          first line
+
+          second line
+        status: Inbox
+        ---
+
+        Body stays.
+        """)
+
+        let store = MarkdownStore()
+        let note = try store.load(url)
+        XCTAssertEqual(note.metadata["description"], "first line\n\nsecond line")
+
+        try store.updateMetadata("description", value: "replaced", for: note)
+        let updated = try store.load(url)
+        XCTAssertEqual(updated.metadata["description"], "replaced")
+        XCTAssertEqual(updated.status, "Inbox", "The next key must survive the rewrite")
+        XCTAssertFalse(updated.source.contains("second line"), "Stale block-scalar lines must be removed")
+        XCTAssertFalse(updated.source.contains("first line"))
+        XCTAssertTrue(updated.body.contains("Body stays."))
+    }
+
+    func testUpdateMetadataDropsDuplicateAndQuotedKeys() throws {
+        let url = try writeNote("duplicate.md", """
+        ---
+        "title": First
+        status: Inbox
+        title: Second
+        ---
+
+        body
+        """)
+
+        let store = MarkdownStore()
+        let note = try store.load(url)
+        XCTAssertEqual(note.title, "Second", "YAML last-wins decides the parsed title")
+
+        try store.updateMetadata("title", value: "Updated", for: note)
+        let updated = try store.load(url)
+        XCTAssertEqual(updated.title, "Updated")
+        XCTAssertEqual(updated.status, "Inbox")
+        let titleLines = frontmatterLines(updated.source).filter {
+            $0.hasPrefix("title:") || $0.hasPrefix("\"title\":") || $0.hasPrefix("'title':")
+        }
+        XCTAssertEqual(titleLines.count, 1, "A duplicate key must not survive the rewrite")
+        XCTAssertEqual(titleLines.first.map(String.init), "title: Updated")
+    }
+
+    func testUpdateMetadataMatchesNonCanonicalKeySpelling() throws {
+        let url = try writeNote("spacing.md", """
+        ---
+        title: Spacing
+        status : Inbox
+        ---
+
+        body
+        """)
+
+        let store = MarkdownStore()
+        let note = try store.load(url)
+        XCTAssertEqual(note.status, "Inbox")
+
+        try store.updateMetadata("status", value: "Won", for: note)
+        let updated = try store.load(url)
+        XCTAssertEqual(updated.status, "Won")
+        XCTAssertEqual(updated.source.components(separatedBy: "status : Inbox").count, 1)
+    }
+
+    // MARK: - parseFrontmatter
+
+    func testParsesCommentsAndKeepsHashesInsideValues() throws {
+        let url = try writeNote("comments.md", """
+        ---
+        # leading comment
+        title: Acme # trailing comment
+        link: https://example.com/page#anchor
+        tag: alpha#1
+        quoted: "value # not a comment"
+        tags: [alpha, beta]  # flow list
+        ---
+
+        body
+        """)
+
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.title, "Acme")
+        XCTAssertEqual(note.metadata["link"], "https://example.com/page#anchor")
+        XCTAssertEqual(note.metadata["tag"], "alpha#1")
+        XCTAssertEqual(note.metadata["quoted"], "value # not a comment")
+        XCTAssertEqual(note.tags, ["alpha", "beta"])
+        XCTAssertNil(note.metadata["# leading comment"])
+    }
+
+    func testBlankTitleFallsBackToHeadingThenFilename() throws {
+        let headingURL = try writeNote("heading.md", """
+        ---
+        title:
+        ---
+
+        # Heading Title
+
+        body
+        """)
+        XCTAssertEqual(try MarkdownStore().load(headingURL).title, "Heading Title")
+
+        let filenameURL = try writeNote("bare-note.md", """
+        ---
+        title: "   "
+        ---
+
+        body
+        """)
+        XCTAssertEqual(try MarkdownStore().load(filenameURL).title, "bare-note")
+    }
+
+    // MARK: - Ranking and hashing
+
+    func testNonFiniteRankIsZeroAndEncodable() throws {
+        for value in ["nan", "inf", "-inf", "Infinity"] {
+            let url = try writeNote("rank.md", "---\ntitle: Rank\nrank: \(value)\n---\nbody")
+            XCTAssertEqual(try MarkdownStore().load(url).rank, 0, "rank \(value) must clamp to 0")
+        }
+        struct Payload: Encodable { let rank: Double }
+        XCTAssertTrue(try AgentOutput.compactJSON(Payload(rank: .nan)).contains("\"nan\""))
+        XCTAssertTrue(try AgentOutput.compactJSON(Payload(rank: .infinity)).contains("infinity"))
+    }
+
+    func testContentHashMatchesKnownSHA256() {
+        let note = Note(
+            url: URL(fileURLWithPath: "/tmp/hash.md"),
+            source: "abc",
+            title: "hash",
+            body: "",
+            metadata: [:],
+            tags: [],
+            modifiedAt: Date(timeIntervalSince1970: 0)
+        )
+        XCTAssertEqual(note.contentHash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        XCTAssertEqual(note.contentHash.count, 64)
+        XCTAssertEqual(note.id, URL(fileURLWithPath: "/tmp/hash.md").standardizedFileURL.path)
+    }
+
+    // MARK: - File metadata
+
+    func testModificationDateFollowsSymlinks() throws {
+        let target = try writeNote("target.md", "---\ntitle: Target\n---\nbody")
+        let when = Date(timeIntervalSince1970: 1_200_000)
+        try FileManager.default.setAttributes([.modificationDate: when], ofItemAtPath: target.path)
+        let link = vaultDir.appendingPathComponent("link.md")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let resolved = try MarkdownStore.modificationDate(of: link)
+        XCTAssertEqual(resolved.timeIntervalSince1970, when.timeIntervalSince1970, accuracy: 1)
+        let note = try MarkdownStore().load(link)
+        XCTAssertEqual(note.modifiedAt.timeIntervalSince1970, when.timeIntervalSince1970, accuracy: 1)
+    }
+
+    func testCreateNoteNeverOverwritesAnExistingFile() throws {
+        let store = MarkdownStore()
+        let vault = Vault(url: vaultDir)
+        let input = vaultDir.appendingPathComponent("Notes/manual.md")
+        try FileManager.default.createDirectory(
+            at: input.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "---\ntitle: Manual\n---\nkeep me".write(to: input, atomically: true, encoding: .utf8)
+
+        let created = try store.createNote(in: vault, folder: "Notes", title: "Manual", metadata: [:], body: "new")
+        XCTAssertNotEqual(created.url, input)
+        XCTAssertTrue(try String(contentsOf: input, encoding: .utf8).contains("keep me"))
+    }
+}
+
 final class ChecklistProgressTests: XCTestCase {
     func testCountsCompletedChecklistItems() {
         let note = Note(

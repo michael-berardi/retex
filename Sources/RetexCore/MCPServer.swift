@@ -17,6 +17,9 @@ public struct MCPServer {
     private let readOnly: Bool
     private let input: FileHandle
     private let output: FileHandle
+    /// Set when stdout stops accepting bytes (a closed pipe). The session
+    /// then ends cleanly instead of writing into a broken descriptor.
+    private let outputState = OutputState()
     /// Dedicated agent-memory vault. nil resolves `$AGENT_MEMORY_VAULT` or
     /// `~/.local/share/agent-memory` at call time.
     private let memoryVault: Vault?
@@ -52,17 +55,48 @@ public struct MCPServer {
         self.memoryVault = memoryVault
         self.input = input
         self.output = output
+        // A host that exits closes the pipe; without this the next write
+        // raises SIGPIPE and kills the server mid-session.
+        Self.suppressBrokenPipeSignal()
     }
 
-    struct ToolDefinition: Encodable {
+    /// Writing to a closed stdout must raise neither `SIGPIPE` (which kills
+    /// the process) nor the Objective-C exception `FileHandle.write` throws on
+    /// `EPIPE`/`ENOSPC` (which cannot be caught in Swift). Idempotent.
+    private static func suppressBrokenPipeSignal() {
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+        _ = signal(SIGPIPE, SIG_IGN)
+        #endif
+    }
+
+    /// Broken-pipe flag shared by the request loop and the writer.
+    private final class OutputState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var broken = false
+
+        var isBroken: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return broken
+        }
+
+        func markBroken() {
+            lock.lock()
+            broken = true
+            lock.unlock()
+        }
+    }
+
+    struct ToolDefinition: Encodable, Sendable {
         let name: String
         let description: String
         let inputSchema: JSONValue
     }
 
-    enum JSONValue: Encodable {
+    enum JSONValue: Encodable, Sendable {
         case object([String: JSONValue])
         case string(String)
+        case number(Double)
         case array([JSONValue])
         case bool(Bool)
 
@@ -71,6 +105,13 @@ public struct MCPServer {
             switch self {
             case .object(let dict): try container.encode(dict)
             case .string(let value): try container.encode(value)
+            case .number(let value):
+                // Integral values stay integers in the wire JSON.
+                if value == value.rounded(), abs(value) < 9e15 {
+                    try container.encode(Int64(value))
+                } else {
+                    try container.encode(value)
+                }
             case .array(let values): try container.encode(values)
             case .bool(let value): try container.encode(value)
             }
@@ -89,6 +130,8 @@ public struct MCPServer {
         // the next newline are dropped instead of parsed as a new request.
         var discardingOversizedLine = false
         while true {
+            // A closed stdout ends the session; nothing can be answered.
+            guard !outputState.isBroken else { return }
             let chunk = input.availableData
             guard !chunk.isEmpty else { break }
             buffer.append(chunk)
@@ -105,17 +148,17 @@ public struct MCPServer {
                     writeOversizedRequestError()
                     continue
                 }
-                let raw = String(data: Data(lineData), encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespaces) ?? ""
+                // Invalid UTF-8 is unparseable input, not an empty line: the
+                // client gets the same -32700 a malformed JSON line produces.
+                guard let decoded = String(data: Data(lineData), encoding: .utf8) else {
+                    writeParseError()
+                    continue
+                }
+                let raw = decoded.trimmingCharacters(in: .whitespaces)
                 guard !raw.isEmpty else { continue }
                 guard let request = try? JSONDecoder().decode(Request.self, from: Data(raw.utf8))
                 else {
-                    // JSON-RPC 2.0: unparseable requests get a -32700 with null id.
-                    writeLine([
-                        "jsonrpc": "2.0",
-                        "id": NSNull(),
-                        "error": ["code": -32700, "message": "Parse error"],
-                    ])
+                    writeParseError()
                     continue
                 }
                 handle(request)
@@ -128,6 +171,15 @@ public struct MCPServer {
                 buffer.removeAll(keepingCapacity: false)
             }
         }
+    }
+
+    /// JSON-RPC 2.0: unparseable requests get a -32700 with a null id.
+    private func writeParseError() {
+        writeLine([
+            "jsonrpc": "2.0",
+            "id": NSNull(),
+            "error": ["code": -32700, "message": "Parse error"],
+        ])
     }
 
     private func writeOversizedRequestError() {
@@ -160,17 +212,40 @@ public struct MCPServer {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             protocolVersion = try container.decodeIfPresent(String.self, forKey: .protocolVersion)
             name = try container.decodeIfPresent(String.self, forKey: .name)
-            if let raw = try? container.decodeIfPresent([String: FlexibleValue].self, forKey: .arguments) {
-                arguments = raw
-            } else if let strings = try? container.decodeIfPresent([String: String].self, forKey: .arguments) {
-                arguments = strings.mapValues { .string($0) }
+            if let decoded = (try? container.decodeIfPresent(Arguments.self, forKey: .arguments)) ?? nil {
+                arguments = decoded.values
             } else {
                 arguments = nil
             }
         }
     }
 
-    private enum FlexibleValue: Decodable {
+    /// An `arguments` object decoded key by key, keeping every string, number,
+    /// and boolean. A single `null`, array, or nested object is skipped instead
+    /// of failing the request and discarding the arguments beside it.
+    private struct Arguments: Decodable {
+        let values: [String: FlexibleValue]
+
+        private struct Key: CodingKey {
+            let stringValue: String
+            var intValue: Int? { nil }
+            init(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { nil }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Key.self)
+            var values: [String: FlexibleValue] = [:]
+            values.reserveCapacity(container.allKeys.count)
+            for key in container.allKeys {
+                guard let value = try? container.decode(FlexibleValue.self, forKey: key) else { continue }
+                values[key.stringValue] = value
+            }
+            self.values = values
+        }
+    }
+
+    enum FlexibleValue: Decodable {
         case string(String)
         case number(Double)
         case bool(Bool)
@@ -248,12 +323,11 @@ public struct MCPServer {
         case "ping":
             writeResponse(id: id, result: .object([:]))
         case "tools/list":
-            writeResponse(id: id, result: .object(["tools": .array(toolDefinitions.map { tool in
-                guard let data = try? JSONEncoder().encode(tool),
-                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { return .object([:]) }
-                return Self.anyJSON(object)
-            })]))
+            // Served from the pre-encoded payloads: no request rebuilds the
+            // tool definitions or re-encodes their schemas.
+            writeResponse(id: id, result: .object([
+                "tools": .array(readOnly ? Self.readOnlyToolList : Self.toolList),
+            ]))
         case "tools/call":
             if let requested = request.params?.name, !knownTools.contains(requested) {
                 writeError(id: id, code: -32602, message: "Unknown tool: \(requested)")
@@ -298,10 +372,19 @@ public struct MCPServer {
             args[key]?.stringValue.isEmpty == false ? args[key]?.stringValue : nil
         }
 
-        // Writes made through this server re-walk the vault on the next
-        // request instead of waiting for their file events.
+        // Writes made through this server drop their cached entries before
+        // the next request instead of waiting for their file events. A single
+        // note rewrite invalidates just that path; creates and memory
+        // proposals can change membership, so they re-walk.
         defer {
-            if Self.mutatingTools.contains(name) { store.cache?.invalidate() }
+            if Self.mutatingTools.contains(name), let cache = store.cache {
+                let paths = mutatedPaths(name: name, args: args)
+                if paths.isEmpty {
+                    cache.invalidate()
+                } else {
+                    cache.invalidate(vault, paths: paths)
+                }
+            }
         }
         do {
             return try dispatchTool(name, args: args, arg: arg)
@@ -310,6 +393,21 @@ public struct MCPServer {
         } catch {
             // Storage-level failures are tool execution errors, not protocol errors.
             throw ToolError(message: "\(name) failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// The notes a mutating tool call rewrites, so the snapshot cache reloads
+    /// just those instead of walking the whole vault. Empty means "unknown, so
+    /// invalidate everything".
+    private func mutatedPaths(name: String, args: [String: FlexibleValue]) -> [URL] {
+        switch name {
+        case "set_property", "move_card", "archive_note":
+            guard let path = args["path"]?.stringValue, !path.isEmpty,
+                  let url = try? confinedURL(path)
+            else { return [] }
+            return [url]
+        default:
+            return []
         }
     }
 
@@ -352,11 +450,33 @@ public struct MCPServer {
         return (try? confinedURL(note.url.path)) != nil
     }
 
-    private func dispatchTool(
+    /// Confinement filter for notes the store returns. With a snapshot cache
+    /// the per-note fact is already known, so a lexically confined note costs
+    /// one dictionary lookup instead of an `lstat`; only symlinks and notes the
+    /// snapshot does not hold fall back to `isConfined`.
+    private func confinementPredicate() -> (Note) -> Bool {
+        guard let cache = store.cache else { return isConfined }
+        let vault = self.vault
+        return { note in
+            if cache.cachedConfinement(forPath: note.url.path, in: vault) == true {
+                return true
+            }
+            return self.isConfined(note)
+        }
+    }
+
+    // Internal so tests can exercise the read-only guard directly, not only
+    // through the `tools/call` surface that already hides write tools.
+    func dispatchTool(
         _ name: String,
         args: [String: FlexibleValue],
         arg: (String) -> String?
     ) throws -> JSONValue {
+        // Defense in depth: the tool surface already hides write tools in
+        // read-only mode, but no dispatch path may mutate the vault then.
+        guard !readOnly || Self.readOnlyToolNames.contains(name) else {
+            throw ToolError(message: "\(name) requires --allow-write")
+        }
         switch name {
         case "list_notes":
             var notes = try notesInVault()
@@ -373,11 +493,12 @@ public struct MCPServer {
         case "search_notes":
             guard let query = arg("query") else { throw ToolError(message: "search_notes requires query") }
             let requestedLimit = try positiveLimit(arg("limit"))
+            let confinement = confinementPredicate()
             var notes = try store.search(
                 vault,
                 query: query,
                 ranked: (arg("ranked") ?? "false").lowercased() == "true"
-            ).filter(isConfined)
+            ).filter(confinement)
             if let requestedLimit {
                 notes = Array(notes.prefix(requestedLimit))
             }
@@ -506,6 +627,7 @@ public struct MCPServer {
             }
             let includeArchived = (arg("archived") ?? "false").lowercased() == "true"
             let filters = try propertyFilters(arg("where"))
+            let confinement = confinementPredicate()
             let hits = try store.recall(
                 vault,
                 query: query,
@@ -517,7 +639,7 @@ public struct MCPServer {
                 onOrAfter: try dateFilters(arg("on_or_after")),
                 includeArchived: includeArchived,
                 limit: limit
-            ).filter { isConfined($0.note) }
+            ).filter { confinement($0.note) }
             let encoder = JSONEncoder()
             var records: [JSONValue] = []
             // A compact JSON array is "[", its elements joined by ",", and
@@ -543,8 +665,9 @@ public struct MCPServer {
             guard let path = arg("path") else { throw ToolError(message: "get_links requires path") }
             let limit = try positiveLimit(arg("limit")) ?? 100
             let graph = try store.links(vault, for: confinedURL(path))
-            let allOutgoing = graph.outgoing.filter(isConfined)
-            let allBacklinks = graph.backlinks.filter(isConfined)
+            let confinement = confinementPredicate()
+            let allOutgoing = graph.outgoing.filter(confinement)
+            let allBacklinks = graph.backlinks.filter(confinement)
             let outgoing = Array(allOutgoing.prefix(limit))
             let backlinks = Array(allBacklinks.prefix(limit))
             return .object([
@@ -596,7 +719,10 @@ public struct MCPServer {
             let config = VaultConfig.load(for: vault)
             let deals = try notesInVault().filter { $0.recordType == NoteType.deal.rawValue && !$0.isArchived }
             let columns = config.columns.map { column in
-                let cards = deals.filter { column.statuses.contains($0.status) }.sorted { $0.rank < $1.rank }
+                // Statuses match case-insensitively, like every other filter.
+                let cards = deals.filter { deal in
+                    column.statuses.contains { $0.caseInsensitiveCompare(deal.status) == .orderedSame }
+                }.sorted { $0.rank < $1.rank }
                 return "\(column.title):\n" + cards.map { "  [\($0.rank)] \($0.title)" }.joined(separator: "\n")
             }
             return .stringDict(["board": columns.joined(separator: "\n\n")])
@@ -861,7 +987,67 @@ public struct MCPServer {
                   options: [.withoutEscapingSlashes]
               )
         else { return }
-        output.write(Data(data + [UInt8(ascii: "\n")]))
+        var payload = data
+        payload.append(UInt8(ascii: "\n"))
+        writeToOutput(payload)
+    }
+
+    /// Writes raw bytes to stdout without `FileHandle.write`, which raises an
+    /// Objective-C exception on `EPIPE`/`ENOSPC` (uncatchable in Swift). A
+    /// closed pipe ends the session cleanly; any other failure is reported on
+    /// stderr and the line is dropped.
+    private func writeToOutput(_ payload: Data) {
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+        guard !outputState.isBroken else { return }
+        let descriptor = output.fileDescriptor
+        var failed = false
+        payload.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            guard var base = bytes.baseAddress else { return }
+            var remaining = bytes.count
+            while remaining > 0 {
+                let written = write(descriptor, base, remaining)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    if errno == EPIPE {
+                        outputState.markBroken()
+                    } else {
+                        failed = true
+                    }
+                    return
+                }
+                base = base.advanced(by: written)
+                remaining -= written
+            }
+        }
+        if failed {
+            Self.writeDiagnostic("retex: stdout write failed: \(String(cString: strerror(errno)))\n")
+        }
+        #else
+        output.write(payload)
+        #endif
+    }
+
+    /// Diagnostics use `write(2)` for the same reason stdout does: a failing
+    /// `FileHandle.write` would raise an exception instead of returning.
+    private static func writeDiagnostic(_ text: String) {
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBufferPointer { buffer in
+            guard var base = buffer.baseAddress else { return }
+            var remaining = buffer.count
+            while remaining > 0 {
+                let written = write(STDERR_FILENO, base, remaining)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                base = base.advanced(by: written)
+                remaining -= written
+            }
+        }
+        #else
+        FileHandle.standardError.write(Data(text.utf8))
+        #endif
     }
 
     private static func idJSON(_ id: Id) -> Any {
@@ -873,35 +1059,73 @@ public struct MCPServer {
 
     private static func raw(_ value: JSONValue) -> Any {
         switch value {
-        case .string(let string): string
-        case .array(let items): items.map(raw)
-        case .object(let dict): dict.mapValues(raw)
-        case .bool(let value): value
+        case .string(let string): return string
+        case .array(let items): return items.map(raw)
+        case .object(let dict): return dict.mapValues(raw)
+        case .bool(let value): return value
+        case .number(let value):
+            if value == value.rounded(), abs(value) < 9e15 { return Int64(value) }
+            return value
         }
     }
 
-    private static func anyJSON(_ any: Any) -> JSONValue {
+    /// Converts a Foundation JSON value into the typed wire form. Internal so
+    /// tests can assert that booleans stay booleans and numbers stay numbers.
+    static func anyJSON(_ any: Any) -> JSONValue {
         if let string = any as? String { return .string(string) }
         if let array = any as? [Any] { return .array(array.map(anyJSON)) }
-        if let dict = any as? [String: Any] {
-            return .object(dict.mapValues(anyJSON))
+        if let dict = any as? [String: Any] { return .object(dict.mapValues(anyJSON)) }
+        if let number = any as? NSNumber {
+            // A JSON boolean decodes as `__NSCFBoolean` on Darwin and as
+            // `Bool` on swift-corelibs-foundation; the type name check works
+            // on both without Core Foundation. Booleans stay booleans and
+            // numbers stay numbers instead of becoming strings.
+            if String(describing: type(of: any)).contains("Bool") {
+                return .bool(number.boolValue)
+            }
+            return .number(number.doubleValue)
         }
-        if let number = any as? NSNumber { return .string(number.stringValue) }
+        if let value = any as? Bool { return .bool(value) }
         return .string("\(any)")
     }
 
-    private static let readOnlyTools: Set<String> = [
+    /// The read-only surface: every tool a server without `--allow-write`
+    /// exposes. Computed once.
+    static let readOnlyToolNames: Set<String> = [
         "list_notes", "search_notes", "read_note", "query_records",
         "recall_context", "get_links", "get_schema", "get_board", "get_stats",
         "memory_context", "memory_recall", "memory_review",
     ]
 
+    /// Every tool the server can expose in any mode. Computed once.
+    static let allToolNames: Set<String> = readOnlyToolNames.union(mutatingTools)
+
     private var knownTools: Set<String> {
-        Set(toolDefinitions.map(\.name))
+        readOnly ? Self.readOnlyToolNames : Self.allToolNames
     }
 
-    private var toolDefinitions: [ToolDefinition] {
-        let definitions = [
+    /// The whole tool surface, built once. `tools/list` serves the encoded
+    /// payloads below, so no request rebuilds these definitions.
+    static let toolDefinitions: [ToolDefinition] =
+        baseToolDefinitions + memoryToolDefinitions + [memoryProposeDefinition]
+
+    /// The read-only surface, built once.
+    static let readOnlyToolDefinitions: [ToolDefinition] =
+        baseToolDefinitions.filter { readOnlyToolNames.contains($0.name) } + memoryToolDefinitions
+
+    static let toolList: [JSONValue] = encode(toolDefinitions)
+    static let readOnlyToolList: [JSONValue] = encode(readOnlyToolDefinitions)
+
+    private static func encode(_ tools: [ToolDefinition]) -> [JSONValue] {
+        tools.map { tool in
+            guard let data = try? JSONEncoder().encode(tool),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return .object([:]) }
+            return anyJSON(object)
+        }
+    }
+
+    private static let baseToolDefinitions: [ToolDefinition] = [
             ToolDefinition(
                 name: "list_notes",
                 description: "List records in the vault. Optional: type, archived, and limit (1-1000).",
@@ -1066,18 +1290,12 @@ public struct MCPServer {
                 ])
             ),
         ]
-        let memoryDefinitions = memoryToolDefinitions
-        return readOnly
-            ? definitions.filter { Self.readOnlyTools.contains($0.name) } + memoryDefinitions
-            : definitions + memoryDefinitions
-    }
 
     /// Agent-memory tools. The three read tools are always available;
     /// `memory_propose` only when the server runs with --allow-write.
     /// Promotion, rejection, retirement, and staleness are operator actions
     /// and are never exposed over MCP.
-    private var memoryToolDefinitions: [ToolDefinition] {
-        var definitions = [
+    private static let memoryToolDefinitions: [ToolDefinition] = [
             ToolDefinition(
                 name: "memory_context",
                 description: "Budgeted session pack of active agent memories (scope global plus an optional project). Default budget 6000, hard max 8000.",
@@ -1113,8 +1331,8 @@ public struct MCPServer {
                 ])
             ),
         ]
-        if !readOnly {
-            definitions.append(ToolDefinition(
+
+    private static let memoryProposeDefinition = ToolDefinition(
                 name: "memory_propose",
                 description: "Propose an agent-memory change: op=add|upvote|edit|retire. Args: op (required), record (JSON object as a string), key, evidence (semicolon-separated locators), reason, source_harness, if_hash.",
                 inputSchema: .object([
@@ -1130,10 +1348,7 @@ public struct MCPServer {
                     ]),
                     "required": .array([.string("op")]),
                 ])
-            ))
-        }
-        return definitions
-    }
+            )
 
     private struct ToolError: Error {
         let message: String

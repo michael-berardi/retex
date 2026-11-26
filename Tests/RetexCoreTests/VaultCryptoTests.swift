@@ -1,4 +1,12 @@
 import XCTest
+#if canImport(CommonCrypto)
+import CommonCrypto
+#endif
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 @testable import RetexCore
 
 final class VaultCryptoTests: XCTestCase {
@@ -217,6 +225,141 @@ final class VaultCryptoTests: XCTestCase {
             .appendingPathComponent("retex-symlink-export-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: out) }
         XCTAssertEqual(try VaultCrypto.restoreArchive(archive, into: out), 3)
+    }
+
+    // MARK: - Staged mirroring
+
+    func testMirrorArchiveSwapsFilesAndRemovesObsoleteOnes() throws {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-source-\(UUID().uuidString)", isDirectory: true)
+        let live = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-live-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: live)
+        }
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: live, withIntermediateDirectories: true)
+        try "# new".write(to: source.appendingPathComponent("new.md"), atomically: true, encoding: .utf8)
+        try "# keep".write(to: live.appendingPathComponent("keep.md"), atomically: true, encoding: .utf8)
+        try "# old".write(to: live.appendingPathComponent("old.md"), atomically: true, encoding: .utf8)
+
+        let outcome = try VaultCrypto.mirrorArchive(try VaultCrypto.makeArchive(vaultURL: source), into: live)
+
+        XCTAssertEqual(outcome.written, 1)
+        XCTAssertEqual(outcome.removed, 2)
+        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("new.md"), encoding: .utf8), "# new")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: live.appendingPathComponent("old.md").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: live.appendingPathComponent("keep.md").path))
+    }
+
+    func testMirrorArchiveRollsBackWhenAWriteFails() throws {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-fail-source-\(UUID().uuidString)", isDirectory: true)
+        let live = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-fail-live-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: live)
+        }
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: live, withIntermediateDirectories: true)
+        try "# replacement".write(to: source.appendingPathComponent("keep.md"), atomically: true, encoding: .utf8)
+        try "# blocker".write(to: source.appendingPathComponent("blocker.md"), atomically: true, encoding: .utf8)
+        try "# original".write(to: live.appendingPathComponent("keep.md"), atomically: true, encoding: .utf8)
+        // A directory where the archive wants a file makes the swap fail after
+        // the originals were moved aside, which is exactly the rollback path.
+        try FileManager.default.createDirectory(
+            at: live.appendingPathComponent("blocker.md"),
+            withIntermediateDirectories: true
+        )
+        try "# inner".write(
+            to: live.appendingPathComponent("blocker.md/inner.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let archive = try VaultCrypto.makeArchive(vaultURL: source)
+
+        XCTAssertThrowsError(try VaultCrypto.mirrorArchive(archive, into: live))
+        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("keep.md"), encoding: .utf8), "# original")
+        XCTAssertEqual(
+            try String(contentsOf: live.appendingPathComponent("blocker.md/inner.md"), encoding: .utf8),
+            "# inner"
+        )
+    }
+
+    func testOversizedFileErrorNamesThePathAndSize() throws {
+        let limit = 64 * 1024 * 1024
+        let oversized = vaultDir.appendingPathComponent("big.png")
+        FileManager.default.createFile(atPath: oversized.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: UInt64(limit + 1))
+        try handle.close()
+
+        XCTAssertThrowsError(try VaultCrypto.makeArchive(vaultURL: vaultDir)) { error in
+            guard case let VaultCrypto.CryptoError.fileTooLarge(path, bytes, reportedLimit) = error else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertEqual(path, "big.png")
+            XCTAssertEqual(bytes, limit + 1)
+            XCTAssertEqual(reportedLimit, limit)
+            XCTAssertTrue(error.localizedDescription.contains("big.png"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("\(limit + 1)"), error.localizedDescription)
+        }
+    }
+
+    // MARK: - Key derivation
+
+    func testFastPBKDF2FallbackMatchesTheReferenceLoop() {
+        let salt = Array("salted-example-value".utf8)
+        let passphrase = "correct horse battery staple"
+        let fast = VaultCrypto.deriveKeyFallback(passphrase: passphrase, salt: salt, iterations: 64)
+        XCTAssertEqual(fast, Self.referencePBKDF2(passphrase: passphrase, salt: salt, iterations: 64))
+        XCTAssertEqual(fast.count, 32)
+    }
+
+    #if canImport(CommonCrypto)
+    func testPBKDF2FallbackMatchesCommonCryptoByteForByte() {
+        let salt = Array("salted-example-value".utf8)
+        let passphrase = "correct horse battery staple"
+        let iterations: UInt32 = 1_000
+        let fast = VaultCrypto.deriveKeyFallback(passphrase: passphrase, salt: salt, iterations: Int(iterations))
+        var expected = Data(repeating: 0, count: 32)
+        let status = expected.withUnsafeMutableBytes { (derived: UnsafeMutableRawBufferPointer) -> Int32 in
+            passphrase.withCString { password in
+                salt.withUnsafeBufferPointer { saltPointer in
+                    CCKeyDerivationPBKDF(
+                        CCPBKDFAlgorithm(kCCPBKDF2),
+                        password,
+                        strlen(password),
+                        saltPointer.baseAddress,
+                        salt.count,
+                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                        iterations,
+                        derived.bindMemory(to: UInt8.self).baseAddress,
+                        32
+                    )
+                }
+            }
+        }
+        XCTAssertEqual(status, Int32(kCCSuccess))
+        XCTAssertEqual(Data(fast), expected)
+    }
+    #endif
+
+    /// The straightforward PBKDF2 loop, kept as the byte-for-byte reference
+    /// for the allocation-free implementation.
+    private static func referencePBKDF2(passphrase: String, salt: [UInt8], iterations: Int) -> [UInt8] {
+        let passwordKey = SymmetricKey(data: Data(passphrase.utf8))
+        var block = Data(salt)
+        block.append(contentsOf: [0, 0, 0, 1])
+        var previous = Data(HMAC<SHA256>.authenticationCode(for: block, using: passwordKey))
+        var derived = previous
+        for _ in 1..<iterations {
+            previous = Data(HMAC<SHA256>.authenticationCode(for: previous, using: passwordKey))
+            for index in derived.indices { derived[index] ^= previous[index] }
+        }
+        return [UInt8](derived)
     }
 }
 

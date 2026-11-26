@@ -96,13 +96,60 @@ public struct VaultConfig: Sendable, Equatable {
     }
 
     /// Loads `<vault>/.retex/config.json`, falling back to defaults on any
-    /// read/parse problem so a broken config never bricks a vault.
+    /// read/parse problem so a broken config never bricks a vault. Decoded
+    /// configs are memoized by (path, mtime, size): an MCP session asks for
+    /// the same unchanged file on nearly every request.
     public static func load(for vault: Vault) -> VaultConfig {
         let url = Self.url(for: vault)
-        guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(VaultConfig.self, from: data)
-        else { return .default }
+        let path = url.path
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let mtime = attributes?[.modificationDate] as? Date
+        let size = (attributes?[.size] as? NSNumber)?.intValue
+        if let cached = cache.config(for: path, mtime: mtime, size: size) {
+            return cached
+        }
+        let config: VaultConfig
+        if let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode(VaultConfig.self, from: data) {
+            config = decoded
+        } else {
+            config = .default
+        }
+        cache.store(config, for: path, mtime: mtime, size: size)
         return config
+    }
+
+    // MARK: Config cache
+
+    private static let cache = VaultConfigCache()
+
+    /// Fingerprint-keyed memo for decoded configs. A missing file is cached
+    /// too (nil fingerprint), and any appearance of the file changes the
+    /// fingerprint, so defaults are never served for a config that exists.
+    private final class VaultConfigCache: @unchecked Sendable {
+        private struct Entry {
+            let mtime: Date?
+            let size: Int?
+            let config: VaultConfig
+        }
+
+        private let lock = NSLock()
+        private var entries: [String: Entry] = [:]
+        private let limit = 64
+
+        func config(for path: String, mtime: Date?, size: Int?) -> VaultConfig? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = entries[path], entry.mtime == mtime, entry.size == size else { return nil }
+            return entry.config
+        }
+
+        func store(_ config: VaultConfig, for path: String, mtime: Date?, size: Int?) {
+            lock.lock()
+            defer { lock.unlock() }
+            if entries.count >= limit, entries[path] == nil { entries.removeAll(keepingCapacity: true) }
+            entries[path] = Entry(mtime: mtime, size: size, config: config)
+        }
     }
 
     public func view(named name: String) -> SavedView? {
@@ -132,13 +179,28 @@ public struct VaultConfig: Sendable, Equatable {
 extension VaultConfig: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let rawColumns = try container.decodeIfPresent([RawColumn].self, forKey: .columns)
-        let columns = (rawColumns ?? []).map { BoardColumn(title: $0.title, statuses: Set($0.statuses)) }
+        // Each element decodes on its own: one malformed column, view, or
+        // record type is dropped instead of discarding the whole config.
+        let rawColumns = Self.elements(RawColumn.self, forKey: .columns, in: container)
+        let columns = rawColumns.map { BoardColumn(title: $0.title, statuses: Set($0.statuses)) }
         self.init(
             columns: columns.isEmpty ? BoardColumn.defaultColumns : columns,
-            views: try container.decodeIfPresent([SavedView].self, forKey: .views) ?? [],
-            recordTypes: try container.decodeIfPresent([RecordSchema].self, forKey: .recordTypes) ?? []
+            views: Self.elements(SavedView.self, forKey: .views, in: container),
+            recordTypes: Self.elements(RecordSchema.self, forKey: .recordTypes, in: container)
         )
+    }
+
+    /// Decodes any array of a key, keeping the elements that decode and
+    /// dropping only the ones that do not.
+    private static func elements<Element: Decodable>(
+        _ type: Element.Type,
+        forKey key: CodingKeys,
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) -> [Element] {
+        guard let wrapped = (try? container.decodeIfPresent([Failable<Element>].self, forKey: key)) ?? nil else {
+            return []
+        }
+        return wrapped.compactMap(\.value)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -154,7 +216,31 @@ extension VaultConfig: Codable {
     private enum CodingKeys: String, CodingKey { case columns, views, recordTypes }
 }
 
+/// Decodes to `nil` instead of throwing, so one bad array element cannot take
+/// its siblings down with it.
+private struct Failable<Wrapped: Decodable>: Decodable {
+    let value: Wrapped?
+
+    init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
+    }
+}
+
 struct RawColumn: Codable {
     let title: String
     let statuses: [String]
+
+    init(title: String, statuses: [String]) {
+        self.title = title
+        self.statuses = statuses
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        let wrapped = (try? container.decodeIfPresent([Failable<String>].self, forKey: .statuses)) ?? []
+        statuses = wrapped.compactMap(\.value)
+    }
+
+    private enum CodingKeys: String, CodingKey { case title, statuses }
 }

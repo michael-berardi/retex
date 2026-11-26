@@ -59,6 +59,105 @@ final class FleetUpdaterTests: XCTestCase {
         }
     }
 
+    // MARK: - Concurrency and scheduling
+
+    func testConcurrentRegistrationsAreNotLost() throws {
+        let configDirectory = root.appendingPathComponent("concurrent-config", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        let registryURL = configDirectory.appendingPathComponent("fleet.json")
+        let vaults = try (0..<8).map { index -> URL in
+            let url = root.appendingPathComponent("Concurrent\(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+
+        final class RegistrationFailures: @unchecked Sendable {
+            private let lock = NSLock()
+            private var messages: [String] = []
+
+            func record(_ error: Error) {
+                lock.lock()
+                messages.append("\(error)")
+                lock.unlock()
+            }
+
+            var all: [String] {
+                lock.lock()
+                defer { lock.unlock() }
+                return messages
+            }
+        }
+
+        let failures = RegistrationFailures()
+        DispatchQueue.concurrentPerform(iterations: vaults.count) { index in
+            do {
+                try FleetRegistry(url: registryURL).register(
+                    path: vaults[index].path,
+                    autoUpdate: index.isMultiple(of: 2)
+                )
+            } catch {
+                failures.record(error)
+            }
+        }
+
+        XCTAssertEqual(failures.all, [])
+        XCTAssertEqual(try FleetRegistry(url: registryURL).load().vaults.map(\.path), vaults.map(\.path).sorted())
+    }
+
+    func testScheduledEnvironmentForwardsRepoAndRegistry() {
+        let forwarded = AutoUpdateScheduler.forwardedEnvironment(from: [
+            "RETEX_UPDATE_REPO": "acme/example-retex",
+            "RETEX_FLEET_REGISTRY": "/tmp/acme/fleet.json",
+            "PATH": "/usr/bin:/bin",
+        ])
+        XCTAssertEqual(forwarded, [
+            "RETEX_UPDATE_REPO": "acme/example-retex",
+            "RETEX_FLEET_REGISTRY": "/tmp/acme/fleet.json",
+        ])
+        XCTAssertTrue(AutoUpdateScheduler.forwardedEnvironment(from: ["RETEX_UPDATE_REPO": ""]).isEmpty)
+        XCTAssertTrue(AutoUpdateScheduler.forwardedEnvironment(from: [:]).isEmpty)
+    }
+
+    func testLaunchdPlistCarriesTheUpdateRepository() throws {
+        let plist = AutoUpdateScheduler.launchdPlist(
+            executable: root.appendingPathComponent("retex"),
+            logs: root.appendingPathComponent("logs", isDirectory: true),
+            environment: ["RETEX_UPDATE_REPO": "acme/example-retex"]
+        )
+        let environment = try XCTUnwrap(plist["EnvironmentVariables"] as? [String: String])
+        XCTAssertEqual(environment["RETEX_UPDATE_REPO"], "acme/example-retex")
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(text.contains("RETEX_UPDATE_REPO"), text)
+
+        let bare = AutoUpdateScheduler.launchdPlist(
+            executable: root.appendingPathComponent("retex"),
+            logs: root.appendingPathComponent("logs", isDirectory: true),
+            environment: [:]
+        )
+        XCTAssertNil(bare["EnvironmentVariables"])
+    }
+
+    func testSystemdUnitCarriesTheUpdateRepository() {
+        let unit = AutoUpdateScheduler.systemdServiceUnit(
+            executable: URL(fileURLWithPath: "/opt/acme/bin/retex"),
+            environment: [
+                "RETEX_UPDATE_REPO": "acme/example-retex",
+                "RETEX_FLEET_REGISTRY": "/tmp/acme/fleet.json",
+            ]
+        )
+        XCTAssertTrue(unit.contains("Environment=\"RETEX_UPDATE_REPO=acme/example-retex\""), unit)
+        XCTAssertTrue(unit.contains("Environment=\"RETEX_FLEET_REGISTRY=/tmp/acme/fleet.json\""), unit)
+        XCTAssertTrue(unit.contains("ExecStart=\"/opt/acme/bin/retex\" update --auto --fleet --json"), unit)
+        XCTAssertTrue(unit.contains("Type=oneshot"), unit)
+
+        let bare = AutoUpdateScheduler.systemdServiceUnit(
+            executable: URL(fileURLWithPath: "/opt/acme/bin/retex"),
+            environment: [:]
+        )
+        XCTAssertFalse(bare.contains("Environment="), bare)
+    }
+
     func testRegistryRejectsNonCanonicalStoredPaths() throws {
         let registry = FleetRegistry(url: root.appendingPathComponent("fleet.json"))
         for path in ["relative/vault", "/tmp/../tmp/vault"] {
