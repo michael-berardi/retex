@@ -430,6 +430,39 @@ public struct UndoHistory: Sendable {
         }
     }
 
+    /// Puts `source` back and drops the newest journal entry for the file in
+    /// one locked read-modify-write, so a caller's rollback cannot interleave
+    /// with another process' undo of the same file. The file is written first:
+    /// a failed write leaves the journal intact. Returns false when the file
+    /// had no journal entry; the file is restored either way.
+    @discardableResult
+    public func rollback(to source: String, for url: URL, fileMode: Int? = nil) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let path = url.standardizedFileURL.path
+        let journalURL = journalURL(forPath: path)
+        return try withJournalLock(journalURL: journalURL) {
+            var entries = Self.capped(try readEntries(from: journalURL))
+            do {
+                try source.write(to: url, atomically: true, encoding: .utf8)
+                #if !os(Windows)
+                if let fileMode {
+                    try? FileManager.default.setAttributes(
+                        [.posixPermissions: fileMode],
+                        ofItemAtPath: path
+                    )
+                }
+                #endif
+            } catch {
+                throw StoreError.historyUnwritable(journalURL)
+            }
+            guard let index = entries.lastIndex(where: { $0.path == path }) else { return false }
+            entries.remove(at: index)
+            try writeEntries(entries, to: journalURL)
+            return true
+        }
+    }
+
     /// History entries for one file, oldest first. Read-only (`retex log`).
     public func entries(for path: String) throws -> [Entry] {
         lock.lock()

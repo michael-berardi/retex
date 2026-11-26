@@ -1543,13 +1543,11 @@ public struct AgentMemory {
 
     /// Restores a record's exact pre-mutation bytes and drops the journal entry
     /// that announced the mutation, so a failed multi-record operation leaves
-    /// both the vault and the undo chain as they were.
+    /// both the vault and the undo chain as they were. The restore and the pop
+    /// happen inside one journal lock: a separate pop let another process undo
+    /// the same entry in between.
     private func rollback(_ source: String, at url: URL) {
-        try? source.write(to: url, atomically: true, encoding: .utf8)
-        #if !os(Windows)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        #endif
-        _ = try? history.pop(path: url.path)
+        _ = try? history.rollback(to: source, for: url, fileMode: 0o600)
     }
 
     /// Rejects a proposal.

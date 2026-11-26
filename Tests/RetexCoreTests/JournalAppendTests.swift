@@ -53,6 +53,30 @@ final class JournalAppendTests: XCTestCase {
         XCTAssertEqual(try UndoHistory().pop(path: note.url.path).map { $0.contains("status: One") }, true)
     }
 
+    func testRollbackRestoresTheFileAndDropsOnlyItsNewestEntry() throws {
+        let note = try makeNote("Restore")
+        try store.updateMetadata("status", value: "One", for: note)
+        try store.updateMetadata("status", value: "Two", for: note)
+        let restored = try XCTUnwrap(store.load(note.url).metadata["status"])
+
+        // One locked write restores the bytes and pops the entry that
+        // announced them, so the undo chain keeps only the older entries.
+        XCTAssertTrue(try UndoHistory().rollback(to: "# Restored\n", for: note.url, fileMode: 0o600))
+        XCTAssertEqual(try String(contentsOf: note.url), "# Restored\n")
+        XCTAssertEqual(try UndoHistory().entries(for: note.url.path).count, 1)
+        XCTAssertEqual(restored, "Two")
+        // With one older entry left, another rollback pops that one and a
+        // third still restores the file.
+        XCTAssertTrue(try UndoHistory().rollback(to: "# Restored\n", for: note.url))
+        XCTAssertEqual(try UndoHistory().entries(for: note.url.path).count, 0)
+        XCTAssertFalse(try UndoHistory().rollback(to: "# Restored\n", for: note.url))
+        XCTAssertEqual(try String(contentsOf: note.url), "# Restored\n")
+        #if !os(Windows)
+        let mode = try FileManager.default.attributesOfItem(atPath: note.url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        #endif
+    }
+
     func testFailedNoteWriteRemovesItsJournalEntry() throws {
         let note = try makeNote("Rollback")
         try store.updateMetadata("status", value: "One", for: note)
