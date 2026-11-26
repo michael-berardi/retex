@@ -32,6 +32,11 @@ public struct VaultCrypto {
         case fileTooLarge(path: String, bytes: Int, limit: Int)
         /// The archive as a whole is larger than the 1 GiB limit.
         case archiveTooLarge(path: String, bytes: Int, limit: Int)
+        /// One archive member could not be installed into the vault.
+        case mirrorFailed(path: String, reason: String)
+        /// A failed pull could not be undone, so the previous vault files stay
+        /// in the named stash.
+        case mirrorRollbackFailed(stash: String, reason: String)
 
         public var errorDescription: String? {
             switch self {
@@ -45,6 +50,11 @@ public struct VaultCrypto {
                 "Retex archive file \(path) is \(bytes) bytes, which exceeds the \(limit)-byte per-file limit."
             case let .archiveTooLarge(path, bytes, limit):
                 "Retex archive exceeds the \(limit)-byte archive limit: \(path) brings it to \(bytes) bytes."
+            case let .mirrorFailed(path, reason):
+                "Retex could not install \(path) from the archive: \(reason)"
+            case let .mirrorRollbackFailed(stash, reason):
+                "Retex could not restore the vault after a failed pull (\(reason)). "
+                    + "The previous files are preserved in \(stash)."
             }
         }
     }
@@ -209,10 +219,16 @@ public struct VaultCrypto {
     /// portable files the archive does not contain (remote deletions).
     ///
     /// Nothing in the live vault is touched until the whole archive has been
-    /// restored and verified in a sibling staging directory on the same
-    /// filesystem. The swap then moves existing files aside, moves the
-    /// verified files into place, and only drops obsolete files once every
-    /// new file is live; any failure rolls the vault back unchanged.
+    /// restored and verified in a staging directory under the vault's own
+    /// `.retex` state directory. Staging inside the vault keeps every install
+    /// a rename on the vault's filesystem, so a read-only parent directory or
+    /// a mount point cannot block a pull, and `.retex` is hidden from every
+    /// vault enumeration and archive. Each file is installed by renaming the
+    /// verified copy over the live file after the previous contents have been
+    /// stashed, and obsolete files are dropped only once every install has
+    /// succeeded: an interrupted pull therefore leaves each file either old or
+    /// new, never missing. Any failure rolls the vault back unchanged; a
+    /// rollback that cannot finish keeps the stash and names it.
     @discardableResult
     public static func mirrorArchive(_ data: Data, into dir: URL) throws -> (written: Int, removed: Int) {
         let outcome = try mirrorArchiveReport(data, into: dir)
@@ -226,58 +242,241 @@ public struct VaultCrypto {
         let fileCount: Int
     }
 
+    /// Name of the vault's own hidden state directory (history, sync state).
+    static let stateDirectoryName = ".retex"
+
     static func mirrorArchiveReport(_ data: Data, into dir: URL) throws -> MirrorOutcome {
         let fm = FileManager.default
         // Validate the entire archive before the vault is touched at all.
         let entries = try decodeArchive(data)
         let lexicalRoot = dir.standardizedFileURL
-        let parent = lexicalRoot.deletingLastPathComponent()
-        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
-        let token = UUID().uuidString
-        // Siblings of the vault: same filesystem, so every move is a rename,
-        // and hidden names, so neither directory is ever enumerated as vault
-        // content.
-        let staged = parent.appendingPathComponent(".retex-mirror-\(token).new", isDirectory: true)
-        let stash = parent.appendingPathComponent(".retex-mirror-\(token).old", isDirectory: true)
+        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
+        try fm.createDirectory(at: lexicalRoot, withIntermediateDirectories: true)
+        try prepareStateDirectory(lexicalRoot: lexicalRoot, resolvedRoot: resolvedRoot)
+        let stagingRoot = lexicalRoot
+            .appendingPathComponent(stateDirectoryName, isDirectory: true)
+            .appendingPathComponent("mirror-\(UUID().uuidString)", isDirectory: true)
+        let stagedFiles = stagingRoot.appendingPathComponent("new", isDirectory: true)
+        let stashRoot = stagingRoot.appendingPathComponent("old", isDirectory: true)
+        try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        var keepStaging = false
         defer {
-            try? fm.removeItem(at: staged)
-            try? fm.removeItem(at: stash)
+            // A rollback that could not finish leaves the only copy of the
+            // previous files in the stash, so that tree must survive.
+            if !keepStaging { try? fm.removeItem(at: stagingRoot) }
         }
-        let written = try writeEntries(entries, into: staged, requireEmptyDestination: true)
+        let written = try writeEntries(entries, into: stagedFiles, requireEmptyDestination: true)
         let relativePaths = entries.map(\.relativePath)
         let keep = Set(relativePaths)
-
-        try fm.createDirectory(at: lexicalRoot, withIntermediateDirectories: true)
         let existing = try portableFilePaths(vaultURL: lexicalRoot)
         let removed = existing.reduce(0) { $0 + (keep.contains($1) ? 0 : 1) }
 
-        var stashed: [(live: URL, saved: URL)] = []
-        var installed: [URL] = []
+        // Applied changes, oldest first; `stash` is nil for a file the archive
+        // created, so undoing it means deleting the installed copy.
+        var applied: [(live: URL, stash: URL?)] = []
+        func stashLocation(_ path: String) -> URL {
+            stashRoot.appendingPathComponent(path).standardizedFileURL
+        }
+        // Replaces one live file with its verified copy. The live file is
+        // never removed before the replacement is ready.
+        func install(_ path: String) throws {
+            let live = lexicalRoot.appendingPathComponent(path).standardizedFileURL
+            // The live path must resolve inside the vault: a symlinked
+            // directory in the vault must not let an archive write outside it.
+            try prepareWriteTarget(live, lexicalRoot: lexicalRoot, resolvedRoot: resolvedRoot)
+            var isDirectory: ObjCBool = false
+            var saved: URL?
+            if fm.fileExists(atPath: live.path, isDirectory: &isDirectory) {
+                guard !isDirectory.boolValue else {
+                    throw CryptoError.mirrorFailed(path: path, reason: "a directory is in the way")
+                }
+                let stash = stashLocation(path)
+                try stashFile(live, at: stash)
+                saved = stash
+            }
+            do {
+                try installStaged(stagedFiles.appendingPathComponent(path).standardizedFileURL, over: live)
+            } catch {
+                // The stash is not part of `applied` yet, and the live file is
+                // still the stashed copy, so put it back before reporting.
+                if let saved { try? putBack(saved, at: live) }
+                throw error
+            }
+            applied.append((live, saved))
+        }
+        // A remote deletion is stashed rather than deleted, so a later failure
+        // can still restore it.
+        func retire(_ path: String) throws {
+            let live = lexicalRoot.appendingPathComponent(path).standardizedFileURL
+            try prepareWriteTarget(live, lexicalRoot: lexicalRoot, resolvedRoot: resolvedRoot)
+            guard fm.fileExists(atPath: live.path) else {
+                applied.append((live, nil))
+                return
+            }
+            let stash = stashLocation(path)
+            try moveIntoStash(live, at: stash)
+            applied.append((live, stash))
+        }
         do {
-            for path in existing {
-                let live = lexicalRoot.appendingPathComponent(path)
-                let saved = stash.appendingPathComponent(path)
-                try fm.createDirectory(at: saved.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fm.moveItem(at: live, to: saved)
-                stashed.append((live, saved))
-            }
-            for path in relativePaths {
-                let live = lexicalRoot.appendingPathComponent(path)
-                try fm.createDirectory(at: live.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fm.moveItem(at: staged.appendingPathComponent(path), to: live)
-                installed.append(live)
-            }
+            for path in relativePaths { try install(path) }
+            // Remote deletions happen only once every archived file is live.
+            for path in existing where !keep.contains(path) { try retire(path) }
         } catch {
-            // Roll back: drop anything already installed, then restore every
-            // file the archive did not replace.
-            for url in installed { try? fm.removeItem(at: url) }
-            for item in stashed {
-                try? fm.createDirectory(at: item.live.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try? fm.moveItem(at: item.saved, to: item.live)
+            let reason = rollBack(applied)
+            if let reason {
+                keepStaging = true
+                throw CryptoError.mirrorRollbackFailed(stash: stashRoot.path, reason: reason)
             }
             throw error
         }
         return MirrorOutcome(written: written, removed: removed, digest: digest(entries: entries), fileCount: written)
+    }
+
+    /// Creates the vault's state directory when it is missing and refuses to
+    /// stage when it is a symlink or resolves outside the vault.
+    private static func prepareStateDirectory(lexicalRoot: URL, resolvedRoot: URL) throws {
+        let fm = FileManager.default
+        let stateDir = lexicalRoot.appendingPathComponent(stateDirectoryName, isDirectory: true)
+        try prepareWriteTarget(stateDir, lexicalRoot: lexicalRoot, resolvedRoot: resolvedRoot)
+        guard fm.fileExists(atPath: stateDir.path) else {
+            try fm.createDirectory(at: stateDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            return
+        }
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: stateDir.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw CryptoError.mirrorFailed(path: stateDirectoryName, reason: "it is a file, not a directory")
+        }
+    }
+
+    /// Confines `target` to the vault before anything is created, written, or
+    /// removed there: the deepest existing ancestor and the resolved parent
+    /// must both stay inside the vault, and the target itself must not be a
+    /// symlink. Mirrors can race with vault edits, so every install re-checks.
+    private static func prepareWriteTarget(_ target: URL, lexicalRoot: URL, resolvedRoot: URL) throws {
+        let fm = FileManager.default
+        guard isWithinVault(target, root: lexicalRoot) else {
+            throw StoreError.pathOutsideVault(target)
+        }
+        let parent = target.deletingLastPathComponent()
+        // Check the deepest existing ancestor before creating anything, so a
+        // symlinked intermediate directory cannot make us mkdir outside.
+        var ancestor = parent
+        while (try? fm.attributesOfItem(atPath: ancestor.path)) == nil,
+              ancestor.pathComponents.count > lexicalRoot.pathComponents.count {
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+        let resolvedAncestor = ancestor.resolvingSymlinksInPath()
+        guard fm.fileExists(atPath: resolvedAncestor.path), isWithinVault(resolvedAncestor, root: resolvedRoot) else {
+            throw StoreError.pathOutsideVault(target)
+        }
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let resolvedParent = parent.resolvingSymlinksInPath()
+        guard isWithinVault(resolvedParent, root: resolvedRoot) else {
+            throw StoreError.pathOutsideVault(target)
+        }
+        if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw StoreError.pathOutsideVault(target)
+        }
+    }
+
+    /// Copies one live file into the stash. A hard link is the cheapest exact
+    /// copy on the same filesystem; anything else falls back to a byte copy.
+    private static func stashFile(_ live: URL, at stash: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: stash.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if link(live.path, stash.path) == 0 { return }
+        do {
+            try fm.copyItem(at: live, to: stash)
+        } catch {
+            throw CryptoError.mirrorFailed(path: live.lastPathComponent, reason: error.localizedDescription)
+        }
+    }
+
+    /// Moves a live file into the stash so a rollback can put it back.
+    private static func moveIntoStash(_ live: URL, at stash: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: stash.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if os(Windows)
+        try fm.moveItem(at: live, to: stash)
+        #else
+        if rename(live.path, stash.path) == 0 { return }
+        // Another filesystem inside the vault (a mount point) cannot be
+        // renamed across; copy the bytes instead and drop the original.
+        try stashFile(live, at: stash)
+        do {
+            try fm.removeItem(at: live)
+        } catch {
+            try? fm.removeItem(at: stash)
+            throw CryptoError.mirrorFailed(path: live.lastPathComponent, reason: error.localizedDescription)
+        }
+        #endif
+    }
+
+    /// Atomically replaces `live` with `staged` (rename(2) over the live file).
+    private static func installStaged(_ staged: URL, over live: URL) throws {
+        #if os(Windows)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: live.path) { try fm.removeItem(at: live) }
+        try fm.moveItem(at: staged, to: live)
+        #else
+        if rename(staged.path, live.path) == 0 { return }
+        let code = errno
+        guard code == EXDEV else {
+            throw CryptoError.mirrorFailed(path: live.path, reason: String(cString: strerror(code)))
+        }
+        // A mount point inside the vault is the one place the staging tree is
+        // on another filesystem: stage beside the target so the replacement is
+        // still a single rename.
+        let temporary = live.deletingLastPathComponent()
+            .appendingPathComponent(".retex-install-\(UUID().uuidString).tmp")
+        do {
+            try FileManager.default.copyItem(at: staged, to: temporary)
+            guard rename(temporary.path, live.path) == 0 else {
+                throw CryptoError.mirrorFailed(path: live.path, reason: String(cString: strerror(errno)))
+            }
+            try? FileManager.default.removeItem(at: staged)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+        #endif
+    }
+
+    /// Moves a stashed file back over its live path.
+    private static func putBack(_ stash: URL, at live: URL) throws {
+        try FileManager.default.createDirectory(at: live.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if os(Windows)
+        if FileManager.default.fileExists(atPath: live.path) { try FileManager.default.removeItem(at: live) }
+        try FileManager.default.moveItem(at: stash, to: live)
+        #else
+        guard rename(stash.path, live.path) == 0 else {
+            throw CryptoError.mirrorFailed(path: live.path, reason: String(cString: strerror(errno)))
+        }
+        #endif
+    }
+
+    /// Undoes applied changes newest first. Returns the reason the vault could
+    /// not be fully restored, or nil when every step succeeded.
+    static func rollBack(
+        _ applied: [(live: URL, stash: URL?)],
+        restore: (URL, URL) throws -> Void = { try putBack($0, at: $1) },
+        remove: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    ) -> String? {
+        var failure: String?
+        for change in applied.reversed() {
+            do {
+                if let stash = change.stash {
+                    try restore(stash, change.live)
+                } else if FileManager.default.fileExists(atPath: change.live.path) {
+                    try remove(change.live)
+                }
+            } catch {
+                if failure == nil {
+                    failure = "\(change.live.path): \(error.localizedDescription)"
+                }
+            }
+        }
+        return failure
     }
 
     private static func digest(entries: [ValidatedEntry]) -> String {
@@ -370,29 +569,7 @@ public struct VaultCrypto {
         let resolvedRoot = lexicalRoot.resolvingSymlinksInPath()
         for file in files {
             let target = lexicalRoot.appendingPathComponent(file.relativePath).standardizedFileURL
-            guard isWithinVault(target, root: lexicalRoot) else {
-                throw StoreError.pathOutsideVault(target)
-            }
-            let parent = target.deletingLastPathComponent()
-            // Check the deepest existing ancestor before creating anything, so
-            // a symlinked intermediate directory cannot make us mkdir outside.
-            var ancestor = parent
-            while (try? fm.attributesOfItem(atPath: ancestor.path)) == nil,
-                  ancestor.pathComponents.count > lexicalRoot.pathComponents.count {
-                ancestor = ancestor.deletingLastPathComponent()
-            }
-            let resolvedAncestor = ancestor.resolvingSymlinksInPath()
-            guard fm.fileExists(atPath: resolvedAncestor.path), isWithinVault(resolvedAncestor, root: resolvedRoot) else {
-                throw StoreError.pathOutsideVault(target)
-            }
-            try fm.createDirectory(at: parent, withIntermediateDirectories: true)
-            let resolvedParent = parent.resolvingSymlinksInPath()
-            guard isWithinVault(resolvedParent, root: resolvedRoot) else {
-                throw StoreError.pathOutsideVault(target)
-            }
-            if (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
-                throw StoreError.pathOutsideVault(target)
-            }
+            try prepareWriteTarget(target, lexicalRoot: lexicalRoot, resolvedRoot: resolvedRoot)
             try file.data.write(to: target, options: .atomic)
         }
         return files.count

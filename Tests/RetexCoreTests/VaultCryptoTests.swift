@@ -264,28 +264,198 @@ final class VaultCryptoTests: XCTestCase {
         }
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: live, withIntermediateDirectories: true)
-        try "# replacement".write(to: source.appendingPathComponent("keep.md"), atomically: true, encoding: .utf8)
-        try "# blocker".write(to: source.appendingPathComponent("blocker.md"), atomically: true, encoding: .utf8)
-        try "# original".write(to: live.appendingPathComponent("keep.md"), atomically: true, encoding: .utf8)
+        // Sorted install order: a-keep.md first, so the originals are replaced
+        // before the failure hits z-blocker.md.
+        try "# replacement".write(to: source.appendingPathComponent("a-keep.md"), atomically: true, encoding: .utf8)
+        try "# fresh".write(to: source.appendingPathComponent("b-fresh.md"), atomically: true, encoding: .utf8)
+        try "# blocker".write(to: source.appendingPathComponent("z-blocker.md"), atomically: true, encoding: .utf8)
+        try "# original".write(to: live.appendingPathComponent("a-keep.md"), atomically: true, encoding: .utf8)
+        try "# untouched".write(to: live.appendingPathComponent("c-obsolete.md"), atomically: true, encoding: .utf8)
         // A directory where the archive wants a file makes the swap fail after
-        // the originals were moved aside, which is exactly the rollback path.
+        // a successful install, which is exactly the rollback path.
         try FileManager.default.createDirectory(
-            at: live.appendingPathComponent("blocker.md"),
+            at: live.appendingPathComponent("z-blocker.md"),
             withIntermediateDirectories: true
         )
         try "# inner".write(
-            to: live.appendingPathComponent("blocker.md/inner.md"),
+            to: live.appendingPathComponent("z-blocker.md/inner.md"),
             atomically: true,
             encoding: .utf8
         )
         let archive = try VaultCrypto.makeArchive(vaultURL: source)
 
         XCTAssertThrowsError(try VaultCrypto.mirrorArchive(archive, into: live))
-        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("keep.md"), encoding: .utf8), "# original")
+        // Every original is still in place and nothing the archive created and
+        // later abandoned is left behind.
+        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("a-keep.md"), encoding: .utf8), "# original")
+        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("c-obsolete.md"), encoding: .utf8), "# untouched")
         XCTAssertEqual(
-            try String(contentsOf: live.appendingPathComponent("blocker.md/inner.md"), encoding: .utf8),
+            try String(contentsOf: live.appendingPathComponent("z-blocker.md/inner.md"), encoding: .utf8),
             "# inner"
         )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: live.appendingPathComponent("b-fresh.md").path))
+        XCTAssertEqual(try mirrorStagingDirectories(in: live), [])
+    }
+
+    func testMirrorArchiveRefusesToInstallThroughASymlinkedDirectory() throws {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-link-source-\(UUID().uuidString)", isDirectory: true)
+        let live = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-link-live-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-link-outside-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: live)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        for dir in [source, live, outside] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try FileManager.default.createDirectory(
+            at: source.appendingPathComponent("Shared"),
+            withIntermediateDirectories: true
+        )
+        try "# inside".write(to: source.appendingPathComponent("a-inside.md"), atomically: true, encoding: .utf8)
+        try "# escaped".write(to: source.appendingPathComponent("Shared/escaped.md"), atomically: true, encoding: .utf8)
+        try "# original".write(to: live.appendingPathComponent("a-inside.md"), atomically: true, encoding: .utf8)
+        // A vault subdirectory that points outside the vault must never be a
+        // way for a pulled archive to write there.
+        try FileManager.default.createSymbolicLink(
+            at: live.appendingPathComponent("Shared"),
+            withDestinationURL: outside
+        )
+        let archive = try VaultCrypto.makeArchive(vaultURL: source)
+
+        XCTAssertThrowsError(try VaultCrypto.mirrorArchive(archive, into: live)) { error in
+            switch error as? StoreError {
+            case .pathOutsideVault(let url):
+                XCTAssertEqual(url.pathComponents.suffix(2), ["Shared", "escaped.md"])
+            default:
+                XCTFail("unexpected error \(error)")
+            }
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("a-inside.md"), encoding: .utf8), "# original")
+    }
+
+    func testMirrorArchiveRefusesToStageThroughASymlinkedStateDirectory() throws {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-state-source-\(UUID().uuidString)", isDirectory: true)
+        let live = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-state-live-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-state-outside-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: live)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        for dir in [source, live, outside] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try "# a".write(to: source.appendingPathComponent("a.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: live.appendingPathComponent(VaultCrypto.stateDirectoryName),
+            withDestinationURL: outside
+        )
+        let archive = try VaultCrypto.makeArchive(vaultURL: source)
+
+        XCTAssertThrowsError(try VaultCrypto.mirrorArchive(archive, into: live))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: live.appendingPathComponent("a.md").path))
+    }
+
+    func testMirrorArchiveStagesInsideTheVaultSoAReadOnlyParentStillPulls() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-ro-parent-\(UUID().uuidString)", isDirectory: true)
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-ro-source-\(UUID().uuidString)", isDirectory: true)
+        let live = parent.appendingPathComponent("vault", isDirectory: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+            try? FileManager.default.removeItem(at: parent)
+            try? FileManager.default.removeItem(at: source)
+        }
+        for dir in [source, live] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try "# pulled".write(to: source.appendingPathComponent("pulled.md"), atomically: true, encoding: .utf8)
+        try "# stale".write(to: live.appendingPathComponent("stale.md"), atomically: true, encoding: .utf8)
+        let archive = try VaultCrypto.makeArchive(vaultURL: source)
+        // A vault on a mount point or under a read-only parent directory is
+        // normal (an app-managed folder); a pull must not need to write there.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: parent.path)
+
+        let outcome = try VaultCrypto.mirrorArchive(archive, into: live)
+
+        XCTAssertEqual(outcome.written, 1)
+        XCTAssertEqual(outcome.removed, 1)
+        XCTAssertEqual(try String(contentsOf: live.appendingPathComponent("pulled.md"), encoding: .utf8), "# pulled")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: live.appendingPathComponent("stale.md").path))
+    }
+
+    func testMirrorArchiveDrawsASuccessfulRollbackWithoutLeavingAStash() {
+        let live = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-rollback-\(UUID().uuidString).md")
+        let stash = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-rollback-stash-\(UUID().uuidString).md")
+        defer {
+            try? FileManager.default.removeItem(at: live)
+            try? FileManager.default.removeItem(at: stash)
+        }
+        try? "# new".write(to: live, atomically: true, encoding: .utf8)
+        try? "# old".write(to: stash, atomically: true, encoding: .utf8)
+
+        XCTAssertNil(VaultCrypto.rollBack([(live: live, stash: stash)]))
+        XCTAssertEqual(try? String(contentsOf: live, encoding: .utf8), "# old")
+    }
+
+    func testMirrorArchiveNamesTheStashWhenARollbackStepFails() throws {
+        let live = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-rollback-fail-\(UUID().uuidString).md")
+        let stash = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-mirror-rollback-fail-stash-\(UUID().uuidString).md")
+        defer {
+            try? FileManager.default.removeItem(at: live)
+            try? FileManager.default.removeItem(at: stash)
+        }
+        let reason = VaultCrypto.rollBack(
+            [
+                (live: live, stash: stash),
+                (live: live.appendingPathExtension("created"), stash: nil),
+            ],
+            restore: { _, _ in throw VaultCrypto.CryptoError.mirrorFailed(path: live.path, reason: "injected") },
+            remove: { _ in }
+        )
+        let reported = try XCTUnwrap(reason)
+        XCTAssertTrue(reported.contains(live.path), reported)
+        XCTAssertTrue(reported.contains("injected"), reported)
+    }
+
+    func testMirrorStagingIsNeverEnumeratedOrArchived() throws {
+        // Everything the mirror writes lives in the hidden state directory, so
+        // neither vault enumeration nor an export can pick it up mid-pull.
+        let staging = vaultDir
+            .appendingPathComponent(VaultCrypto.stateDirectoryName, isDirectory: true)
+            .appendingPathComponent("mirror-test/new", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try "# staged".write(to: staging.appendingPathComponent("staged.md"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: vaultDir.appendingPathComponent(VaultCrypto.stateDirectoryName)) }
+
+        let archive = try VaultCrypto.makeArchive(vaultURL: vaultDir)
+        XCTAssertFalse(String(decoding: archive, as: UTF8.self).contains("staged.md"))
+        XCTAssertFalse(try VaultCrypto.portableFilePaths(vaultURL: vaultDir).contains { $0.contains("mirror-test") })
+        XCTAssertFalse(
+            try MarkdownStore().scan(Vault(url: vaultDir)).contains { $0.id.contains("mirror-test") }
+        )
+    }
+
+    /// Staging trees the mirror leaves behind in the vault's state directory.
+    private func mirrorStagingDirectories(in vault: URL) throws -> [String] {
+        let stateDir = vault.appendingPathComponent(VaultCrypto.stateDirectoryName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: stateDir.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(atPath: stateDir.path).filter { $0.hasPrefix("mirror-") }
     }
 
     func testOversizedFileErrorNamesThePathAndSize() throws {
