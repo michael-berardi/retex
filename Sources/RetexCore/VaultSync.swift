@@ -158,7 +158,9 @@ public struct VaultSync {
         if !force {
             request.setValue(state.revision.map { "\"\($0)\"" } ?? "*", forHTTPHeaderField: state.revision == nil ? "If-None-Match" : "If-Match")
         }
-        let (body, response) = try send(request)
+        // The upload size is known here, so the deadline covers it even when
+        // the session never reports `countOfBytesExpectedToSend`.
+        let (body, response) = try send(request, expectedBytes: blob.count)
         switch response.statusCode {
         case 200, 201:
             let revision = Self.revision(from: response, fallback: Self.sha256(blob))
@@ -236,7 +238,7 @@ public struct VaultSync {
         return request
     }
 
-    private func send(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
+    private func send(_ request: URLRequest, expectedBytes: Int = 0) throws -> (Data, HTTPURLResponse) {
         final class Box: @unchecked Sendable { var result: Swift.Result<(Data, HTTPURLResponse), Error>? }
         let box = Box()
         let semaphore = DispatchSemaphore(value: 0)
@@ -251,7 +253,7 @@ public struct VaultSync {
             }
         }
         task.resume()
-        let waited = HTTPDeadline.wait(for: task, semaphore: semaphore)
+        let waited = HTTPDeadline.wait(for: task, semaphore: semaphore, hint: expectedBytes)
         guard waited.completed else {
             task.cancel()
             throw SyncError.network("no answer within \(Int(waited.deadline)) seconds")
