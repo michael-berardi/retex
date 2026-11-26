@@ -225,19 +225,66 @@ public struct MarkdownStore {
             return Self.precedes(left.note, right.note)
         }
         var best: [(note: Note, score: Int)] = []
-        func ranksBefore(_ a: (note: Note, score: Int), _ b: (note: Note, score: Int)) -> Bool {
-            a.score != b.score ? a.score > b.score : Self.precedes(a.note, b.note)
+        func score(_ partial: (note: Note, base: Int)) -> (note: Note, score: Int) {
+            (
+                note: partial.note,
+                score: partial.base
+                    + Self.searchBodyScore(foldedBody: Self.foldedForRanking(partial.note.body), terms: foldedTerms)
+            )
         }
+        guard let limit else {
+            // Without a cap every candidate is scored, then sorted once: an
+            // ordered insert per candidate would make this quadratic.
+            return Self.sortedRanked(ordered.map(score)).map(\.note)
+        }
+        best.reserveCapacity(limit)
         for partial in ordered {
-            if let limit, best.count >= limit, partial.base + bodyBound < best[limit - 1].score { break }
-            let score = partial.base
-                + Self.searchBodyScore(foldedBody: Self.foldedForRanking(partial.note.body), terms: foldedTerms)
-            let entry = (note: partial.note, score: score)
-            let position = best.firstIndex { ranksBefore(entry, $0) } ?? best.count
-            best.insert(entry, at: position)
-            if let limit, best.count > limit { best.removeLast() }
+            if best.count >= limit, partial.base + bodyBound < best[limit - 1].score { break }
+            Self.insertRanked(score(partial), into: &best, limit: limit)
         }
         return best.map(\.note)
+    }
+
+    /// Ranks scored search results: higher score first, then the deterministic
+    /// note order.
+    static func ranksBeforeScores(_ leftNote: Note, _ leftScore: Int, _ rightNote: Note, _ rightScore: Int) -> Bool {
+        leftScore != rightScore ? leftScore > rightScore : Self.precedes(leftNote, rightNote)
+    }
+
+    static func ranksBefore(
+        _ left: (note: Note, score: Int),
+        _ right: (note: Note, score: Int)
+    ) -> Bool {
+        ranksBeforeScores(left.note, left.score, right.note, right.score)
+    }
+
+    /// Sorts scored results in one pass, for searches that keep every hit.
+    static func sortedRanked(_ scored: [(note: Note, score: Int)]) -> [(note: Note, score: Int)] {
+        scored.sorted(by: Self.ranksBefore)
+    }
+
+    /// Inserts one scored hit into a descending result list of at most `limit`
+    /// entries. The position comes from a binary search, so a capped search
+    /// costs O(log limit) comparisons per candidate instead of a linear scan of
+    /// the whole list at every insert.
+    static func insertRanked(
+        _ entry: (note: Note, score: Int),
+        into best: inout [(note: Note, score: Int)],
+        limit: Int?,
+        ranksBefore: (Note, Int, Note, Int) -> Bool = MarkdownStore.ranksBeforeScores
+    ) {
+        var low = 0
+        var high = best.count
+        while low < high {
+            let middle = (low + high) / 2
+            if ranksBefore(entry.note, entry.score, best[middle].note, best[middle].score) {
+                high = middle
+            } else {
+                low = middle + 1
+            }
+        }
+        best.insert(entry, at: low)
+        if let limit, best.count > limit { best.removeLast() }
     }
 
     /// Agent-oriented retrieval. Unlike exact and ranked search, recall drops

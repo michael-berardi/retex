@@ -139,7 +139,47 @@ final class RecallPerformanceTests: XCTestCase {
                     "\(query) limit \(limit) scores"
                 )
             }
+            // An uncapped search scores and sorts every hit at once.
+            let unbounded = try store.search(vault, query: query, ranked: true, limit: nil)
+            XCTAssertEqual(unbounded.map(\.id), fullyScored.map(\.note.id), "\(query) unbounded")
         }
+    }
+
+    func testRankedInsertionIsBoundedWorkAndKeepsTheResultOrder() {
+        // A capped search inserts into a list of at most `limit` entries; a
+        // linear scan per candidate would be quadratic in the candidate count
+        // and would still return the same notes, so only the comparison count
+        // distinguishes the two.
+        var generator = SystemRandomNumberGenerator()
+        let scored = (0..<2000).map { index -> (note: Note, score: Int) in
+            let note = Note(
+                url: URL(fileURLWithPath: "/vault/note-\(index).md"),
+                source: "# Note \(index)\n",
+                title: "Note \(index)",
+                body: "body \(index)",
+                metadata: [:],
+                tags: [],
+                modifiedAt: Date(timeIntervalSince1970: TimeInterval(index % 97))
+            )
+            return (note, Int.random(in: 0...20, using: &generator))
+        }
+        let reference = MarkdownStore.sortedRanked(scored)
+
+        var comparisons = 0
+        var best: [(note: Note, score: Int)] = []
+        for entry in scored {
+            MarkdownStore.insertRanked(entry, into: &best, limit: 10) { leftNote, leftScore, rightNote, rightScore in
+                comparisons += 1
+                return MarkdownStore.ranksBeforeScores(leftNote, leftScore, rightNote, rightScore)
+            }
+            XCTAssertLessThanOrEqual(best.count, 10)
+        }
+        XCTAssertEqual(best.map(\.note.id), reference.prefix(10).map(\.note.id))
+        XCTAssertLessThan(comparisons, scored.count * 12, "insertion did too much work")
+
+        // The uncapped path sorts every scored note, which must agree with the
+        // sorted reference exactly.
+        XCTAssertEqual(MarkdownStore.sortedRanked(scored).map(\.note.id), reference.map(\.note.id))
     }
 
     // MARK: - New foldable ranges
