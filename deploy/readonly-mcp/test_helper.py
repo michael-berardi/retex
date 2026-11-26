@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import importlib.util
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -15,6 +21,24 @@ import gateway
 import refresh_vault
 import validate_vault
 import verify_fleet
+
+
+def load_sync_server():
+    """Import deploy/sync-server/server.py, which is not on sys.path."""
+    path = Path(__file__).resolve().parent.parent / "sync-server" / "server.py"
+    spec = importlib.util.spec_from_file_location("retex_sync_server_under_test", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    sync_server = load_sync_server()
+except (OSError, ImportError):  # the deploy helper is absent from some checkouts
+    sync_server = None
 
 
 class TokenTests(unittest.TestCase):
@@ -38,6 +62,22 @@ class TokenTests(unittest.TestCase):
             gateway.load_tokens({"RETEX_MCP_TOKEN": "too-short"})
         with self.assertRaises(RuntimeError):
             gateway.load_tokens({"RETEX_MCP_TOKEN": "é" * 32})
+
+    def test_resolves_rotation_only_named_tokens(self) -> None:
+        first = "c" * 32
+        second = "d" * 32
+        # Rotation-only deployments set no legacy token at all; the HEALTHCHECK
+        # and the gateway must both find a usable token in RETEX_MCP_TOKENS_JSON.
+        self.assertEqual(
+            gateway.load_tokens({"RETEX_MCP_TOKENS_JSON": json.dumps({"one": first, "two": second})}),
+            (first, second),
+        )
+        self.assertEqual(
+            gateway.load_tokens({"RETEX_MCP_TOKENS_JSON": json.dumps([first, second])}),
+            (first, second),
+        )
+        with self.assertRaises(RuntimeError):
+            gateway.load_tokens({"RETEX_MCP_TOKENS_JSON": json.dumps([])})
 
     def test_authorization_requires_exact_bearer_token(self) -> None:
         original = gateway.TOKENS
@@ -133,6 +173,76 @@ class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
                 b"referrer-policy",
             }.issubset(names)
         )
+
+    async def test_concurrency_guard_sheds_excess_requests(self) -> None:
+        """A burst must be bounded so `retex mcp` children cannot exhaust the host."""
+        release = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def slow_app(_scope, receive, send):
+            await receive()
+            entered.set()
+            await release.wait()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        def scope() -> dict:
+            return {
+                "type": "http",
+                "method": "POST",
+                "scheme": "https",
+                "headers": [
+                    (b"authorization", b"Bearer " + b"a" * 32),
+                    (b"content-length", b"2"),
+                ],
+            }
+
+        def receive_factory():
+            state = {"sent": False}
+
+            async def receive():
+                if not state["sent"]:
+                    state["sent"] = True
+                    return {"type": "http.request", "body": b"{}", "more_body": False}
+                return {"type": "http.disconnect"}
+
+            return receive
+
+        def collector(bucket: list) -> object:
+            async def send(message):
+                bucket.append(message)
+
+            return send
+
+        def status_of(bucket: list) -> int:
+            return next(m for m in bucket if m["type"] == "http.response.start")["status"]
+
+        original = (gateway.TOKENS, gateway.MAX_CONCURRENT_REQUESTS, gateway.CONCURRENCY_WAIT_SECONDS)
+        gateway.TOKENS = ("a" * 32,)
+        gateway.MAX_CONCURRENT_REQUESTS = 1
+        gateway.CONCURRENCY_WAIT_SECONDS = 0.05
+        try:
+            middleware = gateway.security_middleware(slow_app)
+            first: list = []
+            first_task = asyncio.create_task(
+                middleware(scope(), receive_factory(), collector(first))
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            second: list = []
+            await middleware(scope(), receive_factory(), collector(second))
+            self.assertEqual(status_of(second), 503)
+            release.set()
+            await first_task
+            self.assertEqual(status_of(first), 200)
+            # The permit is handed back, so the next request is served normally.
+            third: list = []
+            await middleware(scope(), receive_factory(), collector(third))
+            self.assertEqual(status_of(third), 200)
+        finally:
+            gateway.TOKENS = original[0]
+            gateway.MAX_CONCURRENT_REQUESTS = original[1]
+            gateway.CONCURRENCY_WAIT_SECONDS = original[2]
+
 
 class VaultValidationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -321,6 +431,65 @@ class VaultRefresherTests(unittest.TestCase):
         self.assertTrue(refresher.poll_once())
         self.assertIn("Curated v2", (refresher.serving_dir / "c.md").read_text())
 
+    def _run_git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.work), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    @staticmethod
+    def _health_status(data_dir: Path) -> dict:
+        """What the gateway's /health endpoint would report for this data dir."""
+        with mock.patch.dict(os.environ, {"RETEX_DATA_DIR": str(data_dir)}):
+            response = asyncio.run(gateway.health(None))  # type: ignore[arg-type]
+        return json.loads(response.body)
+
+    def test_lightweight_tag_ref_resolves_to_commit(self) -> None:
+        head = self._run_git("rev-parse", "HEAD")
+        self._run_git("tag", "v1.0")  # lightweight: advertises no peeled line
+        self._run_git("push", "--quiet", "origin", "refs/tags/v1.0")
+        refresher = self._refresher(RETEX_VAULT_REF="v1.0")
+        self.assertEqual(refresher.remote_revision(), head)
+        refresher.bootstrap_layout()
+        self.assertTrue(refresher.poll_once())
+        self.assertEqual(
+            (refresher.serving_dir / "project.md").read_text(),
+            self._note_text("# Safe project facts"),
+        )
+
+    def test_annotated_tag_prefers_peeled_commit(self) -> None:
+        head = self._run_git("rev-parse", "HEAD")
+        self._run_git("tag", "-a", "v2.0", "-m", "release two")
+        self._run_git("push", "--quiet", "origin", "refs/tags/v2.0")
+        tag_object = self._run_git("rev-parse", "refs/tags/v2.0")
+        self.assertNotEqual(tag_object, head)
+        refresher = self._refresher(RETEX_VAULT_REF="v2.0")
+        # The peeled commit is what gets fetched and served, not the tag object id.
+        self.assertEqual(refresher.remote_revision(), head)
+
+    def test_health_recovers_after_transient_failure(self) -> None:
+        refresher = self._refresher()
+        refresher.bootstrap_layout()
+        self.assertTrue(refresher.poll_once())
+        self.assertEqual(self._health_status(refresher.data_dir)["status"], "ok")
+        original = refresher.remote_revision
+
+        def boom() -> str:
+            raise RuntimeError("transient git failure")
+
+        refresher.remote_revision = boom  # type: ignore[method-assign]
+        self.assertFalse(refresher.poll_once())
+        self.assertEqual(refresher.consecutive_failures, 1)
+        degraded = self._health_status(refresher.data_dir)
+        self.assertEqual(degraded["status"], "degraded")
+        self.assertIn("last_error", degraded["vault_sync"])
+
+        refresher.remote_revision = original  # type: ignore[method-assign]
+        self.assertFalse(refresher.poll_once())  # same revision, no new commit
+        recovered = self._health_status(refresher.data_dir)
+        self.assertEqual(recovered["status"], "ok")
+        self.assertNotIn("last_error", recovered["vault_sync"])
+        self.assertEqual(refresher.consecutive_failures, 0)
 
 
 class HostedFleetVerifierTests(unittest.TestCase):
@@ -491,4 +660,157 @@ class ToolSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("note.md", result.content[0].text)
             finally:
                 gateway.RETEX_BIN, gateway.VAULT = original
+
+
+class SyncServerTests(unittest.TestCase):
+    """Protocol tests for deploy/sync-server/server.py over a real socket."""
+
+    token = "t" * 32
+
+    def setUp(self) -> None:
+        if sync_server is None:
+            self.skipTest("deploy/sync-server/server.py is not available")
+        self.temporary = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.temporary.name)
+        handler = sync_server.make_handler(str(self.data_dir), self.token)
+        self.httpd = sync_server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=10)
+        self.temporary.cleanup()
+
+    def vault_path(self, name: str = "acme-vault") -> Path:
+        return self.data_dir / f"{name}.retexenc"
+
+    def request(self, method: str, path: str, *, headers: dict | None = None,
+                body: bytes = b"", truncated: int | None = None) -> bytes:
+        """Send one raw request and return the raw response.
+
+        `truncated` sends only a prefix of `body` while the Content-Length header
+        still announces the full length, reproducing a client that dies mid-upload.
+        """
+        payload = body if truncated is None else body[:truncated]
+        lines = [
+            f"{method} {path} HTTP/1.1",
+            "Host: 127.0.0.1",
+            f"Authorization: Bearer {self.token}",
+        ]
+        lines.extend(f"{name}: {value}" for name, value in (headers or {}).items())
+        raw = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + payload
+        received = []
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+            sock.sendall(raw)
+            sock.shutdown(socket.SHUT_WR)
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                received.append(chunk)
+        return b"".join(received)
+
+    @staticmethod
+    def status_of(response: bytes) -> int:
+        return int(response.split(b"\r\n", 1)[0].split(b" ")[1])
+
+    def test_truncated_put_is_rejected_and_blob_untouched(self) -> None:
+        blob = sync_server.MAGIC + b"original ciphertext"
+        self.vault_path().write_bytes(blob)
+        replacement = sync_server.MAGIC + b"replacement ciphertext"
+        response = self.request(
+            "PUT",
+            "/v1/vaults/acme-vault",
+            headers={
+                "Content-Length": str(len(replacement)),
+                "If-Match": '"' + hashlib.sha256(blob).hexdigest() + '"',
+            },
+            body=replacement,
+            truncated=len(replacement) - 4,
+        )
+        self.assertEqual(self.status_of(response), 400)
+        self.assertIn(b"incomplete body", response)
+        self.assertEqual(self.vault_path().read_bytes(), blob)
+        # No temporary upload file and no partial blob survives the rejection.
+        self.assertEqual(
+            sorted(p.name for p in self.data_dir.iterdir()),
+            ["acme-vault.retexenc"],
+        )
+
+    def test_complete_put_still_creates_and_updates(self) -> None:
+        first = sync_server.MAGIC + b"first ciphertext"
+        created = self.request(
+            "PUT",
+            "/v1/vaults/acme-vault",
+            headers={"Content-Length": str(len(first)), "If-None-Match": "*"},
+            body=first,
+        )
+        self.assertEqual(self.status_of(created), 201)
+        self.assertEqual(self.vault_path().read_bytes(), first)
+        second = sync_server.MAGIC + b"second ciphertext"
+        updated = self.request(
+            "PUT",
+            "/v1/vaults/acme-vault",
+            headers={
+                "Content-Length": str(len(second)),
+                "If-Match": '"' + hashlib.sha256(first).hexdigest() + '"',
+            },
+            body=second,
+        )
+        self.assertEqual(self.status_of(updated), 200)
+        self.assertEqual(self.vault_path().read_bytes(), second)
+
+    def test_negative_content_length_is_rejected(self) -> None:
+        response = self.request(
+            "PUT", "/v1/vaults/acme-vault", headers={"Content-Length": "-12"}
+        )
+        self.assertEqual(self.status_of(response), 400)
+        self.assertEqual(list(self.data_dir.iterdir()), [])
+
+    def test_preconditions_reject_stale_and_missing_vaults(self) -> None:
+        blob = sync_server.MAGIC + b"current ciphertext"
+        self.vault_path().write_bytes(blob)
+        body = sync_server.MAGIC + b"next ciphertext"
+        stale = self.request(
+            "PUT",
+            "/v1/vaults/acme-vault",
+            headers={"Content-Length": str(len(body)), "If-Match": '"' + "0" * 64 + '"'},
+            body=body,
+        )
+        self.assertEqual(self.status_of(stale), 412)
+        self.assertEqual(self.vault_path().read_bytes(), blob)
+        missing = self.request(
+            "PUT",
+            "/v1/vaults/absent-vault",
+            headers={"Content-Length": str(len(body)), "If-Match": "*"},
+            body=body,
+        )
+        self.assertEqual(self.status_of(missing), 412)
+        self.assertFalse((self.data_dir / "absent-vault.retexenc").exists())
+        wildcard = self.request(
+            "PUT",
+            "/v1/vaults/acme-vault",
+            headers={"Content-Length": str(len(body)), "If-Match": "*"},
+            body=body,
+        )
+        self.assertEqual(self.status_of(wildcard), 200)
+        self.assertEqual(self.vault_path().read_bytes(), body)
+
+
+class DeploymentHardeningTests(unittest.TestCase):
+    def test_healthcheck_never_puts_the_token_on_a_command_line(self) -> None:
+        text = (Path(__file__).resolve().parent / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("HEALTHCHECK", text)
+        # A bearer token in the HEALTHCHECK command line is visible in
+        # /proc/<pid>/cmdline for as long as it runs, and rotation-only
+        # deployments export no legacy RETEX_MCP_TOKEN at all.
+        self.assertNotIn("Authorization: Bearer $", text)
+        healthcheck = text.split("HEALTHCHECK", 1)[1].split("CMD [", 1)[0]
+        self.assertIn("python3 -c", healthcheck)
+        self.assertIn("RETEX_MCP_TOKENS_JSON", healthcheck)
+        self.assertIn("/health", healthcheck)
+        self.assertNotIn("curl", healthcheck)
 

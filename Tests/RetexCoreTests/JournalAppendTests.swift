@@ -53,6 +53,30 @@ final class JournalAppendTests: XCTestCase {
         XCTAssertEqual(try UndoHistory().pop(path: note.url.path).map { $0.contains("status: One") }, true)
     }
 
+    func testRollbackRestoresTheFileAndDropsOnlyItsNewestEntry() throws {
+        let note = try makeNote("Restore")
+        try store.updateMetadata("status", value: "One", for: note)
+        try store.updateMetadata("status", value: "Two", for: note)
+        let restored = try XCTUnwrap(store.load(note.url).metadata["status"])
+
+        // One locked write restores the bytes and pops the entry that
+        // announced them, so the undo chain keeps only the older entries.
+        XCTAssertTrue(try UndoHistory().rollback(to: "# Restored\n", for: note.url, fileMode: 0o600))
+        XCTAssertEqual(try String(contentsOf: note.url), "# Restored\n")
+        XCTAssertEqual(try UndoHistory().entries(for: note.url.path).count, 1)
+        XCTAssertEqual(restored, "Two")
+        // With one older entry left, another rollback pops that one and a
+        // third still restores the file.
+        XCTAssertTrue(try UndoHistory().rollback(to: "# Restored\n", for: note.url))
+        XCTAssertEqual(try UndoHistory().entries(for: note.url.path).count, 0)
+        XCTAssertFalse(try UndoHistory().rollback(to: "# Restored\n", for: note.url))
+        XCTAssertEqual(try String(contentsOf: note.url), "# Restored\n")
+        #if !os(Windows)
+        let mode = try FileManager.default.attributesOfItem(atPath: note.url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        #endif
+    }
+
     func testFailedNoteWriteRemovesItsJournalEntry() throws {
         let note = try makeNote("Rollback")
         try store.updateMetadata("status", value: "One", for: note)
@@ -64,6 +88,57 @@ final class JournalAppendTests: XCTestCase {
             (previousSource: "previous", nextSource: "next")
         })
         XCTAssertEqual(try Data(contentsOf: journal), before)
+    }
+
+    func testRestoreLatestWritesTheFileThenDropsThatEntry() throws {
+        let note = try makeNote("Restore")
+        try store.updateMetadata("status", value: "One", for: note)
+        try store.updateMetadata("status", value: "Two", for: note)
+        let history = UndoHistory()
+        XCTAssertEqual(try history.entries(for: note.url.path).count, 2)
+        XCTAssertEqual(try store.load(note.url).status, "Two")
+
+        let restored = try history.restoreLatest(for: note.url)
+        XCTAssertEqual(restored?.contains("status: One"), true, "the newest entry is the one before the last write")
+        XCTAssertEqual(try store.load(note.url).status, "One", "undo writes the file itself")
+        XCTAssertEqual(try history.entries(for: note.url.path).count, 1, "only the used entry is removed")
+
+        XCTAssertNotNil(try history.restoreLatest(for: note.url))
+        XCTAssertEqual(try store.load(note.url).status, "Unsorted", "the original source has no status property")
+        XCTAssertEqual(try history.entries(for: note.url.path).count, 0)
+        XCTAssertNil(try history.restoreLatest(for: note.url), "no history means nothing to restore")
+    }
+
+    func testRestoreLatestKeepsTheEntryWhenTheNoteWriteFails() throws {
+        let blocked = vaultDir.appendingPathComponent("blocked.md", isDirectory: true)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let history = UndoHistory()
+        try history.record(.init(path: blocked.path, previousSource: "previous"))
+        XCTAssertEqual(try history.entries(for: blocked.path).count, 1)
+
+        XCTAssertThrowsError(try history.restoreLatest(for: blocked)) { error in
+            XCTAssertTrue(error is StoreError, "unexpected error \(error)")
+        }
+        XCTAssertEqual(
+            try history.entries(for: blocked.path).count, 1,
+            "a failed restore must leave the undo retryable"
+        )
+        XCTAssertEqual(try history.pop(path: blocked.path), "previous", "the entry is still usable afterwards")
+    }
+
+    func testRestoreLatestKeepsTheJournalPrivateAndWorksWithoutHistory() throws {
+        let plain = vaultDir.appendingPathComponent("plain.md")
+        try "# Plain\n".write(to: plain, atomically: true, encoding: .utf8)
+        XCTAssertNil(try UndoHistory().restoreLatest(for: plain))
+
+        let note = try makeNote("Private")
+        try store.updateMetadata("status", value: "One", for: note)
+        _ = try UndoHistory().restoreLatest(for: note.url)
+        #if !os(Windows)
+        let attributes = try FileManager.default.attributesOfItem(atPath: journal.path)
+        let mode = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber).intValue
+        XCTAssertEqual(mode & 0o777, 0o600, "the journal holds note contents and must stay private")
+        #endif
     }
 
     func testCompactionEnforcesThePerFileCapOnDisk() throws {

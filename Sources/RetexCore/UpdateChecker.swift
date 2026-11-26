@@ -31,12 +31,20 @@ public struct UpdateChecker {
     private let session: URLSession
     private let fm = FileManager.default
 
-    /// - Parameter repo: `owner/repo` on GitHub.
+    /// Ceiling for one release download (assets are size-limited below).
+    static let maximumTransferBytes = 64 * 1024 * 1024
+
     /// - Parameter repo: `owner/repo` on GitHub. The caller must supply this;
     ///   Retex ships no built-in repository, owner or personal name.
     public init(repo: String, session: URLSession = .shared) {
         self.repo = repo
-        self.session = session
+        self.session = Self.boundedSession(from: session.configuration)
+    }
+
+    /// A dedicated session that drops a stalled release server after a minute
+    /// of silence instead of capping the whole download at a fixed 180 s.
+    static func boundedSession(from configuration: URLSessionConfiguration) -> URLSession {
+        HTTPDeadline.configure(configuration, maximumBytes: maximumTransferBytes)
     }
 
     public static var releaseAssetName: String {
@@ -115,7 +123,8 @@ public struct UpdateChecker {
 
     public func download(_ url: URL) throws -> Data {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 60
+        // The stall guard, not a cap on the whole download.
+        request.timeoutInterval = HTTPDeadline.idle()
         let (data, response) = try syncRequest(request)
         guard response.statusCode == 200 else {
             throw UpdateError.downloadFailed(url.lastPathComponent)
@@ -197,6 +206,7 @@ public struct UpdateChecker {
 extension UpdateChecker {
     public enum UpdateError: LocalizedError {
         case lookupFailed
+        case requestTimedOut
         case malformedResponse
         case missingAssets(String)
         case downloadFailed(String)
@@ -205,8 +215,9 @@ extension UpdateChecker {
         public var errorDescription: String? {
             switch self {
             case .lookupFailed: "GitHub releases lookup failed — check network connectivity"
+            case .requestTimedOut: "GitHub releases request did not finish in time — check network connectivity"
             case .malformedResponse: "GitHub releases response was malformed"
-            case .missingAssets(let tag): "Release \(tag) is missing retex-universal.zip or SHA256SUMS"
+            case .missingAssets(let tag): "Release \(tag) is missing \(UpdateChecker.releaseAssetName) or SHA256SUMS"
             case .downloadFailed(let name): "Download failed: \(name)"
             case .installFailed(let reason): "Retex could not install the verified update: \(reason)"
             }
@@ -222,7 +233,7 @@ extension UpdateChecker {
         }
         let box = Box()
         let semaphore = DispatchSemaphore(value: 0)
-        session.dataTask(with: request) { data, response, error in
+        let task = session.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error {
                 box.result = .failure(error)
@@ -231,8 +242,14 @@ extension UpdateChecker {
             } else {
                 box.result = .failure(UpdateError.lookupFailed)
             }
-        }.resume()
-        semaphore.wait()
-        return try box.result!.get()
+        }
+        task.resume()
+        let waited = HTTPDeadline.wait(for: task, semaphore: semaphore)
+        guard waited.completed else {
+            task.cancel()
+            throw UpdateError.requestTimedOut
+        }
+        guard let result = box.result else { throw UpdateError.lookupFailed }
+        return try result.get()
     }
 }

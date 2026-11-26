@@ -109,16 +109,14 @@ public enum VocabularyExtractor {
         }
 
 
-        let eligible = candidates.values.filter { $0.priority >= 3 || $0.sources.count >= 2 }
-        func ranked(_ values: [Candidate]) -> [Candidate] {
-            values.sorted {
-                if $0.sources.count != $1.sources.count { return $0.sources.count > $1.sources.count }
-                if $0.occurrences != $1.occurrences { return $0.occurrences > $1.occurrences }
-                let leftWords = $0.display.split(separator: " ").count
-                let rightWords = $1.display.split(separator: " ").count
-                if leftWords != rightWords { return leftWords > rightWords }
-                return lexicallyPrecedes($0.display, $1.display)
-            }
+        let evaluated: [Evaluated] = candidates.values.compactMap { candidate in
+            // Eligibility and the word count the ranking compares are facts
+            // about a candidate, so they are computed once, not per comparison.
+            guard candidate.priority >= 3 || candidate.sources.count >= 2 else { return nil }
+            return Evaluated(candidate: candidate, words: candidate.display.split(separator: " ").count)
+        }
+        func ranked(_ values: [Evaluated]) -> [Evaluated] {
+            values.sorted(by: ranksBefore)
         }
 
         // Reserve capacity for each evidence class. Large imported archives can
@@ -128,39 +126,69 @@ public enum VocabularyExtractor {
         let remainingQuota = boundedLimit - highQuota
         let mediumQuota = (remainingQuota + 1) / 2
         let contextualQuota = remainingQuota - mediumQuota
-        let buckets: [(values: [Candidate], quota: Int)] = [
-            (ranked(eligible.filter { $0.priority >= 4 }), highQuota),
-            (ranked(eligible.filter { $0.priority == 3 }), mediumQuota),
-            (ranked(eligible.filter { $0.priority <= 2 }), contextualQuota),
+        // One pass puts every candidate in its evidence class.
+        var high: [Evaluated] = []
+        var medium: [Evaluated] = []
+        var contextual: [Evaluated] = []
+        for entry in evaluated {
+            switch entry.candidate.priority {
+            case 4...: high.append(entry)
+            case 3: medium.append(entry)
+            default: contextual.append(entry)
+            }
+        }
+        let buckets: [(values: [Evaluated], quota: Int)] = [
+            (ranked(high), highQuota),
+            (ranked(medium), mediumQuota),
+            (ranked(contextual), contextualQuota),
         ]
-        var chosen: [Candidate] = []
+        var chosen: [Evaluated] = []
         var chosenKeys: Set<String> = []
         for bucket in buckets {
             for candidate in bucket.values.prefix(bucket.quota) {
                 chosen.append(candidate)
-                chosenKeys.insert(normalizedKey(candidate.display))
+                chosenKeys.insert(candidate.key)
             }
         }
         if chosen.count < boundedLimit {
-            let remainder = eligible.filter { !chosenKeys.contains(normalizedKey($0.display)) }.sorted {
-                if $0.priority != $1.priority { return $0.priority > $1.priority }
-                if $0.sources.count != $1.sources.count { return $0.sources.count > $1.sources.count }
-                if $0.occurrences != $1.occurrences { return $0.occurrences > $1.occurrences }
-                return lexicallyPrecedes($0.display, $1.display)
+            let remainder = evaluated.filter { !chosenKeys.contains($0.key) }.sorted { left, right in
+                if left.candidate.priority != right.candidate.priority {
+                    return left.candidate.priority > right.candidate.priority
+                }
+                return ranksBefore(left, right)
             }
             chosen.append(contentsOf: remainder.prefix(boundedLimit - chosen.count))
         }
 
         let selected = chosen.map {
             VocabularyTerm(
-                term: $0.display,
-                occurrences: $0.occurrences,
-                sourceCount: $0.sources.count,
-                confidence: $0.priority >= 4 ? "high" : $0.priority == 3 ? "medium" : "contextual"
+                term: $0.candidate.display,
+                occurrences: $0.candidate.occurrences,
+                sourceCount: $0.candidate.sources.count,
+                confidence: $0.candidate.priority >= 4 ? "high" : $0.candidate.priority == 3 ? "medium" : "contextual"
             )
         }.sorted { lexicallyPrecedes($0.term, $1.term) }
 
         return VocabularyResult(recordsScanned: notes.count, terms: selected)
+    }
+
+    /// A candidate with the facts ranking compares, computed once.
+    private struct Evaluated {
+        let candidate: Candidate
+        let words: Int
+        var key: String { VocabularyExtractor.normalizedKey(candidate.display) }
+    }
+
+    /// Support first, then repetition, then the longer (more specific) phrase.
+    private static func ranksBefore(_ left: Evaluated, _ right: Evaluated) -> Bool {
+        if left.candidate.sources.count != right.candidate.sources.count {
+            return left.candidate.sources.count > right.candidate.sources.count
+        }
+        if left.candidate.occurrences != right.candidate.occurrences {
+            return left.candidate.occurrences > right.candidate.occurrences
+        }
+        if left.words != right.words { return left.words > right.words }
+        return lexicallyPrecedes(left.candidate.display, right.candidate.display)
     }
 
     private typealias LocalTerms = [String: (display: String, count: Int, priority: Int)]

@@ -194,6 +194,127 @@ final class ParsingAndRecallTests: XCTestCase {
         XCTAssertEqual(MarkdownStore.wikiLinks(in: "[[ café ]]"), ["café"])
     }
 
+    // MARK: - Wiki-link escaping
+
+    func testEscapedWikiLinksStayLiteralText() {
+        XCTAssertEqual(MarkdownStore.wikiLinks(in: "\\[[Not a link]]"), [])
+        XCTAssertEqual(MarkdownStore.wikiLinks(in: "\\[[escaped]] then [[Real]]"), ["Real"])
+        // An even run of backslashes escapes the backslash, not the link.
+        XCTAssertEqual(MarkdownStore.wikiLinks(in: "\\\\[[Doubled]]"), ["Doubled"])
+        XCTAssertEqual(MarkdownStore.wikiLinks(in: "[[One]] \\[[two]] [[Three]]"), ["One", "Three"])
+        XCTAssertEqual(MarkdownStore.wikiLinks(in: "no links at all"), [])
+    }
+
+    // MARK: - Recall scoping
+
+    func testRecallCanBeScopedToASubdirectory() throws {
+        try write("Notes/a.md", "# A\n\nalpha release")
+        try write("Notes/b.md", "# B\n\nbeta release")
+        try write("Elsewhere/c.md", "# C\n\ngamma release")
+
+        XCTAssertEqual(
+            try store.recall(vault, query: "release").map(\.note.title).sorted(),
+            ["A", "B", "C"]
+        )
+        XCTAssertEqual(
+            try store.recall(vault, query: "release", subdirectory: "Notes").map(\.note.title).sorted(),
+            ["A", "B"]
+        )
+        XCTAssertTrue(try store.recall(vault, query: "release", subdirectory: "Missing").isEmpty)
+        XCTAssertTrue(try store.recall(vault, query: "release", subdirectory: "../elsewhere").isEmpty)
+    }
+
+    func testRecallSubdirectoryScopeAppliesToCachedSnapshots() throws {
+        try write("Notes/a.md", "# A\n\nalpha release")
+        try write("Elsewhere/b.md", "# B\n\nbeta release")
+        let cached = MarkdownStore(cache: VaultSnapshotCache())
+
+        XCTAssertEqual(
+            try cached.recall(vault, query: "release", subdirectory: "Notes").map(\.note.title),
+            ["A"]
+        )
+        XCTAssertTrue(try cached.recall(vault, query: "release", subdirectory: "Missing").isEmpty)
+    }
+
+    func testCachedRecallScopesSubdirectoriesThroughASymlinkedVaultRoot() throws {
+        // Snapshot entries carry realpath ids, so a subdirectory spelled through
+        // a symlinked vault root (macOS /tmp under /private/tmp) must match on
+        // either spelling instead of silently returning nothing.
+        try write("Memory/rule.md", "# Rule\n\nalpha memory rule")
+        try write("Elsewhere/note.md", "# Note\n\nalpha elsewhere")
+        let link = vaultDir.deletingLastPathComponent()
+            .appendingPathComponent("retex-parsing-link-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: vaultDir)
+        defer { try? FileManager.default.removeItem(at: link) }
+        let cached = MarkdownStore(cache: VaultSnapshotCache())
+        let linked = Vault(url: link)
+
+        XCTAssertEqual(try cached.recall(linked, query: "alpha").map(\.note.title).sorted(), ["Note", "Rule"])
+        XCTAssertEqual(
+            try cached.recall(linked, query: "alpha", subdirectory: "Memory").map(\.note.title),
+            ["Rule"]
+        )
+        XCTAssertEqual(
+            try cached.recall(linked, query: "alpha", subdirectory: "Elsewhere").map(\.note.title),
+            ["Note"]
+        )
+        XCTAssertEqual(
+            try cached.recall(vault, query: "alpha", subdirectory: "Memory").map(\.note.title),
+            ["Rule"]
+        )
+    }
+
+    // MARK: - Configuration resilience
+
+    private func writeConfig(_ json: String) throws {
+        try write(".retex/config.json", json)
+    }
+
+    func testVaultConfigDropsMalformedEntries() throws {
+        try writeConfig("""
+        {
+          "columns": [{"title": "Pipeline", "statuses": ["Inbox", "Won"]}, {"statuses": ["Broken"]}],
+          "views": [{"name": "Won deals", "status": "Won"}, {"status": "missing name"}],
+          "recordTypes": [{"name": "deal", "folder": "Deals"}, {"folder": "nameless"}]
+        }
+        """)
+
+        let config = VaultConfig.load(for: vault)
+        XCTAssertEqual(config.columns.map(\.title), ["Pipeline"])
+        XCTAssertEqual(config.views.map(\.name), ["Won deals"])
+        XCTAssertEqual(config.recordTypes.map(\.name), ["deal"])
+    }
+
+    func testVaultConfigReloadReflectsRewrittenFile() throws {
+        try writeConfig("{\"views\": [{\"name\": \"First\"}]}")
+        XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["First"])
+
+        try writeConfig("{\"views\": [{\"name\": \"Second\"}, {\"name\": \"Third\"}]}")
+        XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["Second", "Third"])
+    }
+
+    func testVaultConfigReloadSeesAReplacementWithTheSameMtimeAndSize() throws {
+        // A rename over the config can keep the mtime and the size, so the memo
+        // must also key on the inode and the ctime.
+        let configURL = vault.url.appendingPathComponent(".retex/config.json")
+        let stamped = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = #"{"views": [{"name": "First"}]}"#
+        let second = #"{"views": [{"name": "Other"}]}"#
+        XCTAssertEqual(first.utf8.count, second.utf8.count)
+
+        try writeConfig(first)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: configURL.path)
+        XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["First"])
+
+        let staged = vault.url.appendingPathComponent(".retex/config.tmp")
+        try second.write(to: staged, atomically: false, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: staged.path)
+        _ = try FileManager.default.replaceItemAt(configURL, withItemAt: staged)
+        try FileManager.default.setAttributes([.modificationDate: stamped], ofItemAtPath: configURL.path)
+
+        XCTAssertEqual(VaultConfig.load(for: vault).views.map(\.name), ["Other"])
+    }
+
     // MARK: - Native text paths match Foundation
 
     func testRankingFoldMatchesFoundationFolding() {

@@ -114,9 +114,20 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         /// Set by `invalidate`: the next walk is deliberate, not a check of
         /// whether events were missed.
         var forceWalk = false
+        /// Paths `invalidate(_:paths:)` marked for reload: the next request
+        /// re-reads those files in place instead of walking the vault.
+        var dirtyPaths: Set<String> = []
+        /// Full walks performed for this vault (telemetry and tests).
+        var walkCount = 0
         #if os(macOS)
         var stream: FSEventStreamRef?
         var events: EventSink?
+        /// The queue FSEvents callbacks run on. It is drained before the sink
+        /// is released so no callback can be in flight mid-release.
+        var eventsQueue: DispatchQueue?
+        /// Keeps the sink alive for the life of the stream (balanced in
+        /// `stopStream`), so a callback can never touch a freed sink.
+        var eventsRetained: Unmanaged<EventSink>?
         var barrierDirectory: URL?
         var barrierSequence = 0
         var lateBarriers = 0
@@ -132,6 +143,43 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         defer { lock.unlock() }
         let states = vault.map { [vaults[Self.key($0)]].compactMap { $0 } } ?? Array(vaults.values)
         for state in states { state.forceWalk = true }
+    }
+
+    /// Marks specific notes dirty for the next `snapshot()`: they are re-read
+    /// in place, so a single-file mutation never re-walks the vault. The walk
+    /// still happens if one of the paths cannot be matched to a known entry.
+    public func invalidate(_ vault: Vault, paths: [URL]) {
+        guard !paths.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        // No snapshot yet: the first request walks the vault anyway.
+        guard let state = vaults[Self.key(vault)] else { return }
+        for url in paths { state.dirtyPaths.insert(url.standardizedFileURL.path) }
+    }
+
+    /// Whether file events are trusted for the vault. Tests assert that deletes
+    /// and renames never switch them off.
+    func eventsAreTrusted(_ vault: Vault) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return vaults[Self.key(vault)]?.eventsTrusted ?? false
+    }
+
+    /// Full walks performed for the vault since the state was created.
+    func walksPerformed(_ vault: Vault) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return vaults[Self.key(vault)]?.walkCount ?? 0
+    }
+
+    /// Cached confinement fact for one note path: true when the note is a
+    /// regular Markdown file lexically under the vault root, so no symlink
+    /// resolution is needed. nil when the snapshot does not hold the path.
+    func cachedConfinement(forPath path: String, in vault: Vault) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let state = vaults[Self.key(vault)], state.loaded else { return nil }
+        return state.entries[path]?.confinedByPath
     }
 
     deinit {
@@ -178,11 +226,16 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         let waited = (DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
         let now = Date()
         let timerDue = now.timeIntervalSince(state.lastFullCheck) >= revalidateInterval
+        // Paths a mutation marked dirty reload exactly like reported events,
+        // so a single-file write never re-walks the vault.
+        let dirty = state.dirtyPaths
+        state.dirtyPaths.removeAll()
+        let reportedPaths = dirty.isEmpty ? pending.paths : pending.paths + Array(dirty)
         var needsWalk = !state.loaded || !state.eventsTrusted || pending.needsWalk || timerDue || state.forceWalk
 
         if !needsWalk {
             // Changed files that are already known: re-read just those.
-            for path in pending.paths {
+            for path in reportedPaths {
                 guard let entryKey = entryKey(forEventPath: path, state: state, root: root) else {
                     needsWalk = true
                     break
@@ -206,15 +259,20 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         }
         if needsWalk {
             mode = "walk"
-            let reported = Set(pending.paths)
+            let reported = Set(reportedPaths)
             let changed = try walk(state, root: root)
             #if os(macOS)
             // A timer-driven walk that finds changes no event reported means
             // the event stream cannot be trusted (a stalled fseventsd does
-            // exactly this). Changes reported while walking are not misses.
+            // exactly this). Paths are matched to keys lexically, so a delete
+            // or rename — whose entry is already gone from the table — never
+            // registers as a missed event.
             if state.loaded, state.eventsTrusted, timerDue, !state.forceWalk, !pending.needsWalk {
                 let late = awaitEvents(state, root: root)
-                let known = reported.union(late.paths).compactMap { entryKey(forEventPath: $0, state: state, root: root) }
+                var known = Set<String>()
+                for path in reported.union(late.paths) {
+                    known.formUnion(Self.lexicalKeys(forEventPath: path, root: root))
+                }
                 let missed = changed.subtracting(known)
                 if !late.needsWalk, !missed.isEmpty {
                     state.eventsTrusted = false
@@ -238,7 +296,7 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         if trace {
             let total = (DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
             FileHandle.standardError.write(Data(
-                "retex cache: \(mode) \(state.entries.count) notes, \(pending.paths.count) changed, events wait \(waited) ms, total \(total) ms\n".utf8
+                "retex cache: \(mode) \(state.entries.count) notes, \(reportedPaths.count) changed, events wait \(waited) ms, total \(total) ms\n".utf8
             ))
         }
         return Snapshot(entries: state.sorted!, unreadable: state.unreadable)
@@ -262,17 +320,8 @@ public final class VaultSnapshotCache: @unchecked Sendable {
     /// keep their parsed entry. Returns the keys that were added, changed or
     /// removed.
     private func walk(_ state: VaultState, root: URL) throws -> Set<String> {
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            throw StoreError.unreadableVault(root)
-        }
-        var paths: [String] = []
-        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            paths.append(url.path)
-        }
+        state.walkCount += 1
+        let paths = try MarkdownStore.enumerateMarkdownPaths(under: root)
 
         var changed = Set<String>()
         var unreadable: [String] = []
@@ -343,14 +392,24 @@ public final class VaultSnapshotCache: @unchecked Sendable {
     /// nil means "not a known note", which the caller settles by walking.
     private func entryKey(forEventPath path: String, state: VaultState, root: URL) -> String? {
         if state.entries[path] != nil { return path }
-        for prefix in Self.rootPrefixes(root) where path.hasPrefix(prefix + "/") {
-            let relative = path.dropFirst(prefix.count)
-            for candidate in Self.rootPrefixes(root) {
-                let key = candidate + relative
-                if state.entries[key] != nil { return key }
-            }
+        for key in Self.lexicalKeys(forEventPath: path, root: root).sorted() where state.entries[key] != nil {
+            return key
         }
         return nil
+    }
+
+    /// Every key a walk could use for a path reported by FSEvents, matched
+    /// lexically. A deleted or renamed note is already gone from the entry
+    /// table when a walk finishes, so its event must still map back to the key
+    /// the walk reported as changed.
+    private static func lexicalKeys(forEventPath path: String, root: URL) -> Set<String> {
+        var keys: Set<String> = [path]
+        let prefixes = rootPrefixes(root)
+        for prefix in prefixes where path.hasPrefix(prefix + "/") {
+            let relative = path.dropFirst(prefix.count)
+            for candidate in prefixes { keys.insert(candidate + relative) }
+        }
+        return keys
     }
 
     private static func rootPrefixes(_ root: URL) -> [String] {
@@ -372,19 +431,31 @@ public final class VaultSnapshotCache: @unchecked Sendable {
 
     // MARK: Stat
 
+    /// One `lstat` for a regular file: it already reports size, times, inode,
+    /// and `S_IFREG`, so the common case does not pay for a second `fstatat`.
+    /// Only symlinks need the follow-up stat of their target.
     static func fingerprint(_ path: String) -> Fingerprint? {
-        var target = StatInfo()
         var link = StatInfo()
-        guard fstatat(AT_FDCWD, path, &target, 0) == 0,
-              fstatat(AT_FDCWD, path, &link, AT_SYMLINK_NOFOLLOW) == 0
-        else { return nil }
+        guard fstatat(AT_FDCWD, path, &link, AT_SYMLINK_NOFOLLOW) == 0 else { return nil }
+        if (link.st_mode & S_IFMT) != S_IFLNK {
+            return Fingerprint(
+                size: Int64(link.st_size),
+                mtime: nanoseconds(mtime(link)),
+                ctime: nanoseconds(ctime(link)),
+                inode: Int64(bitPattern: UInt64(link.st_ino)),
+                lmtime: nanoseconds(mtime(link)),
+                isSymlink: false
+            )
+        }
+        var target = StatInfo()
+        guard fstatat(AT_FDCWD, path, &target, 0) == 0 else { return nil }
         return Fingerprint(
             size: Int64(target.st_size),
             mtime: nanoseconds(mtime(target)),
             ctime: nanoseconds(ctime(target)),
             inode: Int64(bitPattern: UInt64(target.st_ino)),
             lmtime: nanoseconds(mtime(link)),
-            isSymlink: (link.st_mode & S_IFMT) == S_IFLNK
+            isSymlink: true
         )
     }
 
@@ -441,6 +512,10 @@ public final class VaultSnapshotCache: @unchecked Sendable {
             defer { lock.unlock() }
             if path.hasPrefix(barrierPrefix) {
                 barriers.insert(path)
+                // Only one barrier is outstanding at a time (the cache holds
+                // its lock while waiting), so a late event for an abandoned
+                // barrier is dropped rather than leaking for the process life.
+                if barriers.count > 64 { barriers = [path] }
                 return
             }
             let walkFlags = UInt32(
@@ -478,6 +553,20 @@ public final class VaultSnapshotCache: @unchecked Sendable {
             lock.lock()
             defer { lock.unlock() }
             return barriers.remove(path) != nil
+        }
+
+        /// Drops a barrier that was never seen, so a late event cannot keep an
+        /// entry alive after the waiter gave up.
+        func forgetBarrier(_ path: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            barriers.remove(path)
+        }
+
+        var outstandingBarriers: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return barriers.count
         }
 
         func drain() -> PendingChanges {
@@ -518,9 +607,12 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         }
         let realBarriers = barriers.resolvingSymlinksInPath().path
         let sink = EventSink(rootPrefixes: Self.rootPrefixes(root), barrierDirectory: realBarriers)
+        // The context retains the sink, so a callback can never touch a sink
+        // that was released while the stream was still delivering events.
+        let retained = Unmanaged.passRetained(sink)
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(sink).toOpaque(),
+            info: retained.toOpaque(),
             retain: nil,
             release: nil,
             copyDescription: nil
@@ -546,20 +638,26 @@ public final class VaultSnapshotCache: @unchecked Sendable {
             0,
             flags
         ) else {
+            retained.release()
             try? FileManager.default.removeItem(at: barriers)
             reportEventFailure(state, root: root, reason: "the event stream could not be created")
             return
         }
-        FSEventStreamSetDispatchQueue(stream, DispatchQueue(label: "retex.snapshot-events"))
+        let queue = DispatchQueue(label: "retex.snapshot-events")
+        FSEventStreamSetDispatchQueue(stream, queue)
         guard FSEventStreamStart(stream) else {
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
+            queue.sync {}
+            retained.release()
             try? FileManager.default.removeItem(at: barriers)
             reportEventFailure(state, root: root, reason: "the event stream did not start")
             return
         }
         state.stream = stream
         state.events = sink
+        state.eventsQueue = queue
+        state.eventsRetained = retained
         state.barrierDirectory = URL(fileURLWithPath: realBarriers, isDirectory: true)
         state.eventsTrusted = true
     }
@@ -579,21 +677,30 @@ public final class VaultSnapshotCache: @unchecked Sendable {
         }
         defer { unlink(barrier) }
         let deadline = DispatchTime.now().uptimeNanoseconds + 40_000_000
-        while !sink.sawBarrier(barrier) {
-            guard DispatchTime.now().uptimeNanoseconds < deadline else {
-                state.lateBarriers += 1
-                if state.lateBarriers >= 3 {
-                    reportEventFailure(state, root: root, reason: "file events arrived late 3 times in a row (fseventsd may be stalled)")
-                }
-                // Changes still queued are covered by the walk this triggers.
-                var pending = sink.drain()
-                pending.needsWalk = true
-                return pending
+        guard Self.waitForBarrier(sink, barrier: barrier, deadline: deadline) else {
+            state.lateBarriers += 1
+            if state.lateBarriers >= 3 {
+                reportEventFailure(state, root: root, reason: "file events arrived late 3 times in a row (fseventsd may be stalled)")
             }
-            usleep(250)
+            // Changes still queued are covered by the walk this triggers.
+            var pending = sink.drain()
+            pending.needsWalk = true
+            return pending
         }
         state.lateBarriers = 0
         return sink.drain()
+    }
+
+    /// Polls until the barrier event arrives or the deadline passes. The
+    /// barrier is forgotten on every exit path, including a timeout, so a late
+    /// event cannot keep it in the sink forever.
+    static func waitForBarrier(_ sink: EventSink, barrier: String, deadline: UInt64) -> Bool {
+        defer { sink.forgetBarrier(barrier) }
+        while !sink.sawBarrier(barrier) {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { return false }
+            usleep(250)
+        }
+        return true
     }
 
     /// Barrier directories are named `<pid>-<id>`; remove those whose
@@ -633,12 +740,19 @@ public final class VaultSnapshotCache: @unchecked Sendable {
             try? FileManager.default.removeItem(at: directory)
             state.barrierDirectory = nil
         }
-        guard let stream = state.stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
-        state.stream = nil
+        if let stream = state.stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            state.stream = nil
+        }
+        // `FSEventStreamRelease` does not wait for a callback that is already
+        // running: drain the stream's queue before dropping the sink's retain.
+        if let queue = state.eventsQueue { queue.sync {} }
+        state.eventsQueue = nil
         state.events = nil
+        state.eventsRetained?.release()
+        state.eventsRetained = nil
     }
     #endif
 }

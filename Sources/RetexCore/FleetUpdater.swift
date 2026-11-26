@@ -118,31 +118,56 @@ public struct FleetRegistry {
 
     @discardableResult
     public func register(path: String, autoUpdate: Bool) throws -> FleetRegistryDocument {
-        let canonical = try canonicalVault(path)
-        var document = try load()
-        if let index = document.vaults.firstIndex(where: { $0.path == canonical }) {
-            document.vaults[index] = FleetVault(path: canonical, autoUpdate: autoUpdate)
-        } else {
-            document.vaults.append(FleetVault(path: canonical, autoUpdate: autoUpdate))
+        try withRegistryLock {
+            let canonical = try canonicalVault(path)
+            var document = try load()
+            if let index = document.vaults.firstIndex(where: { $0.path == canonical }) {
+                document.vaults[index] = FleetVault(path: canonical, autoUpdate: autoUpdate)
+            } else {
+                document.vaults.append(FleetVault(path: canonical, autoUpdate: autoUpdate))
+            }
+            document.vaults.sort { $0.path < $1.path }
+            try save(document)
+            return document
         }
-        document.vaults.sort { $0.path < $1.path }
-        try save(document)
-        return document
     }
 
     @discardableResult
     public func unregister(path: String) throws -> FleetRegistryDocument {
-        // A vault that no longer exists is matched by its stored path string.
-        let lexical = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true)
-            .standardizedFileURL.path
-        let candidates: Set<String> = [lexical, (try? canonicalVault(path)) ?? lexical]
-        var document = try load()
-        guard document.vaults.contains(where: { candidates.contains($0.path) }) else {
-            throw RegistryError.missingVault
+        try withRegistryLock {
+            // A vault that no longer exists is matched by its stored path string.
+            let lexical = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true)
+                .standardizedFileURL.path
+            let candidates: Set<String> = [lexical, (try? canonicalVault(path)) ?? lexical]
+            var document = try load()
+            guard document.vaults.contains(where: { candidates.contains($0.path) }) else {
+                throw RegistryError.missingVault
+            }
+            document.vaults.removeAll { candidates.contains($0.path) }
+            try save(document)
+            return document
         }
-        document.vaults.removeAll { candidates.contains($0.path) }
-        try save(document)
-        return document
+    }
+
+    /// Serializes the registry's read-modify-write cycles with an exclusive
+    /// `flock` on a sibling `.lock` file, so two concurrent registrations
+    /// cannot read the same document and lose each other's entries.
+    private func withRegistryLock<T>(_ body: () throws -> T) throws -> T {
+        #if os(Windows)
+        // Windows offers no flock; the atomic write still keeps the file
+        // well-formed.
+        return try body()
+        #else
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let lockURL = directory.appendingPathComponent(url.lastPathComponent + ".lock")
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { throw RegistryError.invalidRegistry }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw RegistryError.invalidRegistry }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        return try body()
+        #endif
     }
 
     public func save(_ document: FleetRegistryDocument) throws {

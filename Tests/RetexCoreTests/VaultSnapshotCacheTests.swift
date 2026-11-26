@@ -94,4 +94,78 @@ final class VaultSnapshotCacheTests: XCTestCase {
         cache.invalidate(vault)
         XCTAssertEqual(try store.search(vault, query: "probe invalidated").count, 1)
     }
+
+    /// A single-file mutation marks that path dirty: the next request re-reads
+    /// it without paying for a full vault walk.
+    func testTargetedInvalidationReloadsOnlyTheGivenPaths() throws {
+        // File events keep the cache off the "walk every request" path, so the
+        // walk counter isolates the cost of the invalidation itself.
+        let cache = VaultSnapshotCache(revalidateInterval: 3600)
+        let store = MarkdownStore(cache: cache)
+        _ = try store.scan(vault)
+        let walks = cache.walksPerformed(vault)
+
+        try write("seed/note-5.md", "# Seed 5\nprobe targeted\n")
+        cache.invalidate(vault, paths: [vaultDir.appendingPathComponent("seed/note-5.md")])
+        XCTAssertEqual(try store.search(vault, query: "probe targeted").count, 1)
+        XCTAssertEqual(cache.walksPerformed(vault), walks, "targeted invalidation must not re-walk the vault")
+
+        // An unknown path cannot be reloaded in place: the cache walks instead
+        // of silently missing a new file.
+        try write("seed/note-31.md", "# Seed 31\nprobe unknown path\n")
+        cache.invalidate(vault, paths: [vaultDir.appendingPathComponent("seed/note-31.md")])
+        XCTAssertEqual(try store.search(vault, query: "probe unknown path").count, 1)
+        XCTAssertEqual(cache.walksPerformed(vault), walks + 1)
+    }
+
+    #if os(macOS)
+    /// A delete is reported by FSEvents for a file that is gone by the time the
+    /// walk finishes. It must not look like a missed event, or the cache walks
+    /// the vault forever after.
+    func testDeletingANoteDoesNotDisableFileEvents() throws {
+        let cache = VaultSnapshotCache(revalidateInterval: 0.2)
+        let store = MarkdownStore(cache: cache)
+        _ = try store.scan(vault)
+        try XCTSkipUnless(cache.eventsAreTrusted(vault), "file events unavailable in this environment")
+
+        try FileManager.default.removeItem(at: vaultDir.appendingPathComponent("seed/note-7.md"))
+        // Let the event drain and a timer-driven revalidate walk see the change.
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(try store.scan(vault).count, 29)
+        Thread.sleep(forTimeInterval: 0.4)
+        XCTAssertEqual(try store.scan(vault).count, 29)
+        XCTAssertTrue(cache.eventsAreTrusted(vault), "a deletion must not switch file events off")
+    }
+
+    /// A barrier that is never reported must not stay in the sink for the life
+    /// of the process: every wait removes its own record, and a flood of late
+    /// events cannot grow the set without bound.
+    func testBarrierWaitsLeaveNothingBehind() {
+        let sink = VaultSnapshotCache.EventSink(rootPrefixes: ["/vault"], barrierDirectory: "/barriers")
+
+        sink.record(path: "/barriers/arrived", flags: 0)
+        XCTAssertTrue(
+            VaultSnapshotCache.waitForBarrier(
+                sink,
+                barrier: "/barriers/arrived",
+                deadline: DispatchTime.now().uptimeNanoseconds + 40_000_000
+            )
+        )
+        XCTAssertEqual(sink.outstandingBarriers, 0)
+
+        XCTAssertFalse(
+            VaultSnapshotCache.waitForBarrier(
+                sink,
+                barrier: "/barriers/missing",
+                deadline: DispatchTime.now().uptimeNanoseconds
+            ),
+            "a barrier that never arrives times out"
+        )
+        XCTAssertEqual(sink.outstandingBarriers, 0)
+
+        // Late events for abandoned barriers are bounded, not accumulated.
+        for index in 0..<200 { sink.record(path: "/barriers/late-\(index)", flags: 0) }
+        XCTAssertLessThanOrEqual(sink.outstandingBarriers, 64)
+    }
+    #endif
 }

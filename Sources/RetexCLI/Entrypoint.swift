@@ -245,7 +245,11 @@ enum RetexCLI {
                 columns: config.columns.map { column in
                     BoardList(
                         name: column.title,
-                        cards: records.filter { column.statuses.contains($0.status) }
+                        cards: records.filter { record in
+                            column.statuses.contains {
+                                $0.caseInsensitiveCompare(record.status) == .orderedSame
+                            }
+                        }
                             .sorted { $0.rank < $1.rank }
                             .map(NoteSummary.init)
                     )
@@ -285,10 +289,11 @@ enum RetexCLI {
 
         case "undo":
             let url = try invocation.noteURL()
-            guard let previous = try UndoHistory().pop(path: url.standardizedFileURL.path) else {
+            // One journal-locked call: the newest entry is written back
+            // atomically and only then removed from the journal.
+            guard try UndoHistory().restoreLatest(for: url) != nil else {
                 throw UsageError("No undo history for \(url.path)")
             }
-            try previous.write(to: url, atomically: true, encoding: .utf8)
             let restored = try store.load(url)
             try output(NoteDetail(restored), json: invocation.isJSON) { "Restored \($0.path)" }
 
@@ -406,7 +411,9 @@ enum RetexCLI {
             try runUpdate(invocation)
 
         case "version":
-            if invocation.flag("lean") {
+            if invocation.isJSON {
+                // --json / --raw-json / --lean keep the machine contracts;
+                // a bare `retex version` still prints the plain version.
                 try output(RetexCLI.version, json: true) { $0 }
             } else {
                 print(RetexCLI.version)
@@ -842,6 +849,9 @@ enum RetexCLI {
                 "Initialized and strict-checked \(reports.count)/\(reports.count) opted-in vaults in \(reports.reduce(0) { $0 + $1.milliseconds }) ms"
             }
         case "install-updater":
+            // The scheduled job inherits this value; refuse to install a job
+            // that could only ever exit 64 because it has no repo to check.
+            _ = try updateRepo()
             let executable = executableURL()
             let schedule = try AutoUpdateScheduler().install(executable: executable)
             try output(schedule, json: invocation.isJSON) { "Installed \($0.platform) updater at \($0.configurationPath)" }
@@ -856,6 +866,11 @@ enum RetexCLI {
     private static func updateRepo() throws -> String {
         guard let repo = ProcessInfo.processInfo.environment["RETEX_UPDATE_REPO"], !repo.isEmpty else {
             throw UsageError("Set RETEX_UPDATE_REPO to the GitHub owner/repo for self-update (e.g. owner/repo).")
+        }
+        // The value becomes a path in the API URL, so it must be exactly two
+        // repository-name segments rather than arbitrary text.
+        guard AutoUpdateScheduler.isValidRepository(repo) else {
+            throw UsageError("RETEX_UPDATE_REPO must be owner/repo (letters, digits, dot, dash or underscore in each part).")
         }
         return repo
     }
@@ -915,8 +930,8 @@ enum RetexCLI {
         extract.arguments = ["-xzf", archivePath.path, "-C", workDir.path]
         let binaryName = "retex"
 #endif
-        extract.standardOutput = Pipe()
-        extract.standardError = Pipe()
+        extract.standardOutput = FileHandle.nullDevice
+        extract.standardError = FileHandle.nullDevice
         try extract.run()
         extract.waitUntilExit()
         let newBinary = workDir.appendingPathComponent(binaryName)
@@ -990,7 +1005,7 @@ enum RetexCLI {
         version.executableURL = candidate
         version.arguments = ["version"]
         version.standardOutput = output
-        version.standardError = Pipe()
+        version.standardError = FileHandle.nullDevice
         try version.run()
         let reported = String(
             decoding: output.fileHandleForReading.readDataToEndOfFile(),
@@ -1011,8 +1026,10 @@ enum RetexCLI {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        // Both streams are unread here, so they must not be pipes: an unread
+        // pipe can fill its buffer and deadlock the child before it exits.
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw UsageError(failure) }
@@ -1407,6 +1424,12 @@ private struct Invocation {
 
         while index < arguments.count {
             let argument = arguments[index]
+            if argument == "--" {
+                // End of options: every remaining argument is positional, even
+                // when it looks like a flag (`retex search -- --draft`).
+                positionals.append(contentsOf: arguments[(index + 1)...])
+                break
+            }
             guard argument.hasPrefix("--") else {
                 positionals.append(argument)
                 index += 1

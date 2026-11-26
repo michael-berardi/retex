@@ -42,6 +42,13 @@ USER retex
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -sf -H "Authorization: Bearer $RETEX_MCP_TOKEN" \
-      http://127.0.0.1:${PORT}/health >/dev/null || exit 1
+    CMD python3 -c 'import json; \
+import os; \
+from urllib.request import Request, urlopen; \
+legacy = (os.environ.get("RETEX_MCP_TOKEN") or "").strip(); \
+configured = json.loads(os.environ.get("RETEX_MCP_TOKENS_JSON") or "{}"); \
+first = next(iter(configured.values()), "") if isinstance(configured, dict) else (configured[0] if configured else ""); \
+token = legacy or first; \
+request = Request("http://127.0.0.1:" + os.environ.get("PORT", "8080") + "/health", headers={"Authorization": "Bearer " + token}); \
+urlopen(request, timeout=3).read()'
 CMD ["python3", "/app/gateway.py"]

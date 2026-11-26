@@ -77,6 +77,42 @@ final class RetexCLITests: XCTestCase {
         XCTAssertTrue(flagged.stderr.isEmpty)
     }
 
+    func testVersionCommandHonoursTheJSONFlags() throws {
+        let plain = try run(["version"])
+        XCTAssertEqual(plain.status, 0)
+        let version = plain.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(version.isEmpty)
+
+        let json = try run(["version", "--json"])
+        XCTAssertEqual(json.status, 0)
+        XCTAssertEqual(try jsonEnvelope(json.stdout)["data"] as? String, version)
+
+        let raw = try run(["version", "--raw-json"])
+        XCTAssertEqual(raw.status, 0)
+        XCTAssertEqual(try jsonEnvelope(raw.stdout)["data"] as? String, version)
+
+        let lean = try run(["version", "--lean"])
+        XCTAssertEqual(lean.status, 0)
+        let leanPayload = try JSONSerialization.jsonObject(
+            with: Data(lean.stdout.utf8),
+            options: [.fragmentsAllowed]
+        ) as? String
+        XCTAssertEqual(leanPayload, version)
+    }
+
+    func testDoubleDashEndsOptionParsing() throws {
+        // A query or positional that begins with `--` is only reachable after `--`.
+        let note = vaultDir.appendingPathComponent("draft.md")
+        try "# Draft Marker\n\nContains --draft marker text.\n".write(to: note, atomically: true, encoding: .utf8)
+
+        let asFlag = try run(["search"] + vaultArg + ["--draft"])
+        XCTAssertEqual(asFlag.status, 64, asFlag.stdout)
+
+        let positional = try run(["search"] + vaultArg + ["--", "--draft"])
+        XCTAssertEqual(positional.status, 0, positional.stderr)
+        XCTAssertTrue(positional.stdout.contains("Draft Marker"), positional.stdout)
+    }
+
     func testRemovedCodecFlagsAreRejected() throws {
         for flag in ["--uc", "--no-uc"] {
             let result = try run(["count"] + vaultArg + [flag])

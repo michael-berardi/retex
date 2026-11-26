@@ -96,13 +96,108 @@ public struct VaultConfig: Sendable, Equatable {
     }
 
     /// Loads `<vault>/.retex/config.json`, falling back to defaults on any
-    /// read/parse problem so a broken config never bricks a vault.
+    /// read/parse problem so a broken config never bricks a vault. Decoded
+    /// configs are memoized by the file's fingerprint: an MCP session asks for
+    /// the same unchanged file on nearly every request.
     public static func load(for vault: Vault) -> VaultConfig {
         let url = Self.url(for: vault)
-        guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(VaultConfig.self, from: data)
-        else { return .default }
+        let path = url.path
+        let fingerprint = Self.fingerprint(of: url)
+        if let cached = cache.config(for: path, fingerprint: fingerprint) {
+            return cached
+        }
+        let config: VaultConfig
+        if let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode(VaultConfig.self, from: data) {
+            config = decoded
+        } else {
+            config = .default
+        }
+        cache.store(config, for: path, fingerprint: fingerprint)
         return config
+    }
+
+    /// Identifies one version of the config file. Size and mtime alone miss a
+    /// replacement made inside the same timestamp tick — a same-size rewrite,
+    /// or a rename over the file — so the inode and ctime join the key.
+    struct Fingerprint: Equatable {
+        let mtime: Date?
+        let size: Int?
+        let inode: UInt64
+        let changedAt: Double
+    }
+
+    static func fingerprint(of url: URL) -> Fingerprint {
+#if canImport(Darwin)
+        var info = Darwin.stat()
+        if lstat(url.path, &info) == 0 {
+            let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
+            let ctime = Double(info.st_ctimespec.tv_sec) + Double(info.st_ctimespec.tv_nsec) / 1_000_000_000
+            return Fingerprint(
+                mtime: Date(timeIntervalSince1970: mtime),
+                size: Int(info.st_size),
+                inode: UInt64(info.st_ino),
+                changedAt: ctime
+            )
+        }
+#elseif canImport(Glibc) || canImport(Musl)
+        var info = stat()
+        if lstat(url.path, &info) == 0 {
+            let mtime = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1_000_000_000
+            let ctime = Double(info.st_ctim.tv_sec) + Double(info.st_ctim.tv_nsec) / 1_000_000_000
+            return Fingerprint(
+                mtime: Date(timeIntervalSince1970: mtime),
+                size: Int(info.st_size),
+                inode: UInt64(info.st_ino),
+                changedAt: ctime
+            )
+        }
+#else
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if attributes != nil {
+            return Fingerprint(
+                mtime: attributes?[.modificationDate] as? Date,
+                size: (attributes?[.size] as? NSNumber)?.intValue,
+                inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0,
+                changedAt: (attributes?[.creationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            )
+        }
+#endif
+        // A missing file has one fingerprint, so the defaults it yields are
+        // cached until the file appears.
+        return Fingerprint(mtime: nil, size: nil, inode: 0, changedAt: 0)
+    }
+
+    // MARK: Config cache
+
+    private static let cache = VaultConfigCache()
+
+    /// Fingerprint-keyed memo for decoded configs. A missing file is cached
+    /// too (nil fingerprint), and any appearance of the file changes the
+    /// fingerprint, so defaults are never served for a config that exists.
+    private final class VaultConfigCache: @unchecked Sendable {
+        private struct Entry {
+            let fingerprint: VaultConfig.Fingerprint
+            let config: VaultConfig
+        }
+
+        private let lock = NSLock()
+        private var entries: [String: Entry] = [:]
+        private let limit = 64
+
+        func config(for path: String, fingerprint: VaultConfig.Fingerprint) -> VaultConfig? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = entries[path], entry.fingerprint == fingerprint else { return nil }
+            return entry.config
+        }
+
+        func store(_ config: VaultConfig, for path: String, fingerprint: VaultConfig.Fingerprint) {
+            lock.lock()
+            defer { lock.unlock() }
+            if entries.count >= limit, entries[path] == nil { entries.removeAll(keepingCapacity: true) }
+            entries[path] = Entry(fingerprint: fingerprint, config: config)
+        }
     }
 
     public func view(named name: String) -> SavedView? {
@@ -132,13 +227,28 @@ public struct VaultConfig: Sendable, Equatable {
 extension VaultConfig: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let rawColumns = try container.decodeIfPresent([RawColumn].self, forKey: .columns)
-        let columns = (rawColumns ?? []).map { BoardColumn(title: $0.title, statuses: Set($0.statuses)) }
+        // Each element decodes on its own: one malformed column, view, or
+        // record type is dropped instead of discarding the whole config.
+        let rawColumns = Self.elements(RawColumn.self, forKey: .columns, in: container)
+        let columns = rawColumns.map { BoardColumn(title: $0.title, statuses: Set($0.statuses)) }
         self.init(
             columns: columns.isEmpty ? BoardColumn.defaultColumns : columns,
-            views: try container.decodeIfPresent([SavedView].self, forKey: .views) ?? [],
-            recordTypes: try container.decodeIfPresent([RecordSchema].self, forKey: .recordTypes) ?? []
+            views: Self.elements(SavedView.self, forKey: .views, in: container),
+            recordTypes: Self.elements(RecordSchema.self, forKey: .recordTypes, in: container)
         )
+    }
+
+    /// Decodes any array of a key, keeping the elements that decode and
+    /// dropping only the ones that do not.
+    private static func elements<Element: Decodable>(
+        _ type: Element.Type,
+        forKey key: CodingKeys,
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) -> [Element] {
+        guard let wrapped = (try? container.decodeIfPresent([Failable<Element>].self, forKey: key)) ?? nil else {
+            return []
+        }
+        return wrapped.compactMap(\.value)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -154,7 +264,31 @@ extension VaultConfig: Codable {
     private enum CodingKeys: String, CodingKey { case columns, views, recordTypes }
 }
 
+/// Decodes to `nil` instead of throwing, so one bad array element cannot take
+/// its siblings down with it.
+private struct Failable<Wrapped: Decodable>: Decodable {
+    let value: Wrapped?
+
+    init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
+    }
+}
+
 struct RawColumn: Codable {
     let title: String
     let statuses: [String]
+
+    init(title: String, statuses: [String]) {
+        self.title = title
+        self.statuses = statuses
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        let wrapped = (try? container.decodeIfPresent([Failable<String>].self, forKey: .statuses)) ?? []
+        statuses = wrapped.compactMap(\.value)
+    }
+
+    private enum CodingKeys: String, CodingKey { case title, statuses }
 }

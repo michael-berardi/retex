@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+- Sync safety: an encrypted-archive pull installs into the vault through the
+  same deepest-existing-ancestor, resolved-parent and symlink checks the
+  writer path uses, so a symlinked vault subdirectory can no longer make an
+  archive write outside the vault (`StoreError.pathOutsideVault`).
+- Sync safety: a pull stages the archive under `<vault>/.retex/mirror-<uuid>/`
+  instead of a sibling directory in the parent (which fails on read-only
+  parents and mount points), replaces each file with a single `rename(2)` over
+  the live file, and only deletes files the archive no longer carries after
+  every install succeeded. An interruption leaves the vault as it was; a
+  failed rollback keeps the stash and names it in
+  `CryptoError.mirrorRollbackFailed` instead of discarding it.
+- Sync: the stall guard is now the idle timeout (60 s) and the total exchange
+  deadline scales with the body size (`max(180 s, bytes / 32 KiB/s)`), so a
+  large vault on a slow link is no longer cut off at 180 s.
+  `RETEX_SYNC_TIMEOUT_SECONDS` overrides the floor for slower links.
+- Sync: a server `ETag` is stored as the revision only when it is a
+  64-character SHA-256 (optionally `W/`-prefixed and quoted); any other tag
+  falls back to the digest of the exchanged blob, so `retex sync status` no
+  longer reports spurious remote changes.
+- `retex memory recall` with a subdirectory now returns cached hits through a
+  symlinked vault root: the scope filter accepts both the lexical and the
+  realpath spelling instead of dropping every entry.
+- Agent memory: the secret scanner treats any single-token assignment value of
+  12+ characters as a secret (and password-named keys such as `password`,
+  `passwd`, `passphrase` and `pwd` from 6), so `password: hunter2` and
+  `api_key=letmeinwithwords` are redacted; the digit/symbol/mixed-case shape
+  test now applies only to 6-11 character values.
+- Front matter: a `#` inside a value is preserved — `title: Fix issue #42`,
+  `color: #ff0000` and `tags: [a, #b]` round-trip unchanged. A `#` starts an
+  inline comment only after whitespace and outside quotes and `[` lists.
+- Ranking: an unbounded ranked search sorts its scored results once instead
+  of inserting each hit linearly (quadratic in the number of matches); a
+  capped search binary-searches the insertion point. Results are unchanged.
+- `retex create`: the note is written to a hidden temp file and hard-linked
+  into its name, so a concurrent scan never sees a partially written note.
+- `retex create` without a `title`: the value falls back to the `#` heading,
+  then to the file name.
+- `retex version --json` prints the version as JSON.
+- Front matter updates collapse every duplicate key, not just the first two.
+- Vault config: the decoded-config memo also keys on inode and ctime, so a
+  config replaced within one timestamp tick is reloaded.
+- Auto-update scheduler: the systemd unit escapes `%` as `%%` and drops values
+  containing control characters, and `RETEX_UPDATE_REPO` must be `owner/repo`.
+- Agent memory promotion: a failed supersession restores the record and drops
+  its journal entry under one journal lock.
+
 ## 1.9.1 - 2026-11-25
 
 - Release packaging: release archives include all linked reference docs

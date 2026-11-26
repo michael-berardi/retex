@@ -1,5 +1,5 @@
 import XCTest
-import RetexCore
+@testable import RetexCore
 
 final class MCPServerTests: XCTestCase {
     private var vaultDir: URL!
@@ -58,6 +58,139 @@ final class MCPServerTests: XCTestCase {
     /// Tool results are compact JSON inside the content envelope.
     private func toolPayload(_ text: String) throws -> [String: Any] {
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+    }
+
+    /// Sends raw bytes so a line that is not valid UTF-8 can be exercised; the
+    /// shared harness only accepts strings.
+    private func callRaw(_ lines: [Data], readOnly: Bool = false) throws -> [[String: Any]] {
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let collected = LockedBox(Data())
+
+        let feeder = Thread {
+            for line in lines {
+                inputPipe.fileHandleForWriting.write(line + Data([UInt8(ascii: "\n")]))
+            }
+            inputPipe.fileHandleForWriting.closeFile()
+        }
+        let reader = Thread {
+            while true {
+                let chunk = outputPipe.fileHandleForReading.availableData
+                if chunk.isEmpty { break }
+                collected.with { $0.append(chunk) }
+            }
+        }
+
+        let server = MCPServer(
+            vault: Vault(url: vaultDir),
+            readOnly: readOnly,
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting
+        )
+        feeder.start()
+        reader.start()
+        try server.run()
+
+        while !feeder.isFinished { Thread.sleep(forTimeInterval: 0.01) }
+        outputPipe.fileHandleForWriting.closeFile()
+        while !reader.isFinished { Thread.sleep(forTimeInterval: 0.01) }
+
+        return try collected.with { String(decoding: $0, as: UTF8.self) }
+            .split(separator: "\n")
+            .map { line in
+                let object = try JSONSerialization.jsonObject(with: Data(line.utf8))
+                return try XCTUnwrap(object as? [String: Any], "not a JSON object: \(line)")
+            }
+    }
+
+    /// A single `null`, array, or nested object in `arguments` must not discard
+    /// the valid arguments beside it.
+    func testNullAndNestedArgumentsKeepTheirSiblings() throws {
+        let path = vaultDir.appendingPathComponent("Deals/acme-redesign.md").path
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"search_notes","arguments":{"query":"rebuild","ranked":null,"limit":null,"filter":{"owner":"Sam"},"tags":["deal"]}}}"#,
+            #"{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"list_notes","arguments":{"type":"deal","archived":null,"limit":null}}}"#,
+            #"{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"read_note","arguments":{"path":"\#(path)","expected_hash":null}}}"#,
+        ], readOnly: true)
+
+        let searched = try toolPayload(try resultText(responses[0]))
+        XCTAssertEqual(searched["count"] as? String, "1", "the non-null query must survive its null siblings")
+
+        let listed = try toolPayload(try resultText(responses[1]))
+        XCTAssertEqual(listed["count"] as? String, "1", "the non-null type filter must survive")
+
+        let read = try toolPayload(try resultText(responses[2]))
+        XCTAssertEqual(read["title"] as? String, "Acme redesign")
+    }
+
+    func testInvalidUTF8RequestReturnsParseError() throws {
+        // An opening brace, a broken UTF-8 sequence, then a closing brace.
+        let invalid = Data([0x7B, 0xC3, 0x28, 0x7D])
+        let responses = try callRaw([
+            invalid,
+            Data(#"{"jsonrpc":"2.0","id":63,"method":"ping"}"#.utf8),
+        ])
+        XCTAssertEqual(responses.count, 2, "an invalid UTF-8 line must be answered, not silently dropped")
+        let error = try XCTUnwrap(responses[0]["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? Int, -32700)
+        XCTAssertTrue(responses[0]["id"] is NSNull, "parse errors carry a null id")
+        XCTAssertEqual(responses[1]["id"] as? Int, 63)
+    }
+
+    /// The `tools/call` surface already hides write tools in read-only mode;
+    /// dispatch refuses them too, so no other path can mutate the vault.
+    func testReadOnlyDispatchRefusesWriteToolsDirectly() throws {
+        let path = vaultDir.appendingPathComponent("Deals/acme-redesign.md").path
+        let server = MCPServer(
+            vault: Vault(url: vaultDir),
+            readOnly: true,
+            input: .nullDevice,
+            output: .nullDevice
+        )
+        let writeArgs: [String: MCPServer.FlexibleValue] = [
+            "path": .string(path),
+            "key": .string("status"),
+            "value": .string("Won"),
+        ]
+        XCTAssertThrowsError(
+            try server.dispatchTool("set_property", args: writeArgs, arg: { writeArgs[$0]?.stringValue })
+        ) { error in
+            XCTAssertTrue("\(error)".contains("--allow-write"), "unexpected error \(error)")
+        }
+        XCTAssertEqual(try store.load(URL(fileURLWithPath: path)).status, "Inbox")
+
+        // Reads still dispatch through the same entry point.
+        let readArgs: [String: MCPServer.FlexibleValue] = ["path": .string(path)]
+        XCTAssertNoThrow(try server.dispatchTool("read_note", args: readArgs, arg: { readArgs[$0]?.stringValue }))
+    }
+
+    /// JSON booleans and numbers must keep their types when the tool schemas
+    /// are re-encoded; stringifying them corrupts every `tools/list` payload.
+    func testToolSchemaEncodingKeepsScalarTypes() throws {
+        func wire(_ value: Any) throws -> String {
+            String(decoding: try JSONEncoder().encode(MCPServer.anyJSON(value)), as: UTF8.self)
+        }
+        XCTAssertEqual(try wire(NSNumber(value: 3)), "3")
+        XCTAssertEqual(try wire(NSNumber(value: 2.5)), "2.5")
+        XCTAssertEqual(try wire([NSNumber(value: 1)]), "[1]")
+        #if canImport(Darwin)
+        XCTAssertEqual(try wire(true), "true")
+        XCTAssertEqual(try wire(false), "false")
+        #endif
+    }
+
+    func testGetBoardMatchesStatusesCaseInsensitively() throws {
+        let retexDir = vaultDir.appendingPathComponent(".retex", isDirectory: true)
+        try FileManager.default.createDirectory(at: retexDir, withIntermediateDirectories: true)
+        try """
+        {"columns":[{"title":"Backlog","statuses":["inbox"]}]}
+        """.write(to: retexDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+        let responses = try call([
+            #"{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"get_board","arguments":{}}}"#,
+        ], readOnly: true)
+        let board = try toolPayload(try resultText(responses[0]))
+        XCTAssertTrue((board["board"] as? String)?.contains("Acme redesign") ?? false, "status matching ignores case")
     }
 
     func testInitializeHandshake() throws {
@@ -403,5 +536,37 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(notes.contains("acme-redesign.md"))
         XCTAssertFalse(notes.contains("escape.md"))
         XCTAssertFalse(notes.contains("Outside"))
+    }
+
+    func testCachedSearchAndRecallWorkThroughSymlinkedVaultRoot() throws {
+        // Vaults accessed through a symlinked root (such as /tmp -> /private/tmp
+        // on macOS) have `confinedByPath == false` in the snapshot cache and
+        // must fall back to full confinement resolution rather than dropping all hits.
+        let linkDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retex-symlink-root-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(at: linkDir, withDestinationURL: vaultDir)
+        defer { try? FileManager.default.removeItem(at: linkDir) }
+
+        let cache = VaultSnapshotCache()
+        let server = MCPServer(vault: Vault(url: linkDir), store: MarkdownStore(cache: cache), readOnly: true)
+        let searchPayload = try server.dispatchTool(
+            "search_notes",
+            args: ["query": .string("Acme")],
+            arg: { $0 == "query" ? "Acme" : nil }
+        )
+        let encodedSearch = try AgentOutput.compactJSON(searchPayload)
+        XCTAssertTrue(encodedSearch.contains("Acme redesign"), encodedSearch)
+
+        let recallPayload = try server.dispatchTool(
+            "recall_context",
+            args: ["query": .string("Acme"), "budget": .string("4000")],
+            arg: { key in
+                if key == "query" { return "Acme" }
+                if key == "budget" { return "4000" }
+                return nil
+            }
+        )
+        let encodedRecall = try AgentOutput.compactJSON(recallPayload)
+        XCTAssertTrue(encodedRecall.contains("Acme redesign"), encodedRecall)
     }
 }

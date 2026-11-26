@@ -71,6 +71,7 @@ public final class VaultWatcher: @unchecked Sendable {
             kFSEventStreamCreateFlagFileEvents
                 | kFSEventStreamCreateFlagUseCFTypes
         )
+        let queue = DispatchQueue.global(qos: .utility)
         guard let created = FSEventStreamCreate(
             kCFAllocatorDefault,
             { _, clientInfo, numEvents, eventPaths, eventFlags, _ in
@@ -93,8 +94,18 @@ public final class VaultWatcher: @unchecked Sendable {
             throw StoreError.unreadableVault(vaultURL)
         }
 
-        FSEventStreamSetDispatchQueue(created, DispatchQueue.global(qos: .utility))
-        FSEventStreamStart(created)
+        FSEventStreamSetDispatchQueue(created, queue)
+        guard FSEventStreamStart(created) else {
+            // A stream that refuses to start would leave a watcher that looks
+            // healthy but never reports anything: fail loudly instead.
+            FSEventStreamInvalidate(created)
+            FSEventStreamRelease(created)
+            queue.sync {}
+            // Balance the passRetained above; the stream never took ownership.
+            retainedSelf?.release()
+            retainedSelf = nil
+            throw StoreError.unreadableVault(vaultURL)
+        }
         stream = created
     }
 
@@ -133,6 +144,8 @@ public final class VaultWatcher: @unchecked Sendable {
         var fresh: Set<String> = []
         let root = vaultURL.path
         for index in 0..<numEvents {
+            // File-level flags save a directory probe per event path.
+            let eventFlags = index < flags.count ? flags[index] : 0
             for path in paths[index < paths.count ? index : 0].split(separator: "\0") {
                 let changed = String(path)
                 guard changed.hasPrefix(root + "/") else { continue }
@@ -141,8 +154,14 @@ public final class VaultWatcher: @unchecked Sendable {
                 // memory usage sidecar) and atomic-save temp files
                 // (`note.md.sb-<hash>-<rand>`) never reach the callback.
                 guard Self.isReportable(relativePath: String(changed.dropFirst(root.count + 1))) else { continue }
-                // Skip directories (events may name parents).
-                if (try? FileManager.default.contentsOfDirectory(atPath: changed)) != nil { continue }
+                // Directories never reach the callback: events name parents,
+                // and `ItemIsFile` comes with file-level event reporting. The
+                // probe is only a fallback for events that carry neither flag.
+                if eventFlags & UInt32(kFSEventStreamEventFlagItemIsDir) != 0 { continue }
+                if eventFlags & UInt32(kFSEventStreamEventFlagItemIsFile) == 0,
+                   (try? FileManager.default.contentsOfDirectory(atPath: changed)) != nil {
+                    continue
+                }
                 fresh.insert(changed)
             }
         }
@@ -182,15 +201,39 @@ public final class VaultWatcher: @unchecked Sendable {
 }
 
 #else
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// Portable polling watcher for Linux and Windows. It keeps no persistent
 /// index and reports only changed Markdown paths, matching the macOS contract.
 public final class VaultWatcher: @unchecked Sendable {
+    /// What a poll compares. Size and mtime alone miss a same-size edit made
+    /// inside one timestamp tick, so ctime and inode (where the platform
+    /// reports them) join the comparison.
     private struct Signature: Equatable {
         let modifiedAt: Date
         let bytes: Int
+        let changedAt: Date
+        let inode: UInt64
     }
+
+    private struct Scan {
+        var signatures: [String: Signature]
+        /// Notes whose mtime is too close to the scan to prove they are
+        /// unchanged: they are reported again on the next poll.
+        var racy: Set<String>
+    }
+
+    /// A write this close to a scan may happen again inside the same
+    /// filesystem timestamp tick, so such a note is re-reported once (the same
+    /// racy-clean rule git uses to avoid missing a change).
+    private static let racyWindow: TimeInterval = 2
 
     private let vaultURL: URL
     private let interval: TimeInterval
@@ -216,7 +259,7 @@ public final class VaultWatcher: @unchecked Sendable {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard timer == nil else { return }
-        snapshot = try makeSnapshot()
+        snapshot = try makeSnapshot(scanStartedAt: Date()).signatures
         let source = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         source.schedule(deadline: .now() + interval, repeating: interval)
         source.setEventHandler { [weak self] in self?.poll() }
@@ -236,24 +279,25 @@ public final class VaultWatcher: @unchecked Sendable {
     deinit { stop() }
 
     private func poll() {
-        guard let current = try? makeSnapshot() else { return }
+        let scanStartedAt = Date()
+        guard let scan = try? makeSnapshot(scanStartedAt: scanStartedAt) else { return }
         stateLock.lock()
         guard timer != nil else {
             stateLock.unlock()
             return
         }
         let previous = snapshot
-        snapshot = current
+        snapshot = scan.signatures
         stateLock.unlock()
 
-        let changed = Set(previous.keys).union(current.keys).filter {
-            previous[$0] != current[$0]
+        let changed = Set(previous.keys).union(scan.signatures.keys).filter {
+            previous[$0] != scan.signatures[$0] || scan.racy.contains($0)
         }.sorted()
         guard !changed.isEmpty else { return }
         callbackQueue.async { [onChange] in onChange(changed) }
     }
 
-    private func makeSnapshot() throws -> [String: Signature] {
+    private func makeSnapshot(scanStartedAt: Date) throws -> Scan {
         guard let enumerator = FileManager.default.enumerator(
             at: vaultURL,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
@@ -261,18 +305,68 @@ public final class VaultWatcher: @unchecked Sendable {
         ) else {
             throw StoreError.unreadableVault(vaultURL)
         }
-        var result: [String: Signature] = [:]
+        let racyAfter = scanStartedAt.addingTimeInterval(-Self.racyWindow)
+        // A write that lands while the scan runs can be stamped just after it
+        // began. A timestamp further in the future comes from a skewed clock,
+        // and re-reporting it as racy would fire on every poll forever.
+        let racyBefore = scanStartedAt.addingTimeInterval(1)
         let rootComponents = vaultURL.pathComponents.count
+        var signatures: [String: Signature] = [:]
+        var racy: Set<String> = []
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
-            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-            else { continue }
+            guard let signature = Self.signature(of: url) else { continue }
             let relative = url.pathComponents.dropFirst(rootComponents).joined(separator: "/")
-            result[relative] = Signature(
-                modifiedAt: values.contentModificationDate ?? .distantPast,
-                bytes: values.fileSize ?? 0
-            )
+            signatures[relative] = signature
+            if signature.modifiedAt >= racyAfter, signature.modifiedAt <= racyBefore {
+                racy.insert(relative)
+            }
         }
-        return result
+        return Scan(signatures: signatures, racy: racy)
+    }
+
+    /// Size and mtime come from the enumeration; ctime and inode come from
+    /// `lstat` where the platform has it, in one extra syscall.
+    private static func signature(of url: URL) -> Signature? {
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        else { return nil }
+        let modifiedAt = values.contentModificationDate ?? .distantPast
+        let bytes = values.fileSize ?? 0
+        #if canImport(Darwin)
+        var info = Darwin.stat()
+        let statted = lstat(url.path, &info) == 0
+        return Signature(
+            modifiedAt: modifiedAt,
+            bytes: bytes,
+            changedAt: statted
+                ? Date(timeIntervalSince1970: Double(info.st_ctimespec.tv_sec) + Double(info.st_ctimespec.tv_nsec) / 1_000_000_000)
+                : .distantPast,
+            inode: statted ? UInt64(info.st_ino) : 0
+        )
+        #elseif canImport(Glibc)
+        var info = Glibc.stat()
+        let statted = lstat(url.path, &info) == 0
+        return Signature(
+            modifiedAt: modifiedAt,
+            bytes: bytes,
+            changedAt: statted
+                ? Date(timeIntervalSince1970: Double(info.st_ctim.tv_sec) + Double(info.st_ctim.tv_nsec) / 1_000_000_000)
+                : .distantPast,
+            inode: statted ? UInt64(info.st_ino) : 0
+        )
+        #elseif canImport(Musl)
+        var info = Musl.stat()
+        let statted = lstat(url.path, &info) == 0
+        return Signature(
+            modifiedAt: modifiedAt,
+            bytes: bytes,
+            changedAt: statted
+                ? Date(timeIntervalSince1970: Double(info.st_ctim.tv_sec) + Double(info.st_ctim.tv_nsec) / 1_000_000_000)
+                : .distantPast,
+            inode: statted ? UInt64(info.st_ino) : 0
+        )
+        #else
+        return Signature(modifiedAt: modifiedAt, bytes: bytes, changedAt: .distantPast, inode: 0)
+        #endif
     }
 }
 
