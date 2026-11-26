@@ -31,6 +31,8 @@ final class NeutralityTests: XCTestCase {
     private let allowedLineSubstrings: [(file: String, substring: String)] = [
         // The project's own repository and release URLs (install commands, badges).
         ("README.md", "michael-berardi/retex"),
+        // The one-line installer downloads from the project's own releases.
+        ("scripts/install.sh", "michael-berardi/retex"),
     ]
 
     // Model IDs and provider/paid-route choices that only an operator should choose.

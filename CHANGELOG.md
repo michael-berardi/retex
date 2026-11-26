@@ -2,6 +2,23 @@
 
 ## 1.10.0 - 2026-11-26
 
+- Updates: once you choose a release channel, Retex checks once a day, with
+  one anonymous request and a 4-second background timeout, and prints a
+  two-line notice on stderr after interactive commands. Never without a
+  terminal, in CI, for `--json`/`--lean`/`--raw-json`, or for `mcp`, `update`
+  and `watch`. Opt out with `RETEX_NO_UPDATE_CHECK=1` or
+  `retex update --checks off`.
+- Updates: `retex update --check` now exits `10` when a newer release exists
+  (`0` current, `1` failed, cause on stderr). New: `--skip`, `--rollback`,
+  `--auto on|off|status` (automatic installs, off by default, through a
+  low-priority job), `--checks on|off` and `--uninstall`. `retex update` shows
+  the first release-note lines and asks before installing on a terminal, then
+  asks once about automatic installs.
+- Updates: Homebrew installs are upgraded with `brew upgrade`. The SHA-256 is
+  checked before the download touches disk; the download directory is always
+  removed; the one `.previous` copy is removed after the new version has run
+  a command; the job log stays under 256 KB.
+- Docs: `docs/updates.md` and `PRIVACY.md`.
 - Installation: one-line `install.sh` for macOS and Linux downloads the
   matching release archive, checks it against the published SHA256SUMS,
   verifies the Developer ID signature on macOS, installs into
@@ -69,9 +86,10 @@
   directory, update staging and scheduler configuration/logs are now created
   with owner-only permissions. The reference sync server no longer writes
   client IP addresses to its log.
-- Optional scheduler: logs are trimmed in place to the newest 1 MiB at each
-  scheduled run and re-asserted as mode 0600. Installing the scheduler creates
-  the files private.
+- Scheduled jobs: the job log and its folder are created owner-only (0600 and
+  0700) before the scheduler opens them, re-asserted at each run, and the
+  launchd/systemd job files are written 0600. The update download folder is
+  0700.
 - Hosted image: disabled pip version-check traffic and set `DO_NOT_TRACK=1`.
 - Tests: added privacy regression tests for analytics endpoints/clients,
   bounded private scheduler logs and private sync/fleet state.

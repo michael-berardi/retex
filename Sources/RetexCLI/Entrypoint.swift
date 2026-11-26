@@ -33,7 +33,16 @@ enum RetexCLI {
                 print(help)
                 return
             }
+            // The daily check runs beside the command; its notice prints after.
+            let notifier = UpdateNotifier.start(for: invocation)
             try run(invocation)
+            // A command has now succeeded on this binary, so an update's
+            // rollback copy can go. Runs inside the updater's checks do not count.
+            if invocation.command != "update",
+               ProcessInfo.processInfo.environment["RETEX_UPDATE_VERIFYING"] == nil {
+                UpdateChecker.removeRollback(beside: executableURL())
+            }
+            notifier?.finish()
         } catch {
             if let simpleExit = error as? SimpleExit {
                 terminate(simpleExit.code)
@@ -867,69 +876,286 @@ enum RetexCLI {
         }
     }
 
-    private static func updateRepo() throws -> String {
-        guard let repo = ProcessInfo.processInfo.environment["RETEX_UPDATE_REPO"], !repo.isEmpty else {
+    // MARK: - Updates
+
+    /// The release channel: `RETEX_UPDATE_REPO`, else the `owner/repo` saved
+    /// by `update --auto on`. Retex has no built-in default.
+    private static func updateRepo(_ state: UpdateState = UpdateStateStore().load()) throws -> String {
+        let environment = ProcessInfo.processInfo.environment["RETEX_UPDATE_REPO"] ?? ""
+        guard let repo = environment.isEmpty ? state.repo : environment else {
             throw UsageError("Set RETEX_UPDATE_REPO to the GitHub owner/repo for self-update (e.g. owner/repo).")
         }
         // The value becomes a path in the API URL, so it must be exactly two
         // repository-name segments rather than arbitrary text.
-        guard AutoUpdateScheduler.isValidRepository(repo) else {
+        guard UpdateChecker.isValidRepo(repo) else {
             throw UsageError("RETEX_UPDATE_REPO must be owner/repo (letters, digits, dot, dash or underscore in each part).")
         }
         return repo
     }
 
+    /// Test and drill overrides keep scheduled jobs away from the real user
+    /// launcher. Normal runs use the platform launcher and log directory.
+    private static var updaterRoot: URL? {
+        ProcessInfo.processInfo.environment["RETEX_UPDATER_ROOT"].map {
+            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath).standardizedFileURL
+        }
+    }
+
+    private static func updateScheduler(_ mode: AutoUpdateScheduler.Mode = .selfUpdate) -> AutoUpdateScheduler {
+        AutoUpdateScheduler(
+            mode: mode,
+            root: updaterRoot,
+            dryRun: ProcessInfo.processInfo.environment["RETEX_SCHEDULER_DRY_RUN"] == "1"
+        )
+    }
+
+    private static func updateCoordinator(_ repo: String, store: UpdateStateStore) -> UpdateCoordinator {
+        UpdateCoordinator(checker: UpdateChecker(repo: repo, timeout: 4), store: store)
+    }
+
+    private static func checkFailed(_ cause: String, invocation: Invocation) throws -> Never {
+        writeError("Update check failed: \(cause)", code: 1, json: invocation.isJSON, lean: invocation.flag("lean"))
+        throw SimpleExit(code: 1)
+    }
+
     private static func runUpdate(_ invocation: Invocation) throws {
-        guard !invocation.flag("auto") || invocation.flag("fleet") else {
-            throw UsageError("--auto requires --fleet and an explicitly registered fleet")
+        let store = UpdateStateStore()
+        if invocation.flag("auto"), !invocation.flag("fleet") {
+            throw UsageError("Use --auto on, off or status; bare --auto is for scheduled --fleet runs")
         }
-        // Scheduled runs are the only automatic network path; keep their
-        // optional logs private and bounded before any request is made.
-        if invocation.flag("auto") { AutoUpdateScheduler.boundLogs() }
-        let checker = UpdateChecker(repo: try updateRepo())
-        let current = RetexCLI.version
+        if let value = invocation.option("auto") { return try runAutoSetting(value, invocation: invocation, store: store) }
+        if let value = invocation.option("checks") { return try runChecksSetting(value, invocation: invocation, store: store) }
+        if invocation.flag("uninstall") { return try runUpdateUninstall(invocation, store: store) }
+        if invocation.flag("skip") { return try runSkip(invocation, store: store) }
+        if invocation.flag("rollback") { return try runRollback(invocation) }
+        if invocation.flag("check") { return try runUpdateCheck(invocation, store: store) }
+
+        // Scheduled jobs append to one log; keep it bounded on every run.
+        let scheduled = invocation.flag("auto-run") || invocation.flag("auto")
+        let log = UpdateLog.url(root: updaterRoot)
+        if scheduled { UpdateLog.trim(url: log) }
+        defer { if scheduled { UpdateLog.trim(url: log) } }
+        if invocation.flag("auto-run") { return try runAutoInstall(invocation, store: store) }
+        try runInstall(invocation, store: store, scheduled: scheduled)
+    }
+
+    private static func runUpdateCheck(_ invocation: Invocation, store: UpdateStateStore) throws {
+        let status = updateCoordinator(try updateRepo(store.load()), store: store)
+            .check(current: version, explicit: true)
+        if let error = status.error { try checkFailed(error, invocation: invocation) }
+        try output(status, json: invocation.isJSON) { value in
+            value.available
+                ? "Update available: \(value.currentVersion) → \(value.latestVersion ?? "")"
+                : "Retex \(value.currentVersion) is up to date."
+        }
+        if status.available { throw SimpleExit(code: 10) }
+    }
+
+    private static func runSkip(_ invocation: Invocation, store: UpdateStateStore) throws {
+        let status = updateCoordinator(try updateRepo(store.load()), store: store).check(current: version)
+        if let error = status.error { try checkFailed(error, invocation: invocation) }
+        let skipped = status.available ? status.latestVersion : nil
+        if let skipped { try store.update { $0.skippedVersion = skipped } }
+        try output(SkipOutput(skipped: skipped), json: invocation.isJSON) { value in
+            value.skipped.map { "Skipped \($0). A newer release will notify again." } ?? "No newer release to skip."
+        }
+    }
+
+    private static func runAutoSetting(_ value: String, invocation: Invocation, store: UpdateStateStore) throws {
+        switch value {
+        case "status":
+            let state = store.load()
+            let job = updateScheduler().status()
+            let report = AutoStatusOutput(
+                autoInstall: state.autoInstall,
+                checkAutomatically: state.checkAutomatically,
+                schedulerInstalled: job.installed,
+                schedulerPath: job.configurationPath,
+                repo: try? updateRepo(state),
+                skippedVersion: state.skippedVersion,
+                lastCheckedAt: state.checkedAt,
+                lastCheckError: state.checkError,
+                lastInstallError: state.installError
+            )
+            try output(report, json: invocation.isJSON) { item in
+                var text = "Automatic updates: \(item.autoInstall ? "on" : "off") · checks: \(item.checkAutomatically ? "on" : "off")"
+                if let failure = item.lastInstallError { text += "\nLast automatic install failed: \(failure)" }
+                return text
+            }
+        case "on":
+            let repo = try updateRepo(store.load())
+            let job = try updateScheduler().install(executable: executableURL())
+            try store.update {
+                $0.autoInstall = true
+                $0.autoChoiceRecorded = true
+                $0.repo = repo
+                $0.installError = nil
+            }
+            try output(job, json: invocation.isJSON) { _ in
+                "Automatic updates on. New releases install in the background and apply on the next run."
+            }
+        case "off":
+            let job = try updateScheduler().remove()
+            try store.update {
+                $0.autoInstall = false
+                $0.autoChoiceRecorded = true
+            }
+            try output(job, json: invocation.isJSON) { _ in "Automatic updates off." }
+        default:
+            throw UsageError("--auto must be on, off or status")
+        }
+    }
+
+    private static func runChecksSetting(_ value: String, invocation: Invocation, store: UpdateStateStore) throws {
+        guard value == "on" || value == "off" else { throw UsageError("--checks must be on or off") }
+        try store.update { $0.checkAutomatically = value == "on" }
+        try output(ChecksOutput(checkAutomatically: value == "on"), json: invocation.isJSON) { _ in
+            "Update checks \(value)."
+        }
+    }
+
+    private static func runUpdateUninstall(_ invocation: Invocation, store: UpdateStateStore) throws {
+        let job = try updateScheduler().remove()
+        _ = try? updateScheduler(.fleet).remove()
+        store.remove()
+        UpdateLog.removeLogs(root: updaterRoot)
+        UpdateChecker.removeRollback(beside: executableURL())
+        try output(UninstallOutput(state: store.url.path, scheduler: job.configurationPath), json: invocation.isJSON) { _ in
+            "Removed update jobs, state, logs and the rollback copy."
+        }
+    }
+
+    private static func runRollback(_ invocation: Invocation) throws {
+        let executable = executableURL()
+        let previous = URL(fileURLWithPath: executable.path + ".previous")
+        guard FileManager.default.fileExists(atPath: previous.path) else {
+            throw UsageError("No previous Retex binary is available for rollback.")
+        }
+        try UpdateChecker.install(candidate: previous, over: executable)
+        try output(RollbackOutput(path: executable.path), json: invocation.isJSON) {
+            "Restored the previous Retex binary at \($0.path)."
+        }
+    }
+
+    /// The scheduled job. It installs only after an explicit opt-in, with
+    /// checks on and the release not skipped. A failure is recorded, the
+    /// current binary stays, and the notice comes back.
+    private static func runAutoInstall(_ invocation: Invocation, store: UpdateStateStore) throws {
+        let state = store.load()
+        guard state.autoInstall, state.checkAutomatically,
+              !UpdateNotice.optedOut(ProcessInfo.processInfo.environment)
+        else { return }
+        let repo = try updateRepo(state)
+        let status = updateCoordinator(repo, store: store).check(current: version)
+        guard status.available, let latest = status.latestVersion, latest != state.skippedVersion else { return }
+        do {
+            let checker = UpdateChecker(repo: repo)
+            let release = try checker.latestRelease()
+            guard UpdateChecker.isNewer(releaseTag: release.tag, current: version) else { return }
+            try installRelease(release, checker: checker, invocation: invocation, store: store, scheduled: true)
+            _ = try? store.update { $0.installError = nil }
+        } catch {
+            _ = try? store.update { $0.installError = error.localizedDescription }
+            throw error
+        }
+    }
+
+    private static func runInstall(_ invocation: Invocation, store: UpdateStateStore, scheduled: Bool) throws {
+        let checker = UpdateChecker(repo: try updateRepo(store.load()))
         let release = try checker.latestRelease()
-        guard UpdateChecker.isNewer(releaseTag: release.tag, current: current) else {
-            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil, fleetVerified: nil, fleetUpdated: nil, milliseconds: nil),
+        _ = try? store.update {
+            $0.checkedAt = Date()
+            $0.latestVersion = UpdateChecker.displayVersion(release.tag)
+            $0.checkError = nil
+        }
+        guard UpdateChecker.isNewer(releaseTag: release.tag, current: version) else {
+            try output(UpdateOutput(currentVersion: version, latestVersion: release.tag, updated: false, path: nil, fleetVerified: nil, fleetUpdated: nil, milliseconds: nil),
                        json: invocation.isJSON) { _ in
-                "Already on the latest version (\(current))"
+                "Retex \(version) is up to date."
             }
             return
         }
-        if invocation.flag("check") {
+        try installRelease(release, checker: checker, invocation: invocation, store: store, scheduled: scheduled)
+    }
+
+    private static func installRelease(
+        _ release: UpdateChecker.Release,
+        checker: UpdateChecker,
+        invocation: Invocation,
+        store: UpdateStateStore,
+        scheduled: Bool
+    ) throws {
+        let current = version
+        let executable = executableURL()
+        let interactive = !scheduled && !invocation.isJSON
+            && isatty(STDIN_FILENO) == 1 && isatty(STDERR_FILENO) == 1
+        // Commands the updater runs on the new binary must not drop its
+        // rollback copy before the checks below have passed.
+        setenv("RETEX_UPDATE_VERIFYING", "1", 1)
+
+        if !scheduled && !invocation.isJSON { showReleaseNotes(release) }
+        if interactive, !confirm("Install \(UpdateChecker.displayVersion(release.tag)) now? [Y/n] ", defaultYes: true) {
             try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: false, path: nil, fleetVerified: nil, fleetUpdated: nil, milliseconds: nil),
-                       json: invocation.isJSON) { _ in
-                "Update available: \(current) -> \(release.tag)"
-            }
+                       json: invocation.isJSON) { _ in "Not installed. Run retex update when ready." }
             return
         }
 
-        let tarball = try checker.download(release.assetURL)
-        let sumsBody = String(decoding: try checker.download(release.checksumsURL), as: UTF8.self)
-        guard let expected = UpdateChecker.expectedChecksum(in: sumsBody, assetName: release.assetName) else {
-            throw UsageError("Release checksums do not list one valid \(release.assetName) SHA-256")
-        }
-        let actual = UpdateChecker.sha256(of: tarball)
-        guard actual == expected else {
-            throw UsageError("Checksum mismatch: expected \(expected), got \(actual)")
+        if let route = UpdateInstallRoute.packageManager(for: executable) {
+            guard !invocation.flag("fleet") else {
+                throw UsageError("Homebrew manages this binary: run \(route.command), then retex fleet initialize")
+            }
+            try runPackageManager(route)
+            try output(UpdateOutput(currentVersion: current, latestVersion: release.tag, updated: true, path: executable.path, fleetVerified: nil, fleetUpdated: nil, milliseconds: nil),
+                       json: invocation.isJSON) { _ in "Updated with \(route.command)." }
+            if interactive { try offerAutoInstall(store: store) }
+            return
         }
 
-        let fm = FileManager.default
-        let workDir = fm.temporaryDirectory.appendingPathComponent(
-            "retex-update-\(UUID().uuidString)",
-            isDirectory: true
-        )
-#if os(Windows)
-        try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
-#else
-        try fm.createDirectory(
-            at: workDir, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-#endif
-        defer { try? fm.removeItem(at: workDir) }
-        let archivePath = workDir.appendingPathComponent(release.assetName)
-        try tarball.write(to: archivePath, options: .atomic)
+        // Checksum first: nothing touches disk until the asset matches SHA256SUMS.
+        let archive = try checker.downloadVerified(release)
+        try UpdateWorkspace.withTemporary { workDir in
+            let newBinary = try extractBinary(archive, assetName: release.assetName, into: workDir)
+            try validateUpdateCandidate(newBinary, releaseTag: release.tag)
+
+            let fleetDocument = invocation.flag("fleet") ? try FleetRegistry().load() : nil
+            let verifier = FleetUpgradeVerifier()
+            let verified = try fleetDocument.map {
+                try verifier.verify(vaults: $0.vaults, candidate: newBinary, current: executable)
+            } ?? []
+            let previous = try UpdateChecker.install(candidate: newBinary, over: executable)
+            let liveVaults = fleetDocument.map { document in
+                invocation.flag("auto")
+                    ? document.vaults
+                    : document.vaults.map { FleetVault(path: $0.path, autoUpdate: true) }
+            } ?? []
+            let confirmed: [FleetUpgradeReport]
+            do {
+                confirmed = try verifier.confirmLive(vaults: liveVaults, executable: executable)
+            } catch {
+                _ = try? UpdateChecker.install(candidate: previous, over: executable)
+                throw error
+            }
+            let milliseconds = verified.reduce(0) { $0 + $1.milliseconds } + confirmed.reduce(0) { $0 + $1.milliseconds }
+            try output(UpdateOutput(
+                currentVersion: current,
+                latestVersion: release.tag,
+                updated: true,
+                path: executable.path,
+                fleetVerified: fleetDocument == nil ? nil : verified.count,
+                fleetUpdated: fleetDocument == nil ? nil : confirmed.count,
+                milliseconds: fleetDocument == nil ? nil : milliseconds
+            ), json: invocation.isJSON) { result in
+                let fleet = result.fleetVerified.map { " Fleet: \($0) verified, \(result.fleetUpdated ?? 0) initialized in \(result.milliseconds ?? 0) ms." } ?? ""
+                return "Updated \(executable.path): \(current) -> \(release.tag). Rollback available at \(previous.path).\(fleet)"
+            }
+        }
+        if interactive { try? offerAutoInstall(store: store) }
+    }
+
+    /// Unpacks a verified release archive and returns the binary inside it.
+    private static func extractBinary(_ archive: Data, assetName: String, into workDir: URL) throws -> URL {
+        let archivePath = workDir.appendingPathComponent(assetName)
+        try archive.write(to: archivePath, options: .atomic)
         let extract = Process()
 #if os(macOS)
         extract.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
@@ -949,43 +1175,65 @@ enum RetexCLI {
         try extract.run()
         extract.waitUntilExit()
         let newBinary = workDir.appendingPathComponent(binaryName)
-        guard extract.terminationStatus == 0, fm.fileExists(atPath: newBinary.path) else {
+        guard extract.terminationStatus == 0, FileManager.default.fileExists(atPath: newBinary.path) else {
             throw UsageError("Release archive did not contain a \(binaryName) binary")
         }
-        try validateUpdateCandidate(newBinary, releaseTag: release.tag)
+        return newBinary
+    }
 
-        let executable = executableURL()
-        let fleetDocument = invocation.flag("fleet") ? try FleetRegistry().load() : nil
-        let verifier = FleetUpgradeVerifier()
-        let verified = try fleetDocument.map {
-            try verifier.verify(vaults: $0.vaults, candidate: newBinary, current: executable)
-        } ?? []
-        let previous = try UpdateChecker.install(candidate: newBinary, over: executable)
-        let liveVaults = fleetDocument.map { document in
-            invocation.flag("auto")
-                ? document.vaults
-                : document.vaults.map { FleetVault(path: $0.path, autoUpdate: true) }
-        } ?? []
-        let confirmed: [FleetUpgradeReport]
-        do {
-            confirmed = try verifier.confirmLive(vaults: liveVaults, executable: executable)
-        } catch {
-            _ = try? UpdateChecker.install(candidate: previous, over: executable)
-            throw error
+    /// Progress goes to stderr (the log for scheduled runs), never stdout.
+    private static func runPackageManager(_ route: UpdateInstallRoute) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = route.arguments
+        process.standardOutput = FileHandle.standardError
+        process.standardError = FileHandle.standardError
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw UsageError("\(route.command) failed (exit \(process.terminationStatus))")
         }
-        let milliseconds = verified.reduce(0) { $0 + $1.milliseconds } + confirmed.reduce(0) { $0 + $1.milliseconds }
-        try output(UpdateOutput(
-            currentVersion: current,
-            latestVersion: release.tag,
-            updated: true,
-            path: executable.path,
-            fleetVerified: fleetDocument == nil ? nil : verified.count,
-            fleetUpdated: fleetDocument == nil ? nil : confirmed.count,
-            milliseconds: fleetDocument == nil ? nil : milliseconds
-        ), json: invocation.isJSON) { result in
-            let fleet = result.fleetVerified.map { " Fleet: \($0) verified, \(result.fleetUpdated ?? 0) initialized in \(result.milliseconds ?? 0) ms." } ?? ""
-            return "Updated \(executable.path): \(current) -> \(release.tag). Rollback available at \(previous.path).\(fleet)"
+    }
+
+    private static func showReleaseNotes(_ release: UpdateChecker.Release) {
+        var text = "Update available: \(version) → \(UpdateChecker.displayVersion(release.tag))\n"
+        let lines = release.notes.split(whereSeparator: \.isNewline)
+            .map { line in
+                String(String.UnicodeScalarView(line.unicodeScalars.filter {
+                    !CharacterSet.controlCharacters.contains($0)
+                })).trimmingCharacters(in: .whitespaces)
+            }
+            .filter { !$0.isEmpty }
+            .prefix(5)
+        for line in lines { text += "  \(line.prefix(120))\n" }
+        FileHandle.standardError.write(Data(text.utf8))
+    }
+
+    private static func confirm(_ question: String, defaultYes: Bool) -> Bool {
+        FileHandle.standardError.write(Data(question.utf8))
+        guard let answer = readLine(strippingNewline: true) else { return defaultYes }
+        let value = answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return defaultYes }
+        return value.hasPrefix("y")
+    }
+
+    /// Asked once, after a successful interactive install. Both answers are
+    /// remembered; `--auto on|off` changes the choice later.
+    private static func offerAutoInstall(store: UpdateStateStore) throws {
+        let state = store.load()
+        guard !state.autoInstall, !state.autoChoiceRecorded else { return }
+        guard confirm("Install future updates automatically? [y/N] ", defaultYes: false) else {
+            try store.update { $0.autoChoiceRecorded = true }
+            return
         }
+        let repo = try updateRepo(state)
+        _ = try updateScheduler().install(executable: executableURL())
+        try store.update {
+            $0.autoInstall = true
+            $0.autoChoiceRecorded = true
+            $0.repo = repo
+        }
+        FileHandle.standardError.write(Data("Automatic updates on. Turn off with: retex update --auto off\n".utf8))
     }
 
     private static func validateUpdateCandidate(_ candidate: URL, releaseTag: String) throws {
@@ -1376,6 +1624,8 @@ enum RetexCLI {
       retex fleet install-updater --lean
       retex update --auto --fleet --lean
       retex update --check --lean
+      retex update --auto on
+      retex update --skip
       retex list --vault ./CRM --all --raw-json  # compatibility gate
 
     OPTIONS
@@ -1415,12 +1665,71 @@ enum RetexCLI {
       --auto            Scheduled fleet update; requires --fleet
       --candidate <bin> Verify one candidate against registered vault clones
       --current <bin>   Installed Retex binary for explicit fleet comparison
-      --check           Check update availability without installing
+      --check           Report only: exit 0 current, 10 available, 1 failed
+      --skip            Hide this version's update notice
+      --rollback        Restore the previous binary
+      --auto on|off|status
+                        Automatic CLI updates (off by default)
+      --checks on|off   Daily update check (on by default)
+      --uninstall       Remove update jobs, state, logs and rollback copy
       --json            Stable compact JSON machine output
       --version         Print the Retex version
       --all             Include archived records
       --help            Show this help
     """
+}
+
+extension RetexCLI {
+    /// Runs the daily check on a background queue while the command runs,
+    /// then prints the notice to stderr once the command has finished.
+    fileprivate final class UpdateNotifier: @unchecked Sendable {
+        private let store = UpdateStateStore()
+        private let coordinator: UpdateCoordinator
+        private let finished = DispatchSemaphore(value: 0)
+        private var status: UpdateStatus?
+
+        private init(coordinator: UpdateCoordinator) {
+            self.coordinator = coordinator
+        }
+
+        static func start(for invocation: Invocation) -> UpdateNotifier? {
+            guard UpdateNotice.allowed(
+                command: invocation.command,
+                isJSON: invocation.isJSON,
+                isTTY: isatty(STDOUT_FILENO) == 1 && isatty(STDERR_FILENO) == 1,
+                environment: ProcessInfo.processInfo.environment
+            ) else { return nil }
+            let store = UpdateStateStore()
+            let state = store.load()
+            guard state.checkAutomatically, let repo = try? RetexCLI.updateRepo(state) else { return nil }
+            let notifier = UpdateNotifier(coordinator: RetexCLI.updateCoordinator(repo, store: store))
+            DispatchQueue.global(qos: .utility).async {
+                notifier.status = notifier.coordinator.check(current: RetexCLI.version)
+                notifier.finished.signal()
+            }
+            return notifier
+        }
+
+        func finish() {
+            guard finished.wait(timeout: .now() + 4) == .success,
+                  let status, status.available, let new = status.latestVersion
+            else { return }
+            var state = store.load()
+            let now = Date()
+            // With automatic installs on, the job installs instead; a failed
+            // automatic install falls back to this notice.
+            guard !state.autoInstall || state.installError != nil,
+                  state.shouldNotify(version: new, now: now)
+            else { return }
+            let command = UpdateInstallRoute.packageManager(for: RetexCLI.executableURL())?.command
+                ?? "retex update"
+            let lines = UpdateNotice.lines(current: RetexCLI.version, new: new, command: command)
+            FileHandle.standardError.write(Data("\(lines[0])\n\u{1B}[2m\(lines[1])\u{1B}[0m\n".utf8))
+            state.lastNotifiedVersion = new
+            state.lastNotifiedAt = now
+            try? store.save(state)
+        }
+    }
 }
 
 private struct Invocation {
@@ -1456,7 +1765,11 @@ private struct Invocation {
                 let value = String(raw[raw.index(after: equals)...])
                 options[key, default: []].append(value)
                 index += 1
-            } else if ["json", "lean", "raw-json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "fleet", "auto-update", "operator-approved", "include-proposed", "force"].contains(raw) {
+            } else if raw == "auto", index + 1 < arguments.count,
+                      ["on", "off", "status"].contains(arguments[index + 1]) {
+                options["auto", default: []].append(arguments[index + 1])
+                index += 2
+            } else if ["json", "lean", "raw-json", "all", "help", "allow-write", "ranked", "strict", "check", "auto", "auto-run", "skip", "rollback", "uninstall", "fleet", "auto-update", "operator-approved", "include-proposed", "force"].contains(raw) {
                 flags.insert(raw)
                 index += 1
             } else {
@@ -1811,6 +2124,35 @@ private struct UpdateOutput: Encodable {
     let fleetVerified: Int?
     let fleetUpdated: Int?
     let milliseconds: Int?
+}
+
+private struct SkipOutput: Encodable {
+    let skipped: String?
+}
+
+private struct RollbackOutput: Encodable {
+    let path: String
+}
+
+private struct UninstallOutput: Encodable {
+    let state: String
+    let scheduler: String
+}
+
+private struct ChecksOutput: Encodable {
+    let checkAutomatically: Bool
+}
+
+private struct AutoStatusOutput: Encodable {
+    let autoInstall: Bool
+    let checkAutomatically: Bool
+    let schedulerInstalled: Bool
+    let schedulerPath: String
+    let repo: String?
+    let skippedVersion: String?
+    let lastCheckedAt: Date?
+    let lastCheckError: String?
+    let lastInstallError: String?
 }
 
 private struct CountOutput: Encodable {

@@ -121,7 +121,7 @@ final class FleetUpdaterTests: XCTestCase {
     func testLaunchdPlistCarriesTheUpdateRepository() throws {
         let plist = AutoUpdateScheduler.launchdPlist(
             executable: root.appendingPathComponent("retex"),
-            logs: root.appendingPathComponent("logs", isDirectory: true),
+            log: root.appendingPathComponent("logs/retex-update.log"),
             environment: ["RETEX_UPDATE_REPO": "acme/example-retex"]
         )
         let environment = try XCTUnwrap(plist["EnvironmentVariables"] as? [String: String])
@@ -132,7 +132,7 @@ final class FleetUpdaterTests: XCTestCase {
 
         let bare = AutoUpdateScheduler.launchdPlist(
             executable: root.appendingPathComponent("retex"),
-            logs: root.appendingPathComponent("logs", isDirectory: true),
+            log: root.appendingPathComponent("logs/retex-update.log"),
             environment: [:]
         )
         XCTAssertNil(bare["EnvironmentVariables"])

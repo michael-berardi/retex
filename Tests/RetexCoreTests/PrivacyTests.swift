@@ -66,31 +66,46 @@ final class PrivacyTests: XCTestCase {
         }
         XCTAssertEqual(
             networkFiles,
-            Set(["VaultSync.swift", "UpdateChecker.swift"]),
+            // HTTPDeadline.swift only configures the deadlines of the sessions
+            // those two files create; it opens no connection of its own.
+            Set(["VaultSync.swift", "UpdateChecker.swift", "HTTPDeadline.swift"]),
             "a new network client appeared outside user-invoked sync/update"
         )
     }
 
     func testSchedulerLogsArePrivateAndBounded() throws {
-        let logs = root.appendingPathComponent("config/retex/logs", isDirectory: true)
-        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        let log = logs.appendingPathComponent("fleet-update.log")
-        let original = String(
-            repeating: "x", count: AutoUpdateScheduler.maximumLogBytes + 512
-        )
-        try original.write(to: log, atomically: true, encoding: .utf8)
-
-        XCTAssertTrue(AutoUpdateScheduler.boundLogs(in: logs).contains(log))
-        let attributes = try FileManager.default.attributesOfItem(atPath: log.path)
-        XCTAssertEqual((attributes[.size] as? NSNumber)?.intValue, AutoUpdateScheduler.maximumLogBytes)
-        XCTAssertEqual(
-            String(data: try Data(contentsOf: log), encoding: .utf8),
-            String(original.suffix(AutoUpdateScheduler.maximumLogBytes))
-        )
+        let log = UpdateLog.url(root: root)
+        try UpdateLog.preparePrivate(url: log)
+        let logs = log.deletingLastPathComponent()
 #if !os(Windows)
-        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: logs.path)
-        XCTAssertEqual((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        XCTAssertEqual(permissions(of: logs), 0o700)
+        XCTAssertEqual(permissions(of: log), 0o600)
+        // A log left world-readable by an older release is re-asserted private.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: log.path)
+#endif
+        let original = String(repeating: "x", count: UpdateLog.limitBytes + 512) + "newest"
+        try Data(original.utf8).write(to: log)
+#if !os(Windows)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: log.path)
+#endif
+        UpdateLog.trim(url: log)
+        let trimmed = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertLessThanOrEqual(trimmed.utf8.count, UpdateLog.limitBytes)
+        XCTAssertTrue(trimmed.hasSuffix("newest"))
+#if !os(Windows)
+        XCTAssertEqual(permissions(of: log), 0o600)
+        XCTAssertEqual(permissions(of: logs), 0o700)
+#endif
+    }
+
+    func testScheduledJobFilesArePrivate() throws {
+        let executable = root.appendingPathComponent("retex")
+        try "#!/bin/sh\n".write(to: executable, atomically: true, encoding: .utf8)
+        let schedule = try AutoUpdateScheduler(mode: .selfUpdate, root: root, dryRun: true)
+            .install(executable: executable)
+#if !os(Windows)
+        XCTAssertEqual(permissions(of: URL(fileURLWithPath: schedule.configurationPath)), 0o600)
+        XCTAssertEqual(permissions(of: UpdateLog.url(root: root)), 0o600)
 #endif
     }
 
@@ -115,6 +130,21 @@ final class PrivacyTests: XCTestCase {
         XCTAssertEqual(permissions(of: registry.url.deletingLastPathComponent()), 0o700)
         XCTAssertEqual(permissions(of: registry.url), 0o600)
 #endif
+    }
+
+    func testReadmePrivacyIsShortAndDetailsLiveInPrivacyFile() throws {
+        let readme = try String(contentsOf: repositoryRoot.appendingPathComponent("README.md"), encoding: .utf8)
+        let sections = readme.components(separatedBy: "\n## Privacy\n")
+        XCTAssertEqual(sections.count, 2, "README has exactly one Privacy section")
+        let body = sections[1].components(separatedBy: "\n## ")[0]
+        let lines = body.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        XCTAssertLessThanOrEqual(lines.count, 6, body)
+        XCTAssertTrue(body.contains("PRIVACY.md"))
+        XCTAssertFalse(body.lowercased().contains("no automatic update check"))
+        let privacy = try String(contentsOf: repositoryRoot.appendingPathComponent("PRIVACY.md"), encoding: .utf8)
+        for detail in ["RETEX_NO_UPDATE_CHECK", "retex-update-check", "IP address", "DO_NOT_TRACK", "0600", "--uninstall"] {
+            XCTAssertTrue(privacy.contains(detail), detail)
+        }
     }
 
     private var repositoryRoot: URL {

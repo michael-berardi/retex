@@ -100,31 +100,29 @@ state. Never point an untrusted agent at notes it should not read.
 - [Agent memory and approval workflow](docs/AGENT-MEMORY.md)
 - [Agent skill](skills/retex/SKILL.md)
 - [Hosted read-only serving and refresh](docs/REALTIME-SYNC.md)
-- [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- [Privacy](PRIVACY.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## Updates
 
-The updater has no default repository. Select the release channel explicitly:
+Retex checks once a day, anonymously, for a newer stable release and prints a
+short notice after interactive commands. There is no default channel; choose
+it yourself:
 
 ```sh
 export RETEX_UPDATE_REPO=michael-berardi/retex
-retex update --check --lean
+retex update            # verified install, previous binary kept for rollback
+retex update --auto on  # optional; automatic installs are off by default
 ```
 
-Review the result before running `retex update`. Fleet and scheduler setup
-are covered in the [reference](docs/REFERENCE.md#updates).
+Details, `--check` exit codes and opt-outs: [docs/updates.md](docs/updates.md).
 
 ## Privacy
 
-Retex sends nothing over the network unless you explicitly use a network feature. There is no telemetry, analytics, crash reporting or automatic update check, and no install ID or machine fingerprint is sent.
-
-- **Sync:** `retex sync ...` sends an encrypted vault blob, the vault ID you chose and your bearer token to the server you configured, only when you run it. Your passphrase and plaintext notes never leave the machine; the server sees ordinary HTTP request metadata, including your IP address.
-- **Updates:** `retex update` contacts `api.github.com` and GitHub release assets only after you set `RETEX_UPDATE_REPO`; `--check` only performs the lookup. The optional scheduler (`retex fleet install-updater`) runs that command every six hours only if you install it. Its macOS logs are owner-private and capped at 1 MiB.
-- **Hosted serving:** if you deploy `deploy/readonly-mcp/`, clients send their queries and bearer tokens to your server. If you set `RETEX_VAULT_REPO`, its refresher polls that Git repository; nothing else is contacted automatically.
-
-Your notes stay in your vault. Retex writes its own state under `<vault>/.retex/` (undo history, sync state, agent-memory usage), encrypted exports and the fleet registry with owner-only permissions. To remove Retex's local state, run `retex fleet remove-updater`, then delete `<vault>/.retex/`, `~/.config/retex/fleet.json`, the macOS `~/.config/retex/logs/` directory and any encrypted exports you created. Your Markdown notes are not deleted.
-
-Retex has no analytics SDKs and no third-party fonts or scripts.
+Notes leave the machine only through sync or export. Once you choose a
+release channel, Retex makes one anonymous HTTPS GET a day to it, with no
+identifier or usage data; never without a terminal, in CI or for machine
+output. `RETEX_NO_UPDATE_CHECK=1` turns it off. No telemetry. Local state stays
+owner-only under `<vault>/.retex/`. Details: [PRIVACY.md](PRIVACY.md).
 
 ## License
 
