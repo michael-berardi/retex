@@ -352,10 +352,14 @@ enum RetexCLI {
                 FileHandle.standardError.write(Data("warning: export skipped symlink \(skipped.path)\n".utf8))
             }
             let blob = try VaultCrypto().encrypt(archive, passphrase: passphrase)
-            try blob.write(
-                to: URL(fileURLWithPath: NSString(string: destination).expandingTildeInPath),
-                options: .atomic
+            let destinationURL = URL(fileURLWithPath: NSString(string: destination).expandingTildeInPath)
+            try blob.write(to: destinationURL, options: .atomic)
+#if !os(Windows)
+            // The export contains the whole vault; keep it user-private.
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: destinationURL.path
             )
+#endif
             try output(ExportOutput(destination: destination, bytes: blob.count), json: invocation.isJSON) { _ in
                 "Encrypted vault written to \(destination) (\(blob.count) bytes)"
             }
@@ -879,6 +883,9 @@ enum RetexCLI {
         guard !invocation.flag("auto") || invocation.flag("fleet") else {
             throw UsageError("--auto requires --fleet and an explicitly registered fleet")
         }
+        // Scheduled runs are the only automatic network path; keep their
+        // optional logs private and bounded before any request is made.
+        if invocation.flag("auto") { AutoUpdateScheduler.boundLogs() }
         let checker = UpdateChecker(repo: try updateRepo())
         let current = RetexCLI.version
         let release = try checker.latestRelease()
@@ -912,7 +919,14 @@ enum RetexCLI {
             "retex-update-\(UUID().uuidString)",
             isDirectory: true
         )
+#if os(Windows)
         try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+#else
+        try fm.createDirectory(
+            at: workDir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+#endif
         defer { try? fm.removeItem(at: workDir) }
         let archivePath = workDir.appendingPathComponent(release.assetName)
         try tarball.write(to: archivePath, options: .atomic)

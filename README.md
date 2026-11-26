@@ -114,6 +114,18 @@ retex update --check --lean
 Review the result before running `retex update`. Fleet and scheduler setup
 are covered in the [reference](docs/REFERENCE.md#updates).
 
+## Privacy
+
+Retex sends nothing over the network unless you explicitly use a network feature. There is no telemetry, analytics, crash reporting or automatic update check, and no install ID or machine fingerprint is sent.
+
+- **Sync:** `retex sync ...` sends an encrypted vault blob, the vault ID you chose and your bearer token to the server you configured, only when you run it. Your passphrase and plaintext notes never leave the machine; the server sees ordinary HTTP request metadata, including your IP address.
+- **Updates:** `retex update` contacts `api.github.com` and GitHub release assets only after you set `RETEX_UPDATE_REPO`; `--check` only performs the lookup. The optional scheduler (`retex fleet install-updater`) runs that command every six hours only if you install it. Its macOS logs are owner-private and capped at 1 MiB.
+- **Hosted serving:** if you deploy `deploy/readonly-mcp/`, clients send their queries and bearer tokens to your server. If you set `RETEX_VAULT_REPO`, its refresher polls that Git repository; nothing else is contacted automatically.
+
+Your notes stay in your vault. Retex writes its own state under `<vault>/.retex/` (undo history, sync state, agent-memory usage), encrypted exports and the fleet registry with owner-only permissions. To remove Retex's local state, run `retex fleet remove-updater`, then delete `<vault>/.retex/`, `~/.config/retex/fleet.json`, the macOS `~/.config/retex/logs/` directory and any encrypted exports you created. Your Markdown notes are not deleted.
+
+Retex has no analytics SDKs and no third-party fonts or scripts.
+
 ## License
 
 [MIT](LICENSE). `RetexCore` is also available as a Swift package library.

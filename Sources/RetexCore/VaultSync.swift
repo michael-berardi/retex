@@ -101,7 +101,9 @@ public struct VaultSync {
 
     static func saveState(_ state: State, _ vault: Vault) throws {
         let url = stateURL(vault)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Sync state includes the server, vault id and revision; keep the
+        // whole .retex directory private even when sync is the first command.
+        _ = try UndoHistory.prepare(for: vault)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(state).write(to: url, options: .atomic)

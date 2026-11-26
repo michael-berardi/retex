@@ -42,8 +42,8 @@ def make_handler(data_dir: str, token: str):
     class Handler(BaseHTTPRequestHandler):
         server_version = "retex-sync/1"
 
-        def log_message(self, fmt, *args):  # no tokens/bodies; method+path+status only
-            sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+        def log_message(self, fmt, *args):  # no client IP, tokens or bodies
+            sys.stderr.write("%s\n" % (fmt % args,))
 
         def _send(self, code, body=b"", etag=None, ctype="application/json"):
             self.send_response(code)
