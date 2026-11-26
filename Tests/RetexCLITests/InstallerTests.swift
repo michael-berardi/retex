@@ -251,4 +251,64 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(installerID, updaterID)
         XCTAssertEqual(installerID, releaseID)
     }
+
+    func testBuildReleaseRefusesUnsafeOutDirectories() throws {
+        // Run against a disposable checkout: if the guard ever regresses,
+        // rm -rf can only damage this temporary fixture.
+        let checkout = root.appendingPathComponent("release-checkout", isDirectory: true)
+        let scripts = checkout.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        for name in ["build-release.sh", "install.sh"] {
+            try FileManager.default.copyItem(
+                at: Self.repoRoot.appendingPathComponent("scripts/\(name)"),
+                to: scripts.appendingPathComponent(name)
+            )
+        }
+        let marker = checkout.appendingPathComponent("Package.swift")
+        try "marker".write(to: marker, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(
+            at: checkout.appendingPathComponent("dist/release"),
+            withIntermediateDirectories: true
+        )
+        let assets = root.appendingPathComponent("release-assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try "asset".write(
+            to: assets.appendingPathComponent("retex-universal.zip"),
+            atomically: true, encoding: .utf8
+        )
+        let outside = root.appendingPathComponent("outside-dist", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sentinel = outside.appendingPathComponent("sentinel")
+        try "sentinel".write(to: sentinel, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: checkout.appendingPathComponent("dist/link"),
+            withDestinationURL: outside
+        )
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["RETEX_ASSET_SOURCE"] = assets.path
+        let script = scripts.appendingPathComponent("build-release.sh")
+        for out in ["dist/..", "dist/x/..", "dist/./x", ".", "..", checkout.path, "/", "dist/link/escape"] {
+            let result = try run(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path, out],
+                environment: environment,
+                currentDirectory: checkout
+            )
+            XCTAssertNotEqual(result.status, 0, "\(out): \(result.stdout) \(result.stderr)")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), out)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sentinel.path), out)
+        }
+
+        let accepted = try run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path, "dist/release"],
+            environment: environment,
+            currentDirectory: checkout
+        )
+        XCTAssertEqual(accepted.status, 0, accepted.stderr)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: checkout.appendingPathComponent("dist/release/SHA256SUMS").path
+        ))
+    }
 }

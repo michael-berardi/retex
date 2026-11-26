@@ -16,10 +16,15 @@ die() { printf 'build-release: %s\n' "$*" >&2; exit 1; }
 [ -f scripts/install.sh ] || die "scripts/install.sh is missing"
 
 ROOT=$(pwd -P)
+command -v python3 >/dev/null 2>&1 || die "needs python3 to resolve the output directory"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 OUT=${OUT%/}
 case "$OUT" in */..|*/../*|*/.|*/./*) die "out directory must not contain . or .." ;; esac
-case "$OUT" in "$ROOT"/dist/?*) ;; *) die "out directory must be a non-empty path under $ROOT/dist" ;; esac
+# Resolve symlinks before deleting anything: a link under dist/ must not
+# redirect rm -rf to the checkout root or elsewhere.
+OUT=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$OUT")
+DIST=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$ROOT/dist")
+case "$OUT" in "$DIST"/*) ;; *) die "out directory must be a non-empty path under $ROOT/dist" ;; esac
 case "$(cd "$SRC" && pwd -P)/" in "$OUT"/*) die "out directory must not contain the asset source" ;; esac
 rm -rf "$OUT"; mkdir -p "$OUT"
 for asset in retex-universal.zip retex-linux-aarch64.tar.xz retex-linux-aarch64.tar.gz \
