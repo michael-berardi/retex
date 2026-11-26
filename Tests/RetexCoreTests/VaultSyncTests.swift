@@ -34,7 +34,9 @@ final class FakeSyncProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         func reply(_ code: Int, _ body: Data = Data(), etag: String? = nil) {
             var headers = ["Content-Length": "\(body.count)"]
-            if let etag { headers["ETag"] = "\"\(etag)\"" }
+            // Quoted like a real strong validator; `W/`-prefixed values are
+            // already a complete, quoted weak validator.
+            if let etag { headers["ETag"] = etag.hasPrefix("W/") ? etag : "\"\(etag)\"" }
             let response = HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: "HTTP/1.1", headerFields: headers)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: body)
@@ -158,22 +160,23 @@ final class VaultSyncTests: XCTestCase {
     }
 
     func testServerETagIsStoredAsTheRevisionEverywhere() throws {
-        FakeSyncProtocol.etagOverride = "server-revision-1"
+        let serverRevision = String(repeating: "ab", count: 32)
+        FakeSyncProtocol.etagOverride = serverRevision
         let a = try vault(["one.md": "# shared"])
         let pushed = try sync(a).push(server: server, vaultID: "crm", passphrase: passphrase)
-        XCTAssertEqual(pushed.revision, "server-revision-1")
-        XCTAssertEqual(try VaultSync.loadState(a)?.revision, "server-revision-1")
+        XCTAssertEqual(pushed.revision, serverRevision)
+        XCTAssertEqual(try VaultSync.loadState(a)?.revision, serverRevision)
 
         let status = try sync(a).status(server: nil, vaultID: nil)
-        XCTAssertEqual(status.remoteRevision, "server-revision-1")
-        XCTAssertEqual(status.revision, "server-revision-1")
+        XCTAssertEqual(status.remoteRevision, serverRevision)
+        XCTAssertEqual(status.revision, serverRevision)
         XCTAssertFalse(status.remoteChanged)
         XCTAssertFalse(status.localChanges)
 
         let b = try vault()
         let pulled = try sync(b).pull(server: server, vaultID: "crm", passphrase: passphrase)
-        XCTAssertEqual(pulled.revision, "server-revision-1")
-        XCTAssertEqual(try VaultSync.loadState(b)?.revision, "server-revision-1")
+        XCTAssertEqual(pulled.revision, serverRevision)
+        XCTAssertEqual(try VaultSync.loadState(b)?.revision, serverRevision)
         XCTAssertEqual(try String(contentsOf: b.url.appendingPathComponent("one.md")), "# shared")
     }
 
@@ -186,6 +189,54 @@ final class VaultSyncTests: XCTestCase {
         let b = try vault()
         let pulled = try sync(b).pull(server: server, vaultID: "crm", passphrase: passphrase)
         XCTAssertEqual(pulled.revision, pushed.revision)
+    }
+
+    func testOnlyADigestETagIsTrustedAsTheRevision() throws {
+        // An opaque server tag names a revision of something else; storing it
+        // made `status` compare its own digest with a foreign token.
+        FakeSyncProtocol.etagOverride = "v17"
+        let opaque = try vault(["one.md": "# shared"])
+        let pushed = try sync(opaque).push(server: server, vaultID: "crm", passphrase: passphrase)
+        XCTAssertEqual(pushed.revision, VaultSyncTests.hash(try XCTUnwrap(FakeSyncProtocol.blob)))
+
+        // A weak validator still carries the digest.
+        let digest = String(repeating: "9f", count: 32)
+        FakeSyncProtocol.etagOverride = "W/\"\(digest)\""
+        let weak = try vault(["one.md": "# shared"])
+        let weakPushed = try sync(weak).push(server: server, vaultID: "crm", passphrase: passphrase, force: true)
+        XCTAssertEqual(weakPushed.revision, digest)
+        XCTAssertEqual(try sync(weak).status(server: nil, vaultID: nil).remoteChanged, false)
+
+        // A hex token of the wrong length is not a SHA-256 either.
+        FakeSyncProtocol.etagOverride = String(repeating: "a", count: 40)
+        let short = try vault(["one.md": "# shared"])
+        let shortPushed = try sync(short).push(server: server, vaultID: "crm", passphrase: passphrase, force: true)
+        XCTAssertEqual(shortPushed.revision, VaultSyncTests.hash(try XCTUnwrap(FakeSyncProtocol.blob)))
+    }
+
+    func testTransferDeadlineScalesWithTheBodyInsteadOfCappingIt() throws {
+        XCTAssertEqual(HTTPDeadline.transfer(expectedBytes: 0, environment: [:]), 180)
+        // 64 KiB at 32 KiB/s is 2 s, below the floor.
+        XCTAssertEqual(HTTPDeadline.transfer(expectedBytes: 64 * 1024, environment: [:]), 180)
+        // A 32 MiB archive needs 1024 s at that rate, so it is not cut off.
+        XCTAssertEqual(HTTPDeadline.transfer(expectedBytes: 32 * 1024 * 1024, environment: [:]), 1024)
+        // The override raises the floor and the stall guard.
+        XCTAssertEqual(HTTPDeadline.transfer(expectedBytes: 0, environment: ["RETEX_SYNC_TIMEOUT_SECONDS": "30"]), 30)
+        XCTAssertEqual(HTTPDeadline.idle(environment: [:]), 60)
+        XCTAssertEqual(HTTPDeadline.idle(environment: ["RETEX_SYNC_TIMEOUT_SECONDS": "30"]), 60)
+        XCTAssertEqual(HTTPDeadline.idle(environment: ["RETEX_SYNC_TIMEOUT_SECONDS": "900"]), 900)
+        XCTAssertNil(HTTPDeadline.override(environment: ["RETEX_SYNC_TIMEOUT_SECONDS": "soon"]))
+
+        // Neither session caps a whole transfer at 180 s any more.
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForResource = 180
+        for session in [
+            VaultSync.boundedSession(from: configuration),
+            UpdateChecker.boundedSession(from: configuration),
+        ] {
+            XCTAssertEqual(session.configuration.timeoutIntervalForRequest, 60)
+            XCTAssertGreaterThan(session.configuration.timeoutIntervalForResource, 180)
+        }
     }
 
     func testRejectsBadTokenInsecureServerAndBadID() throws {

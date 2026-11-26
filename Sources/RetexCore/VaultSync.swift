@@ -70,10 +70,9 @@ public struct VaultSync {
     private let token: String
     private let session: URLSession
 
-    /// Hard ceiling for one HTTP exchange: the session's resource timeout is
-    /// 180 s and the blocking wait stops slightly later, so a slow-drip server
-    /// can never hang a CLI invocation indefinitely.
-    static let responseDeadline: TimeInterval = 185
+    /// Ceiling for a single exchange's resource timeout: the largest archive
+    /// sync may exchange, plus room for the JSON envelope.
+    static let maximumTransferBytes = 2 * 1024 * 1024 * 1024
 
     public init(vault: Vault, token: String, session: URLSession = .shared) {
         self.vault = vault
@@ -81,11 +80,11 @@ public struct VaultSync {
         self.session = Self.boundedSession(from: session.configuration)
     }
 
-    /// A dedicated session carrying a bounded resource timeout.
+    /// A dedicated session whose stall guard is the idle timeout rather than a
+    /// fixed cap on the whole transfer, so a big vault on a slow link keeps
+    /// flowing while a stalled server is dropped after a minute of silence.
     static func boundedSession(from configuration: URLSessionConfiguration) -> URLSession {
-        let config = configuration.copy() as? URLSessionConfiguration ?? configuration
-        config.timeoutIntervalForResource = 180
-        return URLSession(configuration: config)
+        HTTPDeadline.configure(configuration, maximumBytes: maximumTransferBytes)
     }
 
     // MARK: - State
@@ -231,7 +230,8 @@ public struct VaultSync {
 
     private func authorized(_ request: URLRequest) -> URLRequest {
         var request = request
-        request.timeoutInterval = 120
+        // The stall guard: a sync that keeps making progress may run long.
+        request.timeoutInterval = HTTPDeadline.idle()
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         return request
     }
@@ -251,21 +251,29 @@ public struct VaultSync {
             }
         }
         task.resume()
-        if semaphore.wait(timeout: .now() + Self.responseDeadline) == .timedOut {
+        let waited = HTTPDeadline.wait(for: task, semaphore: semaphore)
+        guard waited.completed else {
             task.cancel()
-            throw SyncError.network("no answer within \(Int(Self.responseDeadline)) seconds")
+            throw SyncError.network("no answer within \(Int(waited.deadline)) seconds")
         }
         guard let result = box.result else { throw SyncError.network("no HTTP response") }
         return try result.get()
     }
 
-    /// The server's revision token: its `ETag` when present, otherwise the
-    /// SHA-256 of the blob we just exchanged.
+    /// The server's revision token: its `ETag` when that is a strong SHA-256,
+    /// otherwise the SHA-256 of the blob we just exchanged. A server tag in
+    /// another namespace is not a content revision — trusting it made `status`
+    /// compare two unrelated token namespaces and report spurious changes.
     private static func etag(from response: HTTPURLResponse) -> String? {
         guard let raw = response.value(forHTTPHeaderField: "ETag") else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-        return trimmed.isEmpty ? nil : trimmed
+        var token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if token.hasPrefix("W/") || token.hasPrefix("w/") {
+            // A weak validator still names the same blob.
+            token = String(token.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        }
+        token = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard token.count == 64, token.allSatisfy(\.isHexDigit) else { return nil }
+        return token.lowercased()
     }
 
     private static func revision(from response: HTTPURLResponse, fallback: @autoclosure () -> String) -> String {

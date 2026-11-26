@@ -31,8 +31,8 @@ public struct UpdateChecker {
     private let session: URLSession
     private let fm = FileManager.default
 
-    /// Hard ceiling for one HTTP exchange (matches `VaultSync`).
-    static let responseDeadline: TimeInterval = 185
+    /// Ceiling for one release download (assets are size-limited below).
+    static let maximumTransferBytes = 64 * 1024 * 1024
 
     /// - Parameter repo: `owner/repo` on GitHub. The caller must supply this;
     ///   Retex ships no built-in repository, owner or personal name.
@@ -41,12 +41,10 @@ public struct UpdateChecker {
         self.session = Self.boundedSession(from: session.configuration)
     }
 
-    /// A dedicated session with a bounded resource timeout, so a stalled or
-    /// slow-drip release server cannot hang an update forever.
+    /// A dedicated session that drops a stalled release server after a minute
+    /// of silence instead of capping the whole download at a fixed 180 s.
     static func boundedSession(from configuration: URLSessionConfiguration) -> URLSession {
-        let config = configuration.copy() as? URLSessionConfiguration ?? configuration
-        config.timeoutIntervalForResource = 180
-        return URLSession(configuration: config)
+        HTTPDeadline.configure(configuration, maximumBytes: maximumTransferBytes)
     }
 
     public static var releaseAssetName: String {
@@ -125,7 +123,8 @@ public struct UpdateChecker {
 
     public func download(_ url: URL) throws -> Data {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 60
+        // The stall guard, not a cap on the whole download.
+        request.timeoutInterval = HTTPDeadline.idle()
         let (data, response) = try syncRequest(request)
         guard response.statusCode == 200 else {
             throw UpdateError.downloadFailed(url.lastPathComponent)
@@ -245,7 +244,8 @@ extension UpdateChecker {
             }
         }
         task.resume()
-        if semaphore.wait(timeout: .now() + UpdateChecker.responseDeadline) == .timedOut {
+        let waited = HTTPDeadline.wait(for: task, semaphore: semaphore)
+        guard waited.completed else {
             task.cancel()
             throw UpdateError.requestTimedOut
         }
