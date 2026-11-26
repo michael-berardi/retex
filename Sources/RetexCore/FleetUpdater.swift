@@ -148,7 +148,18 @@ public struct FleetRegistry {
     public func save(_ document: FleetRegistryDocument) throws {
         guard document.version == 1 else { throw RegistryError.invalidRegistry }
         let directory = url.deletingLastPathComponent()
+#if os(Windows)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+#else
+        // The registry holds local vault paths; create it user-private.
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: directory.path
+        )
+#endif
         let data = try JSONEncoder.sorted.encode(document)
         try data.write(to: url, options: [.atomic])
 #if !os(Windows)

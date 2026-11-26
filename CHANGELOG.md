@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.9.2 - 2026-11-26
+
+- Privacy: added a short README Privacy section covering sync, opt-in updates,
+  hosted serving, local state and deletion.
+- Local data: encrypted exports, the fleet registry directory, the sync state
+  directory, update staging and scheduler configuration/logs are now created
+  with owner-only permissions. The reference sync server no longer writes
+  client IP addresses to its log.
+- Optional scheduler: logs are trimmed in place to the newest 1 MiB at each
+  scheduled run and re-asserted as mode 0600. Installing the scheduler creates
+  the files private.
+- Hosted image: disabled pip version-check traffic and set `DO_NOT_TRACK=1`.
+- Tests: added privacy regression tests for analytics endpoints/clients,
+  bounded private scheduler logs and private sync/fleet state.
+
 ## 1.9.1 - 2026-11-25
 
 - Release packaging: release archives include all linked reference docs

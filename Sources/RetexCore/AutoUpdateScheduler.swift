@@ -18,6 +18,9 @@ public struct AutoUpdateSchedule: Codable, Equatable, Sendable {
 }
 
 public struct AutoUpdateScheduler {
+    /// Optional scheduler logs are capped; they can contain vault paths.
+    public static let maximumLogBytes = 1 << 20
+
     public enum SchedulerError: LocalizedError, Equatable {
         case invalidExecutable
         case commandFailed(String)
@@ -32,13 +35,79 @@ public struct AutoUpdateScheduler {
 
     public init() {}
 
+    /// Scheduler log location. The directory argument exists so tests can use
+    /// a scratch directory instead of the current user's home.
+    public static func logsDirectory(home: URL? = nil) -> URL {
+        (home ?? FileManager.default.homeDirectoryForCurrentUser)
+            .appendingPathComponent(".config/retex/logs", isDirectory: true)
+    }
+
+    /// Keeps optional scheduler logs private and bounded to the newest
+    /// `maximumLogBytes` per file. Called at the start of each scheduled run;
+    /// trimming in place preserves the file handles launchd holds open.
+    @discardableResult
+    public static func boundLogs(in directory: URL? = nil) -> [URL] {
+        let logs = directory ?? logsDirectory()
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: logs.path) else { return [] }
+#if !os(Windows)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: logs.path)
+#endif
+        var touched: [URL] = []
+        for name in ["fleet-update.log", "fleet-update-error.log"] {
+            let url = logs.appendingPathComponent(name)
+            guard fm.fileExists(atPath: url.path) else { continue }
+#if !os(Windows)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+#endif
+            touched.append(url)
+            guard let attributes = try? fm.attributesOfItem(atPath: url.path),
+                  let size = (attributes[.size] as? NSNumber)?.int64Value,
+                  size > Int64(maximumLogBytes),
+                  let handle = try? FileHandle(forUpdating: url)
+            else { continue }
+            defer { try? handle.close() }
+            do {
+                try handle.seek(toOffset: UInt64(size - Int64(maximumLogBytes)))
+                let tail = try handle.read(upToCount: maximumLogBytes) ?? Data()
+                try handle.seek(toOffset: 0)
+                try handle.write(contentsOf: tail)
+                try handle.truncate(atOffset: UInt64(tail.count))
+            } catch {
+                // A failed trim leaves the log intact for the next run.
+            }
+        }
+        return touched
+    }
+
     public func install(executable: URL) throws -> AutoUpdateSchedule {
         try validate(executable)
 #if os(macOS)
         let target = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/org.retex.cli.fleet-update.plist")
-        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/retex/logs")
+        let logs = Self.logsDirectory()
+#if os(Windows)
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+#else
+        try FileManager.default.createDirectory(
+            at: logs, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: logs.path)
+#endif
+        for name in ["fleet-update.log", "fleet-update-error.log"] {
+            let file = logs.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: file.path) {
+#if os(Windows)
+                FileManager.default.createFile(atPath: file.path, contents: nil)
+#else
+                FileManager.default.createFile(
+                    atPath: file.path, contents: nil,
+                    attributes: [.posixPermissions: 0o600]
+                )
+#endif
+            }
+        }
         let plist: [String: Any] = [
             "Label": "org.retex.cli.fleet-update",
             "ProgramArguments": [executable.path, "update", "--auto", "--fleet", "--json"],
@@ -50,6 +119,9 @@ public struct AutoUpdateScheduler {
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: target, options: .atomic)
+#if !os(Windows)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+#endif
         _ = try? run(URL(fileURLWithPath: "/bin/launchctl"), ["bootout", "gui/\(getuid())", target.path])
         try run(URL(fileURLWithPath: "/bin/launchctl"), ["bootstrap", "gui/\(getuid())", target.path])
         return AutoUpdateSchedule(platform: "macos", installed: true, configurationPath: target.path)
@@ -91,6 +163,10 @@ public struct AutoUpdateScheduler {
         """
         try serviceBody.write(to: service, atomically: true, encoding: .utf8)
         try timerBody.write(to: timer, atomically: true, encoding: .utf8)
+#if !os(Windows)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: service.path)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: timer.path)
+#endif
         let systemctl = URL(fileURLWithPath: "/usr/bin/systemctl")
         try run(systemctl, ["--user", "daemon-reload"])
         try run(systemctl, ["--user", "enable", "--now", timer.lastPathComponent])

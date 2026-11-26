@@ -1,5 +1,5 @@
 FROM swift:6.3.1-noble AS build
-ARG RETEX_REF=v1.9.1
+ARG RETEX_REF=v1.9.2
 WORKDIR /build
 RUN git clone --filter=blob:none https://github.com/michael-berardi/retex.git . \
     && git checkout --detach "${RETEX_REF}"
@@ -7,6 +7,8 @@ RUN swift build -c release --product retex -j 2
 
 FROM ubuntu:24.04
 LABEL description="Retex read-only MCP — token-authenticated, curated knowledge only"
+ENV DO_NOT_TRACK=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
