@@ -548,6 +548,35 @@ final class MarkdownStoreRegressionTests: XCTestCase {
         XCTAssertNil(note.metadata["# leading comment"])
     }
 
+    func testInlineCommentsOnlyStartAfterWhitespaceAndOutsideValues() throws {
+        // Hashes that belong to the value survive: an issue number, a colour,
+        // a flow-list tag, a URL fragment, and a hash glued to a word.
+        let url = try writeNote("hashes.md", """
+        ---
+        title: Fix issue #42
+        color: #ff0000
+        tags: [a, #b]
+        note: Acme # trailing comment
+        tail: Acme #
+        link: https://example.com/page#anchor
+        quoted: "value # not a comment"
+        glued: Acme #note
+        ---
+
+        body
+        """)
+
+        let note = try MarkdownStore().load(url)
+        XCTAssertEqual(note.metadata["title"], "Fix issue #42")
+        XCTAssertEqual(note.metadata["color"], "#ff0000")
+        XCTAssertEqual(note.tags, ["a", "#b"])
+        XCTAssertEqual(note.metadata["note"], "Acme")
+        XCTAssertEqual(note.metadata["tail"], "Acme")
+        XCTAssertEqual(note.metadata["link"], "https://example.com/page#anchor")
+        XCTAssertEqual(note.metadata["quoted"], "value # not a comment")
+        XCTAssertEqual(note.metadata["glued"], "Acme #note")
+    }
+
     func testBlankTitleFallsBackToHeadingThenFilename() throws {
         let headingURL = try writeNote("heading.md", """
         ---

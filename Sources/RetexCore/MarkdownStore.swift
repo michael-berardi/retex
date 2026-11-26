@@ -1710,42 +1710,62 @@ public struct MarkdownStore {
         finishBlock()
     }
 
-    /// Removes a YAML inline comment: a `#` preceded by whitespace and lying
-    /// outside quotes. A `#` that starts a URL fragment or an inline tag (no
-    /// whitespace before it) stays in the value, and quoted text is untouched.
+    /// Removes a YAML inline comment: a `#` preceded by whitespace, standing
+    /// outside quotes and outside a `[` list. A `#` that starts a URL
+    /// fragment, a colour (`color: #ff0000`), an issue number
+    /// (`title: Fix issue #42`) or an inline tag stays in the value, quoted
+    /// text is untouched, and a `[` list is never cut.
     static func strippingInlineComment(_ value: String) -> String {
         guard value.utf8.contains(UInt8(ascii: "#")) else { return value }
+        let characters = Array(value)
         var inSingle = false
         var inDouble = false
         var escaped = false
-        var previousWasSpace = false
+        var bracketDepth = 0
         var output = ""
-        output.reserveCapacity(value.count)
-        for character in value {
+        output.reserveCapacity(characters.count)
+        for (index, character) in characters.enumerated() {
             if escaped {
                 escaped = false
                 output.append(character)
-                previousWasSpace = false
                 continue
             }
             if character == "\\", inDouble {
                 escaped = true
                 output.append(character)
-                previousWasSpace = false
                 continue
             }
             if character == "'", !inDouble {
                 inSingle.toggle()
             } else if character == "\"", !inSingle {
                 inDouble.toggle()
-            } else if character == "#", !inSingle, !inDouble, previousWasSpace {
+            } else if character == "[", !inSingle, !inDouble {
+                bracketDepth += 1
+            } else if character == "]", !inSingle, !inDouble {
+                bracketDepth = max(0, bracketDepth - 1)
+            } else if character == "#", !inSingle, !inDouble, bracketDepth == 0,
+                      opensInlineComment(at: index, in: characters) {
                 // The comment runs to the end of the line.
                 break
             }
             output.append(character)
-            previousWasSpace = character == " " || character == "\t"
         }
         return trimmed(output[...], in: whitespaceCharacters)
+    }
+
+    /// A `#` opens a comment only after the value has started, after
+    /// whitespace, and before whitespace or the end of the line. That keeps
+    /// `#ff0000`, `[a, #b]` and `Fix issue #42` as values while
+    /// `Acme # note` still loses its comment.
+    private static func opensInlineComment(at index: Int, in characters: [Character]) -> Bool {
+        guard index > 0 else { return false }
+        let previous = characters[index - 1]
+        guard previous == " " || previous == "\t" else { return false }
+        // A value that starts with `#` is a colour or a tag, not a comment.
+        guard characters[..<index].contains(where: { $0 != " " && $0 != "\t" }) else { return false }
+        guard index + 1 < characters.count else { return true }
+        let next = characters[index + 1]
+        return next == " " || next == "\t"
     }
 
     /// `|` or `>` with optional chomping and indentation indicators.
