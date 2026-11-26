@@ -2,6 +2,7 @@
 DerivedData/
 .DS_Store
 release/
+dist/
 .release-build/
 .swiftpm/
 *.xcuserstate

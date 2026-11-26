@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.10.0 - 2026-11-26
+
+- Installation: one-line `install.sh` for macOS and Linux downloads the
+  matching release archive, checks it against the published SHA256SUMS,
+  verifies the Developer ID signature on macOS, installs into
+  `~/.local/share/retex/<version>`, and adds a `retex` symlink in
+  `~/.local/bin`. It refuses to replace files it did not install. The symlink
+  resolves to the real binary, so the existing `retex update` continues to
+  swap that binary and keep `<binary>.previous` for rollback.
+- Release assets: `scripts/release.sh` now ships `install.sh` in SHA256SUMS,
+  and `scripts/build-release.sh` stages published binaries plus the installer
+  into `dist/release` for verification. No Windows asset is published, so no
+  `install.ps1` ships. `RETEX_HOME`, `RETEX_BIN_DIR`, `RETEX_VERSION` and
+  `RETEX_RELEASE_BASE` support isolated tests and mirrors.
+- Tests: an end-to-end installer test runs against a local release directory
+  with a temporary HOME, including clobber refusal and checksum mismatch.
+
 ## 1.9.1 - 2026-11-25
 
 - Release packaging: release archives include all linked reference docs

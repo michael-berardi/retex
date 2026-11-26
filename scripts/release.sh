@@ -19,9 +19,13 @@
 #   RETEX_WINDOWS_BINARY     verified Windows retex.exe built on Windows
 #   RETEX_OUT                output directory (default: ./release)
 #
+# Use scripts/build-release.sh to stage these assets with install.sh into
+# dist/release and regenerate SHA256SUMS before publishing.
+#
 # Linux archives ship twice. retex-linux-<arch>.tar.xz is the small download
 # (xz -9e, about 40% smaller than gzip on the static binary). The .tar.gz is
-# kept only because the in-app updater on 1.8.x looks for that name.
+# kept only because the in-app updater on 1.8.x looks for that name. There is
+# no published Windows asset yet, so no install.ps1 ships.
 set -euo pipefail
 
 VERSION="${RETEX_VERSION:?Set RETEX_VERSION (for example 0.8.0)}"
@@ -183,7 +187,8 @@ if [[ -n "${RETEX_WINDOWS_BINARY:-}" ]]; then
 fi
 
 : > "$OUT/SHA256SUMS"
-ASSETS=()
+cp scripts/install.sh "$OUT/install.sh"
+ASSETS=(install.sh)
 [[ -z "$LINUX_ONLY" ]] && ASSETS+=(retex-universal.zip)
 for spec in "aarch64" "x86_64"; do
   [[ " $LINUX_ARCHES " == *" $spec "* ]] || continue

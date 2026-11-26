@@ -380,6 +380,10 @@ those can stand in.
 Self-update requires `RETEX_UPDATE_REPO` set to the GitHub `owner/repo`
 you trust. See the [installation page](../README.md#updates) for the public
 release channel. Without this variable, `update` exits with usage error 64.
+Installations made with `install.sh` place a symlink at
+`~/.local/bin/retex` pointing to `~/.local/share/retex/current/retex`; the
+updater resolves that symlink and replaces the real binary in the version
+folder, keeping its rollback copy as `retex.previous` there.
 Scheduled jobs also need this variable in their own environment; installing
 the scheduler does not copy it from your shell.
 
