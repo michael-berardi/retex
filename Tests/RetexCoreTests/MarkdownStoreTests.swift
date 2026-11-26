@@ -189,6 +189,46 @@ final class MarkdownStoreTests: XCTestCase {
         XCTAssertEqual(second.url.deletingPathExtension().lastPathComponent, "elan-cafe-2")
     }
 
+    func testCreatePublishesCompleteFilesAndLeavesNoTempBehind() throws {
+        let store = MarkdownStore()
+        let vault = Vault(url: vaultDir)
+        let body = String(repeating: "line\n", count: 4_000)
+        try FileManager.default.createDirectory(
+            at: vaultDir.appendingPathComponent("Notes"),
+            withIntermediateDirectories: true
+        )
+
+        // Two writers racing for the same title: one claims the name, the other
+        // steps to the next suffix, and neither leaves a half-written note or a
+        // temp file behind.
+        let group = DispatchGroup()
+        var created: [URL] = []
+        let lock = NSLock()
+        for _ in 0..<2 {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                guard let note = try? store.createNote(
+                    in: vault, folder: "Notes", title: "Race", metadata: [:], body: body
+                ) else { return }
+                lock.lock()
+                created.append(note.url)
+                lock.unlock()
+            }
+        }
+        group.wait()
+
+        XCTAssertEqual(created.count, 2)
+        XCTAssertEqual(Set(created.map(\.path)).count, 2, "both writers must get their own name")
+        for url in created {
+            XCTAssertTrue(try String(contentsOf: url).hasSuffix(body), url.path)
+        }
+        let leftovers = try FileManager.default
+            .contentsOfDirectory(atPath: vaultDir.appendingPathComponent("Notes").path)
+            .filter { $0.hasSuffix(".tmp") || $0.hasPrefix(".retex-create-") }
+        XCTAssertEqual(leftovers, [])
+    }
+
     func testCreateRejectsFoldersOutsideVault() throws {
         let store = MarkdownStore()
         let outsideName = "retex-outside-\(UUID().uuidString)"

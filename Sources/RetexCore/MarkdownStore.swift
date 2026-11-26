@@ -1495,23 +1495,46 @@ public struct MarkdownStore {
         let cleanBody = body.trimmingCharacters(in: Self.whitespaceAndNewlineCharacters)
         let source = (["---"] + frontmatter + ["---", "", cleanBody, ""]).joined(separator: "\n")
         let data = Data(source.utf8)
-        // Claim the name atomically: `.withoutOverwriting` fails when another
-        // process created the file between choosing the name and writing it,
-        // and the loop then steps to the next suffix instead of overwriting.
+        // Publish the bytes without ever exposing a partial file: the content
+        // is written to a private temp file in the same directory and then
+        // hard-linked into the claimed name, which fails when another process
+        // got there first, so the loop steps to the next suffix.
         let stem = slug(cleanTitle)
         var url = uniqueURL(in: directory, title: cleanTitle)
         var suffix = 2
         while true {
-            do {
-                try data.write(to: url, options: .withoutOverwriting)
-                break
-            } catch {
-                guard Self.isFileExistsError(error) else { throw error }
-                url = directory.appendingPathComponent("\(stem)-\(suffix)").appendingPathExtension("md")
-                suffix += 1
-            }
+            if try Self.writeClaiming(url, data: data) { break }
+            url = directory.appendingPathComponent("\(stem)-\(suffix)").appendingPathExtension("md")
+            suffix += 1
         }
         return try load(url)
+    }
+
+    /// Writes `data` under `url` atomically and without overwriting: the bytes
+    /// land in a hidden temp file next to it, which is then linked into place
+    /// (`link(2)` never replaces an existing name). Returns false when the name
+    /// is already taken; the temp file is always removed.
+    static func writeClaiming(_ url: URL, data: Data) throws -> Bool {
+        let directory = url.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent(".retex-create-\(UUID().uuidString).tmp")
+        try data.write(to: temporary, options: .withoutOverwriting)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            try FileManager.default.linkItem(at: temporary, to: url)
+            return true
+        } catch {
+            if isFileExistsError(error) { return false }
+            // A filesystem without hard links (exFAT, some network mounts)
+            // still gets the bytes in one move, and any real failure is
+            // reported as the link error that caused it.
+            do {
+                try FileManager.default.moveItem(at: temporary, to: url)
+                return true
+            } catch let fallbackError {
+                if isFileExistsError(fallbackError) { return false }
+                throw error
+            }
+        }
     }
 
     /// Whether a write failed because the destination already exists.
