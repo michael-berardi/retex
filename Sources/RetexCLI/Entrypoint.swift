@@ -867,6 +867,11 @@ enum RetexCLI {
         guard let repo = ProcessInfo.processInfo.environment["RETEX_UPDATE_REPO"], !repo.isEmpty else {
             throw UsageError("Set RETEX_UPDATE_REPO to the GitHub owner/repo for self-update (e.g. owner/repo).")
         }
+        // The value becomes a path in the API URL, so it must be exactly two
+        // repository-name segments rather than arbitrary text.
+        guard AutoUpdateScheduler.isValidRepository(repo) else {
+            throw UsageError("RETEX_UPDATE_REPO must be owner/repo (letters, digits, dot, dash or underscore in each part).")
+        }
         return repo
     }
 

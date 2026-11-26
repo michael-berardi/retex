@@ -36,13 +36,36 @@ public struct AutoUpdateScheduler {
     /// 64 and never checks for updates.
     static let forwardedEnvironmentKeys = ["RETEX_UPDATE_REPO", "RETEX_FLEET_REGISTRY"]
 
+    /// `owner/repo` on GitHub: exactly two path segments of word characters,
+    /// dots and dashes. Anything else would carry a query string, a newline or
+    /// a path traversal into the API URL and into the generated unit file.
+    public static func isValidRepository(_ value: String) -> Bool {
+        let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        return parts.allSatisfy { part in
+            part != "." && part != ".." && !part.isEmpty && part.allSatisfy { character in
+                character.isLetter || character.isNumber || character == "_"
+                    || character == "." || character == "-"
+            }
+        }
+    }
+
+    static func hasControlCharacters(_ value: String) -> Bool {
+        value.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
+    }
+
     public init() {}
 
-    /// The subset of `environment` a scheduled run inherits, verbatim.
+    /// The subset of `environment` a scheduled run inherits, verbatim. A value
+    /// that could break out of a unit directive (a control character) or that
+    /// is not a well-formed repository never reaches the unit at all.
     static func forwardedEnvironment(from environment: [String: String]) -> [String: String] {
         var forwarded: [String: String] = [:]
         for key in forwardedEnvironmentKeys {
-            if let value = environment[key], !value.isEmpty { forwarded[key] = value }
+            guard let value = environment[key], !value.isEmpty else { continue }
+            guard !hasControlCharacters(value), !hasControlCharacters(key) else { continue }
+            if key == "RETEX_UPDATE_REPO", !isValidRepository(value) { continue }
+            forwarded[key] = value
         }
         return forwarded
     }
@@ -64,11 +87,17 @@ public struct AutoUpdateScheduler {
     }
 
     /// systemd `Environment=` lines, quoted and escaped per systemd rules.
+    /// `%` starts a specifier (`%h`, `%t`), so a literal one must be doubled;
+    /// a control character would end the directive and start a new one, so
+    /// such a value is dropped instead of being written into the unit.
     static func systemdEnvironmentLines(_ environment: [String: String]) -> [String] {
-        environment.keys.sorted().map { key in
-            let value = environment[key, default: ""]
+        environment.keys.sorted().compactMap { key in
+            let raw = environment[key, default: ""]
+            guard !hasControlCharacters(raw), !hasControlCharacters(key) else { return nil }
+            let value = raw
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "%", with: "%%")
             return "Environment=\"\(key)=\(value)\""
         }
     }

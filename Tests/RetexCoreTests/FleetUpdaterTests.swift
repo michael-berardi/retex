@@ -138,6 +138,41 @@ final class FleetUpdaterTests: XCTestCase {
         XCTAssertNil(bare["EnvironmentVariables"])
     }
 
+    func testSystemdUnitEscapesSpecifiersAndDropsUnsafeValues() {
+        // `%` starts a systemd specifier, so a literal percent is doubled.
+        let unit = AutoUpdateScheduler.systemdServiceUnit(
+            executable: URL(fileURLWithPath: "/opt/acme/bin/retex"),
+            environment: ["RETEX_FLEET_REGISTRY": "/tmp/100%/fleet.json"]
+        )
+        XCTAssertTrue(
+            unit.contains("Environment=\"RETEX_FLEET_REGISTRY=/tmp/100%%/fleet.json\""),
+            unit
+        )
+
+        // A newline would end the directive and start a new one.
+        let injected = AutoUpdateScheduler.systemdServiceUnit(
+            executable: URL(fileURLWithPath: "/opt/acme/bin/retex"),
+            environment: ["RETEX_FLEET_REGISTRY": "/tmp/fleet.json\nExecStart=/bin/sh"]
+        )
+        XCTAssertFalse(injected.contains("ExecStart=/bin/sh"), injected)
+        XCTAssertFalse(AutoUpdateScheduler.forwardedEnvironment(
+            from: ["RETEX_FLEET_REGISTRY": "/tmp/a\u{7}b"]
+        ).keys.contains("RETEX_FLEET_REGISTRY"))
+    }
+
+    func testOnlyWellFormedRepositoryValuesAreForwarded() {
+        XCTAssertEqual(
+            AutoUpdateScheduler.forwardedEnvironment(from: ["RETEX_UPDATE_REPO": "acme/example-retex"])["RETEX_UPDATE_REPO"],
+            "acme/example-retex"
+        )
+        for invalid in ["acme", "acme/", "/retex", "acme/../retex", "acme/retex?x=1", "acme/re tex", "acme/retex/extra"] {
+            XCTAssertTrue(
+                AutoUpdateScheduler.forwardedEnvironment(from: ["RETEX_UPDATE_REPO": invalid]).isEmpty,
+                invalid
+            )
+        }
+    }
+
     func testSystemdUnitCarriesTheUpdateRepository() {
         let unit = AutoUpdateScheduler.systemdServiceUnit(
             executable: URL(fileURLWithPath: "/opt/acme/bin/retex"),
