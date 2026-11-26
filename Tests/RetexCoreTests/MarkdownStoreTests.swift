@@ -543,6 +543,32 @@ final class MarkdownStoreRegressionTests: XCTestCase {
         XCTAssertEqual(titleLines.first.map(String.init), "title: Updated")
     }
 
+    func testUpdateMetadataCollapsesThreeDuplicateKeys() throws {
+        // Removing a duplicate shifts the next line into its index, so a third
+        // occurrence sits exactly where the scan must resume.
+        let url = try writeNote("duplicate-three.md", """
+        ---
+        title: First
+        status: Inbox
+        title: Second
+        title: Third
+        ---
+
+        body
+        """)
+
+        let store = MarkdownStore()
+        let note = try store.load(url)
+        XCTAssertEqual(note.title, "Third", "YAML last-wins decides the parsed title")
+
+        try store.updateMetadata("title", value: "Updated", for: note)
+        let updated = try store.load(url)
+        XCTAssertEqual(updated.title, "Updated")
+        XCTAssertEqual(updated.status, "Inbox")
+        let titleLines = frontmatterLines(updated.source).filter { $0.hasPrefix("title:") }
+        XCTAssertEqual(titleLines.count, 1, "Every duplicate must be gone: \(updated.source)")
+    }
+
     func testUpdateMetadataMatchesNonCanonicalKeySpelling() throws {
         let url = try writeNote("spacing.md", """
         ---

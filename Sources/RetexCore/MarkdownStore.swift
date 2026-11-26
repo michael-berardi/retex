@@ -1611,13 +1611,16 @@ public struct MarkdownStore {
                     if replaced {
                         lines.removeSubrange(match..<end)
                         insertionIndex -= end - match
+                        // The line after this duplicate shifted into `match`, so
+                        // resume there: a third occurrence must not be skipped.
+                        searchStart = match
                     } else {
                         lines[match] = line
                         lines.removeSubrange((match + 1)..<end)
                         insertionIndex -= end - match - 1
                         replaced = true
+                        searchStart = match + 1
                     }
-                    searchStart = match + 1
                 }
                 if !replaced {
                     lines.insert(line, at: insertionIndex)
